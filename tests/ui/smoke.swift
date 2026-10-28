@@ -565,14 +565,24 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
     let chromeOpened = openFront(chromeApp, bundleID: chrome, file: page, newInstance: true,
                                  launchArguments: ["--user-data-dir=\(work)/chrome", "--no-first-run", "--no-default-browser-check"])
     check(chromeOpened, "Chrome opens the page with two fields")
-    // Chrome builds its Accessibility tree only once asked, as SuperEditr does when it reads.
+    // Chrome builds its Accessibility tree only once asked, as SuperEditr does when it reads. Asking
+    // first, and waiting for the tree, makes SuperEditr read the field through Accessibility, as it
+    // does in an app whose tree is already on, instead of falling back to a copy-only ⌘C read.
     if let ours = opened.last(where: { $0.bundleIdentifier == chrome }) {
-        AXUIElementSetAttributeValue(AXUIElementCreateApplication(ours.processIdentifier), "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        let element = AXUIElementCreateApplication(ours.processIdentifier)
+        for flag in ["AXManualAccessibility", "AXEnhancedUserInterface"] {
+            AXUIElementSetAttributeValue(element, flag as CFString, kCFBooleanTrue)
+        }
     }
     pump(2)
+    let captureLog = home + "/Library/Logs/SuperEditr/capture.log"
+    func lastChromeRead() -> String {
+        let lines = (try? String(contentsOfFile: captureLog, encoding: .utf8))?.split(separator: "\n") ?? []
+        return lines.last { $0.contains("com.google.Chrome: read") }.map(String.init) ?? "none"
+    }
     for (index, field) in ["text box", "editable div"].enumerated() {
         if index == 1 { press(keyTab) ; pump(0.5) }  // Tab moves focus from the text box to the div
-        check(selectAll(), "the \(field)'s text is selected")
+        check(selectAll() || selectAll(), "the \(field)'s text is selected")
         press(keyE, .maskCommand)
         pump(0.1)
         press(keyE, .maskCommand)
@@ -580,6 +590,8 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         check(panel != nil, "⌘E E reviews the \(field)", "no overlay within 5 s")
         guard panel != nil else { continue }
         pump(1.5)  // the rule-based checker's result
+        let read = lastChromeRead()
+        check(read.contains("via Accessibility"), "the \(field) is read through Accessibility", "last read: \(read)")
         screenshot(window: overlay(), to: outDir + "/web-\(index)-review.png")
         press(keyReturn)
         let notice = waitFor(3) { () -> String? in
@@ -592,7 +604,11 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         check(notice == nil, "↩ applies in the \(field) without a warning", "SuperEditr said: \(notice ?? "")")
         check(!value.isEmpty && !value.contains(typo), "the \(field) holds the fix", "the field reads \"\(value)\"")
         screenshot(window: nil, rect: windows(bundleID: chrome).first?.frame, to: outDir + "/web-\(index)-applied.png")
-        if notice != nil { press(keyEscape) ; pump(0.5) }
+        if overlay() != nil {
+            log("NOTE the panel was still open after ↩ in the \(field)")
+            press(keyEscape)
+            _ = waitFor(3) { overlay() == nil ? true : nil }
+        }
     }
     quitOpened(chrome)
 }

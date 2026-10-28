@@ -548,10 +548,19 @@ enum CopyRequest {
 /// is still holding from the shortcut. Electron apps have a native menu bar even when their web
 /// content hides from Accessibility. Returns None when the app has no such item.
 fn press_copy_menu(app: &Element) -> Option<CopyRequest> {
-    // A busy app answers each query slowly; give up and send ⌘C rather than make the user wait.
+    // A slow app can time out the press yet still copy, so it counts as sent either way; sending
+    // ⌘C as well could copy twice and land after the clipboard is restored.
+    press_menu_item(app, "c").map(|pressed| if pressed { CopyRequest::Menu } else { CopyRequest::MenuDisabled })
+}
+
+/// Presses the menu item whose shortcut is ⌘ plus `key` alone, such as Edit ▸ Copy or Edit ▸ Paste.
+/// Returns Some(false) when the item is disabled and None when the app has no such item.
+fn press_menu_item(app: &Element, key: &str) -> Option<bool> {
+    // A busy app answers each query slowly; give up and send the keystroke rather than make the
+    // user wait.
     let deadline = Instant::now() + Duration::from_millis(500);
     let bar = app.element("AXMenuBar")?;
-    // Skip the Apple and application menus; Copy lives in Edit, normally the third.
+    // Skip the Apple and application menus; Copy and Paste live in Edit, normally the third.
     for menu_title in bar.children().into_iter().skip(2) {
         for menu in menu_title.children() {
             for item in menu.children() {
@@ -559,18 +568,16 @@ fn press_copy_menu(app: &Element) -> Option<CopyRequest> {
                     return None;
                 }
                 // Electron sets lowercase key equivalents; modifiers 0 means ⌘ alone.
-                if !item.string("AXMenuItemCmdChar").is_some_and(|c| c.eq_ignore_ascii_case("c"))
+                if !item.string("AXMenuItemCmdChar").is_some_and(|c| c.eq_ignore_ascii_case(key))
                     || item.number("AXMenuItemCmdModifiers") != Some(0)
                 {
                     continue;
                 }
                 if item.flag("AXEnabled") == Some(false) {
-                    return Some(CopyRequest::MenuDisabled);
+                    return Some(false);
                 }
-                // A slow app can time out the press yet still copy, so it counts as sent either
-                // way; sending ⌘C as well could copy twice and land after the clipboard is restored.
                 item.press();
-                return Some(CopyRequest::Menu);
+                return Some(true);
             }
         }
     }
@@ -730,12 +737,21 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
     let before = element.string("AXValue");
     let snapshot = pasteboard::Snapshot::take();
     let ours = pasteboard::write_transient_string(text);
-    let window = give_back_key_window(capture.pid);
+    let window = key_window_state(capture.pid);
     let started = Instant::now();
-    post_command_key(capture.pid, Key::V);
+    // The app's own Paste menu item first. The review panel took key to read ↩, and when it hides
+    // macOS can leave the app in front with no key window. Browsers and Electron apps then drop a
+    // posted ⌘V, but a menu item still acts on the main window.
+    let app = Element::from_create(unsafe { AXUIElementCreateApplication(capture.pid) });
+    let how = if app.as_ref().and_then(|app| press_menu_item(app, "v")) == Some(true) {
+        "the app's Paste menu item"
+    } else {
+        post_command_key(capture.pid, Key::V);
+        "⌘V to the app's process"
+    };
     let landed = verify_replacement(element, capture, before.as_deref(), text, Duration::from_millis(600));
     trace(format_args!(
-        "{}: pasted {} characters with ⌘V to the app's process, {window}; {} after {:?}, field value {}",
+        "{}: pasted {} characters with {how}, {window}; {} after {:?}, field value {}",
         capture.bundle_id,
         text.chars().count(),
         if landed { "verified" } else { "not verified" },
@@ -756,30 +772,13 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
     Ok(ReplaceMethod::Paste)
 }
 
-/// Makes `pid`'s window the key window again before keys are sent to it, and describes what it
-/// found for the log. The review panel takes key to read ↩; when it hides, macOS leaves the app in
-/// front with no key window, and a browser or Electron app then drops the ⌘V.
-fn give_back_key_window(pid: i32) -> String {
+/// Whether `pid` is the front app and its focused window is the main, focused one, for the log.
+fn key_window_state(pid: i32) -> String {
     let front = focused_app().is_some_and(|(_, front)| front == pid);
-    let Some(app) = Element::from_create(unsafe { AXUIElementCreateApplication(pid) }) else {
-        return format!("front {front}, no app element");
-    };
-    let Some(window) = app.element("AXFocusedWindow").or_else(|| app.element("AXMainWindow")) else {
-        return format!("front {front}, no window");
-    };
-    if window.flag("AXFocused") == Some(true) {
-        return format!("front {front}, window already focused");
-    }
-    let started = Instant::now();
-    let yes = CFBoolean::true_value();
-    window.set("AXMain", yes.as_CFTypeRef());
-    window.set("AXFocused", yes.as_CFTypeRef());
-    let deadline = started + Duration::from_millis(300);
-    while window.flag("AXFocused") != Some(true) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let focused = window.flag("AXFocused") == Some(true);
-    format!("front {front}, window refocused {focused} after {:?}", started.elapsed())
+    let window = Element::from_create(unsafe { AXUIElementCreateApplication(pid) })
+        .and_then(|app| app.element("AXFocusedWindow"));
+    let flag = |name| window.as_ref().and_then(|w| w.flag(name)).map_or("unknown".to_string(), |v| v.to_string());
+    format!("front {front}, window main {} focused {}", flag("AXMain"), flag("AXFocused"))
 }
 
 pub fn copy_to_clipboard(text: &str) {

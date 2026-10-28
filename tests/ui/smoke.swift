@@ -693,7 +693,8 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         // The editable div is applied six times in a row, the first straight after the text box
         // and the last three with every CPU core busy, as on a loaded Mac. Back-to-back pastes were
         // dropped by Chrome (spectrumzero-dev/supereditr-app#10). Before each repeat the test puts
-        // the typo back with its own paste, which Chrome can drop the same way, so it retries.
+        // the typo back by typing it, so each of SuperEditr's pastes follows its own last restore,
+        // the case Chrome drops.
         let runs: [(field: String, attempt: Int)] = [("text box", 1)] + (1...6).map { ("editable div", $0) }
         var load: [Process] = []
         defer { load.forEach { $0.terminate() } }
@@ -713,19 +714,19 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 press(keyTab)  // from the control field to the text box, then to the editable div
                 pump(0.5)
             } else if let ours = launchedSinceStart(chrome).last {
+                // Typed, not pasted, so SuperEditr's next paste is the first since its last restore.
                 _ = selectAll()
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(typo, forType: .string)
-                for _ in 0..<3 {
+                let units = Array(typo.utf16)
+                for start in stride(from: 0, to: units.count, by: 10) {
+                    var chunk = Array(units[start..<min(start + 10, units.count)])
                     for down in [true, false] {
-                        let event = CGEvent(keyboardEventSource: nil, virtualKey: keyV, keyDown: down)
-                        event?.flags = .maskCommand
+                        let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down)
+                        event?.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: &chunk)
                         event?.postToPid(ours.processIdentifier)
-                        usleep(25_000)
+                        usleep(15_000)
                     }
-                    pump(1)
-                    if (focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? "").contains(typo) { break }
                 }
+                pump(1)
             }
             check(selectAll() || selectAll(), "the \(field)'s text is selected")
             let start = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""

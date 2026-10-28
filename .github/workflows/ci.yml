@@ -21,6 +21,10 @@ jobs:
     if: github.repository == 'spectrumzero-dev/supereditr-app'
     runs-on: macos-15
     timeout-minutes: 45
+    env:
+      # Line tables keep file and line numbers in test backtraces but build faster than full debug
+      # info, and make the cached target directory smaller.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -28,7 +32,16 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
       - name: Install the Rust toolchain from rust-toolchain.toml
         run: rustup toolchain install
+      # Caches ~/.cargo and the compiled dependencies in target/, keyed on Cargo.lock and the
+      # toolchain. A run whose key already exists saves nothing. Pushes to main and pull requests
+      # from branches of this repository save; pull requests from forks only restore. A pull
+      # request's cache is visible only to that pull request, never to main.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
       - name: Run every check
         run: ./scripts/check.sh

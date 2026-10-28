@@ -424,13 +424,15 @@ pub fn return_focus(pid: i32) {
 }
 
 /// Reads the current selection. With `allow_clipboard`, falls back to a guarded ⌘C when the
-/// app doesn't expose its selection through Accessibility.
+/// app doesn't expose its selection through Accessibility. Only a shortcut allows the clipboard;
+/// an automatic suggestion never copies, so the log calls the read "shortcut" or "automatic".
 pub fn capture(allow_clipboard: bool) -> Result<Capture, PlatformError> {
     if !accessibility_trusted(false) {
         return Err(PlatformError::NotTrusted);
     }
+    let source = if allow_clipboard { "shortcut" } else { "automatic" };
     let Some((app, pid)) = focused_app() else {
-        trace(format_args!("no app in front"));
+        trace(format_args!("{source}: no app in front"));
         return Err(PlatformError::NoSelection);
     };
     let (bundle_id, app_name) = app_identity(pid);
@@ -439,7 +441,7 @@ pub fn capture(allow_clipboard: bool) -> Result<Capture, PlatformError> {
         Ok(capture) => Ok(capture),
         Err(PlatformError::SecureField) => Err(PlatformError::SecureField),
         Err(error) => {
-            trace(format_args!("{bundle_id}: Accessibility found no selection after {:?}", started.elapsed()));
+            trace(format_args!("{source} {bundle_id}: Accessibility found no selection after {:?}", started.elapsed()));
             if !allow_clipboard {
                 return Err(error);
             }
@@ -448,19 +450,19 @@ pub fn capture(allow_clipboard: bool) -> Result<Capture, PlatformError> {
     };
     match &result {
         Ok(capture) => trace(format_args!(
-            "{bundle_id}: read {} characters via {} in {:?}",
+            "{source} {bundle_id}: read {} characters via {} in {:?}",
             capture.text.chars().count(),
             if capture.element.is_some() { "Accessibility" } else { "⌘C" },
             started.elapsed()
         )),
-        Err(error) => trace(format_args!("{bundle_id}: {error} ({:?})", started.elapsed())),
+        Err(error) => trace(format_args!("{source} {bundle_id}: {error} ({:?})", started.elapsed())),
     }
     result
 }
 
 /// Appends one line about a selection read or write to ~/Library/Logs/SuperEditr/capture.log, so a
 /// failure in a particular app can be diagnosed. It records app IDs, timings and lengths, never text.
-fn trace(message: std::fmt::Arguments) {
+pub fn trace(message: std::fmt::Arguments) {
     use std::io::Write;
     let Some(home) = std::env::var_os("HOME") else { return };
     let dir = std::path::Path::new(&home).join("Library/Logs/SuperEditr");

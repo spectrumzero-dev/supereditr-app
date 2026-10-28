@@ -73,6 +73,8 @@ pub fn capture(_allow_clipboard: bool) -> Result<Capture, PlatformError> {
     Err(PlatformError::Other("This platform isn’t supported yet.".into()))
 }
 
+pub fn trace(_message: std::fmt::Arguments) {}
+
 pub fn focused_app_identity() -> Option<(i32, String, String)> {
     None
 }

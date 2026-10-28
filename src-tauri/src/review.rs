@@ -444,14 +444,17 @@ pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
         }
         WatchEvent::MaybeSelection { settle } => {
             let config = state.config();
-            if !config.auto_popup
-                || state.paused.load(Ordering::Relaxed)
-                || Instant::now() < *state.quiet_until.lock().unwrap()
-            {
-                return;
+            if !config.auto_popup {
+                return trace_auto(None, &AutoOutcome::TurnedOff);
+            }
+            if state.paused.load(Ordering::Relaxed) {
+                return trace_auto(None, &AutoOutcome::Paused);
+            }
+            if Instant::now() < *state.quiet_until.lock().unwrap() {
+                return trace_auto(None, &AutoOutcome::JustApplied);
             }
             if state.session.lock().unwrap().as_ref().is_some_and(|s| s.keyboard) {
-                return;
+                return trace_auto(None, &AutoOutcome::ReviewOpen);
             }
             let generation = state.watch_generation.fetch_add(1, Ordering::Relaxed) + 1;
             let app = app.clone();
@@ -461,22 +464,121 @@ pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
                 tokio::time::sleep(settle).await;
                 let state = app.state::<AppState>();
                 if state.watch_generation.load(Ordering::Relaxed) != generation {
-                    return;
+                    return trace_auto(None, &AutoOutcome::Superseded);
                 }
-                if !matches!(check_target(&app), Target::Allowed) {
-                    return;
+                match check_target(&app) {
+                    Target::Allowed => {}
+                    Target::Ignored => return trace_auto(None, &AutoOutcome::OwnWindow),
+                    Target::Excluded(_) => return trace_auto(None, &AutoOutcome::Excluded),
+                    Target::NotTrusted => return trace_auto(None, &AutoOutcome::NotTrusted),
                 }
-                let Ok(captured) = capture(&app, false).await else { return };
-                let min = state.config().auto_min_chars;
-                let trimmed = captured.text.trim();
-                if !captured.editable || trimmed.chars().count() < min || !trimmed.chars().any(char::is_alphabetic) {
-                    return;
+                let captured = match capture(&app, false).await {
+                    Ok(captured) => captured,
+                    Err(error) => return trace_auto(None, &AutoOutcome::ReadFailed(error)),
+                };
+                let app_id = Some(captured.bundle_id.as_str());
+                let min_chars = state.config().auto_min_chars;
+                if let Some(outcome) = check_selection(&captured.text, captured.editable, min_chars) {
+                    return trace_auto(app_id, &outcome);
                 }
-                let same = state.session.lock().unwrap().as_ref().is_some_and(|s| s.capture.text == captured.text);
-                if !same && state.watch_generation.load(Ordering::Relaxed) == generation {
-                    begin(&app, captured, true, None);
+                if state.session.lock().unwrap().as_ref().is_some_and(|s| s.capture.text == captured.text) {
+                    return trace_auto(app_id, &AutoOutcome::AlreadyShowing);
                 }
+                if state.watch_generation.load(Ordering::Relaxed) != generation {
+                    return trace_auto(app_id, &AutoOutcome::Superseded);
+                }
+                trace_auto(app_id, &AutoOutcome::Shown);
+                begin(&app, captured, true, None);
             });
         }
+    }
+}
+
+/// What became of one automatic suggestion attempt, for capture.log. Never holds selected text.
+#[derive(Debug)]
+enum AutoOutcome {
+    Shown,
+    TurnedOff,
+    Paused,
+    JustApplied,
+    ReviewOpen,
+    Superseded,
+    OwnWindow,
+    Excluded,
+    NotTrusted,
+    ReadFailed(PlatformError),
+    NotEditable,
+    TooShort { chars: usize, min: usize },
+    NoLetter,
+    AlreadyShowing,
+}
+
+impl std::fmt::Display for AutoOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Shown => write!(f, "shown"),
+            Self::TurnedOff => write!(f, "skipped: automatic suggestions are turned off"),
+            Self::Paused => write!(f, "skipped: automatic suggestions are paused"),
+            Self::JustApplied => write!(f, "skipped: a fix was just applied"),
+            Self::ReviewOpen => write!(f, "skipped: a review opened with the shortcut is showing"),
+            Self::Superseded => write!(f, "skipped: a newer selection or keystroke replaced this one"),
+            Self::OwnWindow => write!(f, "skipped: SuperEditr's own window is in front"),
+            Self::Excluded => write!(f, "skipped: the app is excluded in Settings"),
+            Self::NotTrusted => write!(f, "skipped: Accessibility permission isn't granted"),
+            Self::ReadFailed(error) => write!(f, "skipped: the selection couldn't be read ({error})"),
+            Self::NotEditable => write!(f, "skipped: the field isn't editable"),
+            Self::TooShort { chars, min } => write!(f, "skipped: {chars} characters, under the minimum of {min}"),
+            Self::NoLetter => write!(f, "skipped: the selection has no letter"),
+            Self::AlreadyShowing => write!(f, "skipped: the same text is already showing"),
+        }
+    }
+}
+
+/// Applies the rules an automatic suggestion's selection must pass; `None` when it may open.
+fn check_selection(text: &str, editable: bool, min_chars: usize) -> Option<AutoOutcome> {
+    let trimmed = text.trim();
+    let chars = trimmed.chars().count();
+    if !editable {
+        Some(AutoOutcome::NotEditable)
+    } else if chars < min_chars {
+        Some(AutoOutcome::TooShort { chars, min: min_chars })
+    } else if !trimmed.chars().any(char::is_alphabetic) {
+        Some(AutoOutcome::NoLetter)
+    } else {
+        None
+    }
+}
+
+fn trace_auto(app_id: Option<&str>, outcome: &AutoOutcome) {
+    match app_id {
+        Some(app_id) => platform::trace(format_args!("automatic {app_id}: {outcome}")),
+        None => platform::trace(format_args!("automatic: {outcome}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reason(text: &str, editable: bool, min_chars: usize) -> Option<String> {
+        check_selection(text, editable, min_chars).map(|outcome| outcome.to_string())
+    }
+
+    #[test]
+    fn a_long_enough_editable_selection_with_a_letter_may_open() {
+        assert_eq!(reason("Rhyan sent the KPI report.", true, 12), None);
+    }
+
+    #[test]
+    fn each_rejected_selection_names_its_rule() {
+        assert_eq!(reason("Rhyan sent the KPI report.", false, 12).unwrap(), "skipped: the field isn't editable");
+        assert_eq!(reason("  Glenmoor  ", true, 12).unwrap(), "skipped: 8 characters, under the minimum of 12");
+        assert_eq!(reason("1234 5678 9012", true, 12).unwrap(), "skipped: the selection has no letter");
+    }
+
+    #[test]
+    fn a_rejection_never_includes_the_selected_text() {
+        let line = reason("Brynlee", true, 12).unwrap();
+        assert!(!line.contains("Brynlee"), "{line}");
     }
 }

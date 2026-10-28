@@ -365,7 +365,7 @@
       {/if}
 
       {#if showTips && keyboard && phase === "done" && list.length}
-        <p class="tips">Tip: <kbd>↩</kbd> {session.canApply ? "replaces your text with" : "copies"} everything you see · <kbd>tab</kbd> steps through changes · <kbd>␣</kbd> switches a change between yours and the suggestion · <kbd>esc</kbd> closes</p>
+        <p class="tips">Tip: <kbd>⌥↩</kbd> {session.canApply ? "replaces your text with" : "copies"} everything you see · <kbd>tab</kbd> steps through changes · <kbd>␣</kbd> switches a change between yours and the suggestion · <kbd>esc</kbd> closes</p>
       {/if}
       <footer>
         <div class="status" title={[summarize(view), source, timing].filter(Boolean).join(" · ")}>
@@ -383,15 +383,15 @@
           {#if phase === "done" && source}<span class="muted source">· {source.replace(" (backup)", "")}</span>{/if}
           {#if session.showTiming && timing}<span class="muted time">· {timing}</span>{/if}
         </div>
-        <!-- One replace key: ↩ in a panel that takes the keys, ⌥↩ in an automatic suggestion, where ↩
-             still goes to the app (⌥↩ works in both). Nothing to replace, nothing to show. -->
+        <!-- ⌥↩ works in every panel, so it is the one replace key shown; ↩ also works in a review
+             the user opened. Nothing to replace, nothing to show. -->
         <div class="keys">
           {#if keyboard}
             {#if list.length > 1}<span><kbd>tab</kbd> next</span>{/if}
             {#if focusedId != null}<span><kbd>␣</kbd> {rejected.has(focusedId) ? "restore" : "keep original"}</span>{/if}
             <span><kbd>/</kbd> instruct</span>
           {/if}
-          {#if !unchanged}<span><kbd>{keyboard ? "↩" : "⌥↩"}</kbd> {session.canApply ? "replace" : "copy fix"}</span>{/if}
+          {#if !unchanged}<span><kbd>⌥↩</kbd> {session.canApply ? "replace" : "copy fix"}</span>{/if}
           {#if keyboard}
             <span><kbd>esc</kbd></span>
           {:else}

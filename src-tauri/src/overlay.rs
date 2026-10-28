@@ -1,10 +1,17 @@
 //! The suggestion overlay window: a borderless, transparent, non-activating panel.
 //!
-//! On macOS it is an NSPanel that can take keyboard focus without activating SuperEditr, so the
-//! app being edited stays frontmost, keeps its selection, and gets focus back on dismiss.
+//! On macOS it is an NSPanel that doesn't activate SuperEditr, so the app being edited stays
+//! frontmost and keeps its selection. It doesn't take keyboard focus either: during a review the
+//! keyboard tap passes the panel its keys (`crate::review_keys`), and the app keeps its key window.
+//! The panel takes focus only while the user types an instruction, and then gives it back.
 
 use crate::platform::{self, Rect};
+use std::sync::atomic::{AtomicI32, Ordering};
 use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, WebviewWindow};
+
+/// The app to give keyboard focus back to when the user stops typing an instruction; 0 when the
+/// panel doesn't have focus.
+static TYPING_FOR: AtomicI32 = AtomicI32::new(0);
 
 /// The window, including transparent room around the card for its shadow (Overlay.svelte's `main`
 /// padding). The card itself is 496 points wide.
@@ -107,7 +114,10 @@ fn on_main(app: &AppHandle, f: impl FnOnce(&AppHandle) + Send + 'static) {
     f(app);
 }
 
-pub fn show(app: &AppHandle, take_focus: bool) {
+/// Shows the panel without taking keyboard focus. With `keys`, the panel gets the review keys
+/// (↩, esc, tab…) instead of the app. Where the keyboard tap can't run, it takes focus instead.
+pub fn show(app: &AppHandle, keys: bool) {
+    let take_focus = keys && !platform::take_review_keys(true);
     on_main(app, move |app| {
         #[cfg(target_os = "macos")]
         {
@@ -130,11 +140,54 @@ pub fn show(app: &AppHandle, take_focus: bool) {
     });
 }
 
-pub fn focus(app: &AppHandle) {
-    show(app, true);
+/// Gives the panel keyboard focus so the user can type an instruction. `pid` is the app under
+/// review, which gets focus back from `stop_typing`.
+pub fn start_typing(app: &AppHandle, pid: i32) {
+    TYPING_FOR.store(pid, Ordering::Relaxed);
+    platform::take_review_keys(false);
+    on_main(app, |app| {
+        #[cfg(target_os = "macos")]
+        {
+            use tauri_nspanel::ManagerExt;
+            if let Ok(panel) = app.get_webview_panel("overlay") {
+                panel.show_and_make_key();
+                return;
+            }
+        }
+        if let Some(window) = window(app) {
+            let _ = window.set_focus();
+        }
+    });
+}
+
+/// The user is done typing: the app under review gets keyboard focus back and the panel its keys.
+/// Nothing happens once the panel has closed.
+pub fn stop_typing(app: &AppHandle) {
+    if give_focus_back(app) {
+        platform::take_review_keys(true);
+    }
+}
+
+/// Returns whether the panel had focus for typing.
+fn give_focus_back(app: &AppHandle) -> bool {
+    let pid = TYPING_FOR.swap(0, Ordering::Relaxed);
+    if pid == 0 {
+        return false;
+    }
+    if pid == platform::own_pid() {
+        // A review of Settings' "Try it now" box.
+        if let Some(settings) = app.get_webview_window("settings") {
+            let _ = settings.set_focus();
+        }
+    } else {
+        platform::return_focus(pid);
+    }
+    true
 }
 
 pub fn hide(app: &AppHandle) {
+    platform::take_review_keys(false);
+    give_focus_back(app);
     on_main(app, |app| {
         #[cfg(target_os = "macos")]
         {

@@ -13,7 +13,8 @@
   let notice = $state("");
   let rejected = $state(new Set<number>());
   let focusedId = $state<number | null>(null);
-  let hasFocus = $state(true);
+  /** The panel takes the review keys: a review the user opened, or "use keyboard". */
+  let keyboard = $state(true);
   let steer = $state("");
   let steering = $state(false);
   /** A brief confirmation ("Copied"), shown in a row that slides out below the footer. */
@@ -61,8 +62,8 @@
     notice = "";
     rejected = new Set();
     focusedId = null;
-    hasFocus = !next.auto;
-    showTips = hasFocus && countTip();
+    keyboard = !next.auto;
+    showTips = keyboard && countTip();
     steer = "";
     steering = false;
     clearTimeout(flashTimer);
@@ -144,7 +145,27 @@
     notice = "";
   }
 
-  function onKeydown(e: KeyboardEvent) {
+  function useKeyboard() {
+    keyboard = true;
+    ipc.focus();
+  }
+
+  function startSteering() {
+    steering = true;
+    // The panel takes keyboard focus only for typing the instruction.
+    ipc.typing(true).then(tick).then(() => steerInput?.focus());
+  }
+
+  function stopSteering() {
+    steering = false;
+    steerInput?.blur();
+    ipc.typing(false);
+  }
+
+  /** A key typed into the panel, or one the keyboard tap took from the app (`forwarded`). */
+  type PanelKey = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey" | "preventDefault">;
+
+  function onKeydown(e: PanelKey, forwarded = false) {
     if (notice && !session) {
       if (e.key === "Escape" || e.key === "Enter") close();
       return;
@@ -154,14 +175,16 @@
     if (steering) {
       if (e.key === "Escape") {
         e.preventDefault();
-        steering = false;
         steer = "";
-        steerInput?.blur();
+        stopSteering();
       } else if (e.key === "Enter") {
         e.preventDefault();
-        steering = false;
-        steerInput?.blur();
+        stopSteering();
         runPreset(presetId, steer);
+      } else if (forwarded && !mod) {
+        // Typed after / but before the panel had focus.
+        if (e.key === "Backspace") steer = steer.slice(0, -1);
+        else if (e.key.length === 1) steer += e.key;
       }
       return;
     }
@@ -204,8 +227,7 @@
         break;
       case "/":
         e.preventDefault();
-        steering = true;
-        tick().then(() => steerInput?.focus());
+        startSteering();
         break;
       default:
         if (mod && e.key === "c") {
@@ -250,15 +272,14 @@
         notice = payload.message;
         reportHeight();
       },
-      focus: () => (hasFocus = true),
+      focus: () => (keyboard = true),
       command: (command) => {
         if (command === "apply") apply();
       },
+      key: (key) => onKeydown({ ...key, preventDefault: () => {} }, true),
     });
     const observer = new ResizeObserver(reportHeight);
     if (card) observer.observe(card);
-    window.addEventListener("focus", () => (hasFocus = true));
-    window.addEventListener("blur", () => (hasFocus = false));
     return () => {
       unlisten();
       observer.disconnect();
@@ -289,7 +310,7 @@
               title={`${preset.name} (${i + 1})`}
               onclick={() => runPreset(preset.id)}
             >
-              {preset.name}{#if hasFocus}<span class="num">{i + 1}</span>{/if}
+              {preset.name}{#if keyboard}<span class="num">{i + 1}</span>{/if}
             </button>
           {/each}
         </nav>
@@ -315,7 +336,7 @@
             {#if keptTerms.length}Kept your wording: {keptTerms.slice(0, 3).join(", ")}{keptTerms.length > 3 ? "…" : ""}{/if}
             {#if keptTerms.length && keepOffer}·{/if}
             {#if keepOffer}
-              <button class="link" onclick={() => alwaysKeep(keepOffer)}>Always keep “{keepOffer}”</button>{#if hasFocus}&nbsp;<kbd>A</kbd>{/if}
+              <button class="link" onclick={() => alwaysKeep(keepOffer)}>Always keep “{keepOffer}”</button>{#if keyboard}&nbsp;<kbd>A</kbd>{/if}
             {/if}
           </p>
         {/if}
@@ -343,7 +364,7 @@
         </div>
       {/if}
 
-      {#if showTips && hasFocus && phase === "done" && list.length}
+      {#if showTips && keyboard && phase === "done" && list.length}
         <p class="tips">Tip: <kbd>⌥↩</kbd> {session.canApply ? "replaces your text with" : "copies"} everything you see · <kbd>tab</kbd> steps through changes · <kbd>␣</kbd> switches a change between yours and the suggestion · <kbd>esc</kbd> closes</p>
       {/if}
       <footer>
@@ -362,19 +383,19 @@
           {#if phase === "done" && source}<span class="muted source">· {source.replace(" (backup)", "")}</span>{/if}
           {#if session.showTiming && timing}<span class="muted time">· {timing}</span>{/if}
         </div>
-        <!-- ⌥↩ works with or without focus, so it is the one replace key shown; ↩ also works with
-             focus. Nothing to replace, nothing to show. -->
+        <!-- ⌥↩ works in every panel, so it is the one replace key shown; ↩ also works in a review
+             the user opened. Nothing to replace, nothing to show. -->
         <div class="keys">
-          {#if hasFocus}
+          {#if keyboard}
             {#if list.length > 1}<span><kbd>tab</kbd> next</span>{/if}
             {#if focusedId != null}<span><kbd>␣</kbd> {rejected.has(focusedId) ? "restore" : "keep original"}</span>{/if}
             <span><kbd>/</kbd> instruct</span>
           {/if}
           {#if !unchanged}<span><kbd>⌥↩</kbd> {session.canApply ? "replace" : "copy fix"}</span>{/if}
-          {#if hasFocus}
+          {#if keyboard}
             <span><kbd>esc</kbd></span>
           {:else}
-            <button class="link" onclick={() => ipc.focus()}>use keyboard</button>
+            <button class="link" onclick={useKeyboard}>use keyboard</button>
           {/if}
         </div>
       </footer>

@@ -68,17 +68,24 @@ fn run(app: &AppHandle, action: Action) {
     }
 }
 
-/// Starts the double-press watcher. Its callback runs on the tap's thread, so actions are sent to
-/// the main thread like the system hotkey handler's.
+/// Starts the double-press watcher, which also passes the review panel its keys (see
+/// `review_keys`). Its callbacks run on the tap's thread, so actions are sent to the main thread
+/// like the system hotkey handler's.
 pub fn start_double_presses(app: &AppHandle) {
+    let keys = app.clone();
     let app = app.clone();
-    platform::start_double_press_tap(move |index| {
-        let action = app.state::<Registry>().double_actions.lock().unwrap().get(index).cloned();
-        if let Some(action) = action {
-            let handle = app.clone();
-            let _ = app.run_on_main_thread(move || run(&handle, action));
-        }
-    });
+    platform::start_double_press_tap(
+        move |index| {
+            let action = app.state::<Registry>().double_actions.lock().unwrap().get(index).cloned();
+            if let Some(action) = action {
+                let handle = app.clone();
+                let _ = app.run_on_main_thread(move || run(&handle, action));
+            }
+        },
+        move |key| {
+            let _ = keys.emit_to("overlay", "overlay:key", key);
+        },
+    );
 }
 
 /// SuperEditr's shortcuts other than `slot` ("review", "quick_fix", or "preset:<id>"), with what

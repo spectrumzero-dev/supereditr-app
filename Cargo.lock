@@ -6664,6 +6664,7 @@ dependencies = [
  "core-foundation 0.10.1",
  "core-graphics 0.25.0",
  "drag",
+ "foreign-types",
  "keyring",
  "objc2",
  "objc2-app-kit",

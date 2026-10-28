@@ -478,9 +478,13 @@ let keepPanel = waitFor(5) { overlay() }
 check(keepPanel != nil, "⌘E E reviews the named draft", "no overlay within 5 s")
 if keepPanel != nil {
     pump(1.5)  // the rule-based checker's result
-    // The footer's "replace", not the tip line's "replaces".
-    let footer = panelText()
-    check(footer.range(of: #"\breplace\b"#, options: .regularExpression) != nil, "the footer shows ⌥↩ replace", "panel text: \(footer)")
+    // The footer's "replace", not the tip line's "replaces". The web view's text can take a moment
+    // to reach Accessibility.
+    let footer = waitFor(3) { () -> String? in
+        let text = panelText()
+        return text.range(of: #"\breplace\b"#, options: .regularExpression) != nil ? text : nil
+    }
+    check(footer != nil, "the footer shows ⌥↩ replace", "panel text: \(panelText())")
     press(keyTab)
     pump(0.3)
     press(keySpace)
@@ -513,8 +517,11 @@ check(cleanPanel != nil, "⌘E E reviews the clean draft", "no overlay within 5 
 if cleanPanel != nil {
     pump(1.5)  // the rule-based checker's result
     screenshot(window: overlay(), to: outDir + "/no-changes.png")
-    let footer = panelText()
-    check(footer.contains("No changes") && !footer.contains("⌥↩"), "no changes hides the replace key", "panel text: \(footer)")
+    let footer = waitFor(3) { () -> String? in
+        let text = panelText()
+        return text.contains("No changes") ? text : nil
+    }
+    check(footer.map { !$0.contains("⌥↩") } ?? false, "no changes hides the replace key", "panel text: \(footer ?? panelText())")
     press(keyEscape)
 }
 quitOpened("com.apple.TextEdit")

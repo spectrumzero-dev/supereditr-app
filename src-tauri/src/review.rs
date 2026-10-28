@@ -1,8 +1,9 @@
 //! One review, from capture to replacement.
 //!
-//! Manual reviews start from the review hotkey and take keyboard focus immediately. Automatic
-//! reviews start when the selection watcher sees a new selection in an editable field; their
-//! overlay appears without stealing focus and any typing or clicking elsewhere dismisses it.
+//! Manual reviews start from the review hotkey and take the keyboard at once: the panel gets its
+//! keys from the keyboard tap while the app keeps focus (see `review_keys`). Automatic reviews
+//! start when the selection watcher sees a new selection in an editable field; their overlay
+//! leaves the keys alone and any typing or clicking elsewhere dismisses it.
 
 use crate::overlay;
 use crate::platform::{self, Capture, PlatformError, WatchEvent};
@@ -118,14 +119,15 @@ fn warm_connection(app: &AppHandle) {
     tauri::async_runtime::spawn(async move { providers.warm(&profile).await });
 }
 
-/// Review hotkey: focus an automatic overlay that's already showing, or start a new review.
+/// Review hotkey: give the keys to an automatic overlay that's already showing, or start a new
+/// review.
 pub fn on_review_hotkey(app: &AppHandle) {
     {
         let state = state(app);
         let mut session = state.session.lock().unwrap();
-        if let Some(current) = session.as_mut().filter(|s| !s.key_window) {
-            current.key_window = true;
-            overlay::focus(app);
+        if let Some(current) = session.as_mut().filter(|s| !s.keyboard) {
+            current.keyboard = true;
+            overlay::show(app, true);
             let _ = app.emit_to("overlay", "overlay:focus", current.id);
             return;
         }
@@ -212,8 +214,7 @@ fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<Strin
             old.cancel();
         }
         state.notice_visible.store(false, Ordering::Relaxed);
-        *session =
-            Some(Session { id, capture: captured, key_window: !auto, anchor, height: INITIAL_HEIGHT, task: None });
+        *session = Some(Session { id, capture: captured, keyboard: !auto, anchor, height: INITIAL_HEIGHT, task: None });
     }
     let _ = app.emit_to("overlay", "overlay:session", payload);
     overlay::position(app, anchor, INITIAL_HEIGHT);
@@ -266,7 +267,6 @@ pub async fn apply(app: &AppHandle, id: u64, text: String) -> Result<String, Str
         current.cancel();
         current.capture.clone()
     };
-    // Return keyboard focus to the source app before writing into it.
     overlay::hide(app);
     crate::hotkeys::set_overlay_shortcuts(app, false);
     if captured.playground {
@@ -316,6 +316,18 @@ pub fn dismiss(app: &AppHandle, id: Option<u64>) {
     state.notice_visible.store(false, Ordering::Relaxed);
     overlay::hide(app);
     crate::hotkeys::set_overlay_shortcuts(app, false);
+}
+
+/// The user starts (`true`) or stops typing an instruction in the panel, which takes keyboard focus
+/// meanwhile.
+pub fn typing(app: &AppHandle, typing: bool) {
+    if !typing {
+        return overlay::stop_typing(app);
+    }
+    let pid = state(app).session.lock().unwrap().as_ref().map(|s| s.capture.pid);
+    if let Some(pid) = pid {
+        overlay::start_typing(app, pid);
+    }
 }
 
 pub fn resize(app: &AppHandle, height: f64) {
@@ -420,8 +432,8 @@ pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
         WatchEvent::Interaction => {
             // A review about to start is for a selection the user is changing.
             state.watch_generation.fetch_add(1, Ordering::Relaxed);
-            // Events from other apps only: while the panel has focus, keys go to it, so any typing
-            // or clicking seen here means the user has moved on.
+            // Keys the panel takes never reach other apps, so any typing or clicking seen here
+            // means the user has moved on.
             let showing = state.session.lock().unwrap().is_some() || state.notice_visible.load(Ordering::Relaxed);
             if showing && Instant::now() >= *state.quiet_until.lock().unwrap() {
                 dismiss(app, None);
@@ -438,7 +450,7 @@ pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
             {
                 return;
             }
-            if state.session.lock().unwrap().as_ref().is_some_and(|s| s.key_window) {
+            if state.session.lock().unwrap().as_ref().is_some_and(|s| s.keyboard) {
                 return;
             }
             let generation = state.watch_generation.fetch_add(1, Ordering::Relaxed) + 1;

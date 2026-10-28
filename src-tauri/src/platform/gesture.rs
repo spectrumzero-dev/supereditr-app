@@ -6,7 +6,7 @@
 //! Shift is held: they finish when Shift comes up. If Shift stays down with nothing changing, the
 //! selection counts as finished after [`HELD`].
 
-use super::WatchEvent;
+use super::{SelectionGesture, WatchEvent};
 use std::time::Duration;
 
 /// After a mouse selection or ⌘A: time for the app to settle its selection (and for a double-click
@@ -26,15 +26,16 @@ pub enum Input {
         clicks: isize,
         shift: bool,
     },
-    /// `navigation`: an arrow, Home/End, or Page Up/Down key.
+    /// `navigation`: an arrow, Home/End, or Page Up/Down key. `select_all`: ⌘A, first press only
+    /// (not a key repeat). It counts on the way down, since people often let go of ⌘ before A.
     KeyDown {
         navigation: bool,
         shift: bool,
+        select_all: bool,
     },
     KeyUp {
         navigation: bool,
         shift: bool,
-        select_all: bool,
     },
     /// A modifier key went down or up; `shift` is whether Shift is now held.
     ModifiersChanged {
@@ -71,7 +72,11 @@ impl Gesture {
                 self.adjusting = false;
                 Some(WatchEvent::Wait)
             }
-            Input::KeyDown { navigation: true, shift: true } => {
+            Input::KeyDown { select_all: true, .. } => {
+                self.adjusting = false;
+                Some(WatchEvent::MaybeSelection { settle: AFTER_MOUSE, gesture: SelectionGesture::SelectAll })
+            }
+            Input::KeyDown { navigation: true, shift: true, .. } => {
                 self.adjusting = true;
                 Some(WatchEvent::Interaction)
             }
@@ -83,15 +88,15 @@ impl Gesture {
             }
             Input::MouseUp { shift: true, .. } | Input::KeyUp { navigation: true, shift: true, .. } => {
                 self.adjusting = true;
-                Some(WatchEvent::MaybeSelection { settle: HELD })
+                Some(WatchEvent::MaybeSelection { settle: HELD, gesture: SelectionGesture::Shift })
             }
             Input::MouseUp { dragged, clicks, .. } if dragged || clicks >= 2 => {
-                Some(WatchEvent::MaybeSelection { settle: AFTER_MOUSE })
+                let gesture = if dragged { SelectionGesture::Drag } else { SelectionGesture::DoubleClick };
+                Some(WatchEvent::MaybeSelection { settle: AFTER_MOUSE, gesture })
             }
-            Input::KeyUp { select_all: true, .. } => Some(WatchEvent::MaybeSelection { settle: AFTER_MOUSE }),
             Input::ModifiersChanged { shift: false } if self.adjusting => {
                 self.adjusting = false;
-                Some(WatchEvent::MaybeSelection { settle: AFTER_RELEASE })
+                Some(WatchEvent::MaybeSelection { settle: AFTER_RELEASE, gesture: SelectionGesture::Shift })
             }
             // Shift going down again may continue a selection: hold off a review about to start.
             Input::ModifiersChanged { shift: true } => Some(WatchEvent::Wait),
@@ -111,9 +116,9 @@ mod tests {
 
     const SHIFT_DOWN: Input = Input::ModifiersChanged { shift: true };
     const SHIFT_UP: Input = Input::ModifiersChanged { shift: false };
-    const SHIFT_ARROW_DOWN: Input = Input::KeyDown { navigation: true, shift: true };
-    const SHIFT_ARROW_UP: Input = Input::KeyUp { navigation: true, shift: true, select_all: false };
-    const KEY_DOWN: Input = Input::KeyDown { navigation: false, shift: false };
+    const SHIFT_ARROW_DOWN: Input = Input::KeyDown { navigation: true, shift: true, select_all: false };
+    const SHIFT_ARROW_UP: Input = Input::KeyUp { navigation: true, shift: true };
+    const KEY_DOWN: Input = Input::KeyDown { navigation: false, shift: false, select_all: false };
 
     #[test]
     fn a_shift_arrow_selection_finishes_when_shift_comes_up() {
@@ -129,19 +134,29 @@ mod tests {
         ]);
         let quick: Vec<_> = events
             .iter()
-            .filter(|e| matches!(e, Some(WatchEvent::MaybeSelection { settle }) if *settle < HELD))
+            .filter(|e| matches!(e, Some(WatchEvent::MaybeSelection { settle, .. }) if *settle < HELD))
             .collect();
-        assert_eq!(quick, [&Some(WatchEvent::MaybeSelection { settle: AFTER_RELEASE })], "{events:?}");
-        assert_eq!(events.last(), Some(&Some(WatchEvent::MaybeSelection { settle: AFTER_RELEASE })));
+        assert_eq!(
+            quick,
+            [&Some(WatchEvent::MaybeSelection { settle: AFTER_RELEASE, gesture: SelectionGesture::Shift })],
+            "{events:?}"
+        );
+        assert_eq!(
+            events.last(),
+            Some(&Some(WatchEvent::MaybeSelection { settle: AFTER_RELEASE, gesture: SelectionGesture::Shift }))
+        );
         // Each step only arms the fallback for a Shift held without change.
-        assert_eq!(events[2], Some(WatchEvent::MaybeSelection { settle: HELD }));
+        assert_eq!(events[2], Some(WatchEvent::MaybeSelection { settle: HELD, gesture: SelectionGesture::Shift }));
     }
 
     #[test]
     fn releasing_the_arrow_after_shift_still_finishes_on_shift() {
-        let arrow_up = Input::KeyUp { navigation: true, shift: false, select_all: false };
+        let arrow_up = Input::KeyUp { navigation: true, shift: false };
         let events = run(&[SHIFT_DOWN, SHIFT_ARROW_DOWN, SHIFT_UP, arrow_up]);
-        assert_eq!(events[2], Some(WatchEvent::MaybeSelection { settle: AFTER_RELEASE }));
+        assert_eq!(
+            events[2],
+            Some(WatchEvent::MaybeSelection { settle: AFTER_RELEASE, gesture: SelectionGesture::Shift })
+        );
         assert_eq!(events[3], None);
     }
 
@@ -149,26 +164,43 @@ mod tests {
     fn a_shift_click_waits_for_shift() {
         let click = Input::MouseUp { dragged: false, clicks: 1, shift: true };
         let events = run(&[SHIFT_DOWN, Input::MouseDown, click, SHIFT_UP]);
-        assert_eq!(events[2], Some(WatchEvent::MaybeSelection { settle: HELD }));
-        assert_eq!(events[3], Some(WatchEvent::MaybeSelection { settle: AFTER_RELEASE }));
+        assert_eq!(events[2], Some(WatchEvent::MaybeSelection { settle: HELD, gesture: SelectionGesture::Shift }));
+        assert_eq!(
+            events[3],
+            Some(WatchEvent::MaybeSelection { settle: AFTER_RELEASE, gesture: SelectionGesture::Shift })
+        );
     }
 
     #[test]
     fn mouse_selections_and_select_all_are_finished_at_once() {
         let drag = Input::MouseUp { dragged: true, clicks: 1, shift: false };
         let double = Input::MouseUp { dragged: false, clicks: 2, shift: false };
-        let select_all = Input::KeyUp { navigation: false, shift: false, select_all: true };
-        for input in [drag, double, select_all] {
-            assert_eq!(run(&[input]), [Some(WatchEvent::MaybeSelection { settle: AFTER_MOUSE })], "{input:?}");
+        let select_all = Input::KeyDown { navigation: false, shift: false, select_all: true };
+        for (input, gesture) in [
+            (drag, SelectionGesture::Drag),
+            (double, SelectionGesture::DoubleClick),
+            (select_all, SelectionGesture::SelectAll),
+        ] {
+            assert_eq!(run(&[input]), [Some(WatchEvent::MaybeSelection { settle: AFTER_MOUSE, gesture })], "{input:?}");
         }
         assert_eq!(run(&[Input::MouseUp { dragged: false, clicks: 1, shift: false }]), [None]);
     }
 
     #[test]
+    fn select_all_counts_once_whether_command_or_a_comes_up_first() {
+        let command_a = Input::KeyDown { navigation: false, shift: false, select_all: true };
+        let a_up = Input::KeyUp { navigation: false, shift: false };
+        let command_up = Input::ModifiersChanged { shift: false };
+        let selection = Some(WatchEvent::MaybeSelection { settle: AFTER_MOUSE, gesture: SelectionGesture::SelectAll });
+        assert_eq!(run(&[command_a, a_up, command_up]), [selection, None, None]);
+        assert_eq!(run(&[command_a, command_up, a_up]), [selection, None, None]);
+    }
+
+    #[test]
     fn typing_capitals_with_shift_is_not_a_selection() {
-        let capital = Input::KeyUp { navigation: false, shift: true, select_all: false };
+        let capital = Input::KeyUp { navigation: false, shift: true };
         assert_eq!(
-            run(&[SHIFT_DOWN, Input::KeyDown { navigation: false, shift: true }, capital, SHIFT_UP]),
+            run(&[SHIFT_DOWN, Input::KeyDown { navigation: false, shift: true, select_all: false }, capital, SHIFT_UP]),
             [Some(WatchEvent::Wait), Some(WatchEvent::Interaction), None, None]
         );
     }
@@ -176,15 +208,18 @@ mod tests {
     #[test]
     fn pressing_shift_again_holds_off_a_pending_review() {
         let events = run(&[SHIFT_DOWN, SHIFT_ARROW_DOWN, SHIFT_ARROW_UP, SHIFT_UP, SHIFT_DOWN, KEY_DOWN]);
-        assert_eq!(events[3], Some(WatchEvent::MaybeSelection { settle: AFTER_RELEASE }));
+        assert_eq!(
+            events[3],
+            Some(WatchEvent::MaybeSelection { settle: AFTER_RELEASE, gesture: SelectionGesture::Shift })
+        );
         assert_eq!(events[4], Some(WatchEvent::Wait));
         assert_eq!(events[5], Some(WatchEvent::Interaction));
     }
 
     #[test]
     fn plain_arrows_are_not_a_selection() {
-        let arrow_down = Input::KeyDown { navigation: true, shift: false };
-        let arrow_up = Input::KeyUp { navigation: true, shift: false, select_all: false };
+        let arrow_down = Input::KeyDown { navigation: true, shift: false, select_all: false };
+        let arrow_up = Input::KeyUp { navigation: true, shift: false };
         assert_eq!(run(&[arrow_down, arrow_up]), [Some(WatchEvent::Interaction), None]);
     }
 
@@ -194,7 +229,10 @@ mod tests {
         let events = run(&[SHIFT_DOWN, SHIFT_ARROW_DOWN, SHIFT_ARROW_UP, option_up, SHIFT_UP]);
         // Releasing ⌥ leaves the held-Shift fallback in place: no Wait cancels it.
         assert_eq!(events[3], None);
-        assert_eq!(events[4], Some(WatchEvent::MaybeSelection { settle: AFTER_RELEASE }));
+        assert_eq!(
+            events[4],
+            Some(WatchEvent::MaybeSelection { settle: AFTER_RELEASE, gesture: SelectionGesture::Shift })
+        );
     }
 
     #[test]
@@ -206,7 +244,7 @@ mod tests {
 
     #[test]
     fn another_key_or_scroll_ends_the_selection() {
-        let shift_tab = Input::KeyDown { navigation: false, shift: true };
+        let shift_tab = Input::KeyDown { navigation: false, shift: true, select_all: false };
         for interruption in [shift_tab, Input::Scroll, Input::MouseDown] {
             let events = run(&[SHIFT_DOWN, SHIFT_ARROW_DOWN, SHIFT_ARROW_UP, interruption, SHIFT_UP]);
             assert_eq!(events[3], Some(WatchEvent::Interaction), "{interruption:?}");
@@ -214,14 +252,20 @@ mod tests {
         }
         // A new Shift step after the interruption starts a new selection.
         let events = run(&[SHIFT_DOWN, SHIFT_ARROW_DOWN, Input::Scroll, SHIFT_ARROW_DOWN, SHIFT_ARROW_UP, SHIFT_UP]);
-        assert_eq!(events[5], Some(WatchEvent::MaybeSelection { settle: AFTER_RELEASE }));
+        assert_eq!(
+            events[5],
+            Some(WatchEvent::MaybeSelection { settle: AFTER_RELEASE, gesture: SelectionGesture::Shift })
+        );
     }
 
     /// Key repeat while an arrow is held sends key-downs only; a lone key-up still counts.
     #[test]
     fn a_step_seen_only_at_key_up_still_counts() {
         let events = run(&[SHIFT_DOWN, SHIFT_ARROW_UP, SHIFT_UP, SHIFT_DOWN]);
-        assert_eq!(events[2], Some(WatchEvent::MaybeSelection { settle: AFTER_RELEASE }));
+        assert_eq!(
+            events[2],
+            Some(WatchEvent::MaybeSelection { settle: AFTER_RELEASE, gesture: SelectionGesture::Shift })
+        );
         assert_eq!(events[3], Some(WatchEvent::Wait));
     }
 }

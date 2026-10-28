@@ -6,7 +6,7 @@
 //! leaves the keys alone and any typing or clicking elsewhere dismisses it.
 
 use crate::overlay;
-use crate::platform::{self, Capture, PlatformError, WatchEvent};
+use crate::platform::{self, Capture, PlatformError, SelectionGesture, WatchEvent};
 use crate::state::{AppState, Session};
 use serde::Serialize;
 use std::sync::atomic::Ordering;
@@ -149,7 +149,9 @@ pub async fn start_manual(app: &AppHandle, preset_id: Option<String>) {
     }
     warm_connection(app);
     match capture(app, true).await {
-        Ok(captured) => begin(app, captured, false, preset_id),
+        Ok(captured) => {
+            let _ = begin(app, captured, false, preset_id);
+        }
         Err(error) => show_error(app, error.to_string()),
     }
 }
@@ -167,24 +169,25 @@ fn show_error(app: &AppHandle, message: String) {
     overlay::show(app, true);
 }
 
-fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<String>) {
+/// Opens the panel for a selection. Returns why it didn't, for an automatic suggestion's log line.
+fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<String>) -> Result<(), AutoOutcome> {
     let state = state(app);
     let config = state.config();
     if captured.pid == platform::own_pid() && !captured.playground {
-        return;
+        return Err(AutoOutcome::OwnWindow);
     }
     // Never open an empty review: say what to do instead (only when asked, by shortcut).
     if captured.text.trim().is_empty() {
         if !auto {
             show_error(app, PlatformError::NoSelection.to_string());
         }
-        return;
+        return Err(AutoOutcome::ReadFailed(PlatformError::NoSelection));
     }
     if config.is_excluded(&captured.bundle_id) {
         if !auto {
             show_error(app, excluded_message(&captured.app_name));
         }
-        return;
+        return Err(AutoOutcome::Excluded);
     }
     // A selection holding a secret never opens a review. The engine refuses it too; stopping here
     // keeps the panel from showing the secret, and keeps automatic suggestions silent.
@@ -192,7 +195,7 @@ fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<Strin
         if !auto {
             show_error(app, found.message());
         }
-        return;
+        return Err(AutoOutcome::Secret);
     }
     let preset_id = preset_id.unwrap_or_else(|| config.default_preset().id.clone());
     let id = state.next_session_id();
@@ -221,6 +224,7 @@ fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<Strin
     overlay::show(app, !auto);
     crate::hotkeys::set_overlay_shortcuts(app, true);
     run(app, id, preset_id, None);
+    Ok(())
 }
 
 /// Starts (or restarts) the model run for a session with a preset and optional steering.
@@ -300,7 +304,7 @@ pub async fn apply(app: &AppHandle, id: u64, text: String) -> Result<String, Str
 /// Settings' "Try it now" box asked for a review (⌘E E, or its Review button), as if its text were
 /// selected in another app.
 pub fn review_playground(app: &AppHandle, text: String, bounds: platform::Rect) {
-    begin(app, platform::playground_capture(text, bounds), false, None);
+    let _ = begin(app, platform::playground_capture(text, bounds), false, None);
 }
 
 pub fn dismiss(app: &AppHandle, id: Option<u64>) {
@@ -442,16 +446,19 @@ pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
         WatchEvent::Wait => {
             state.watch_generation.fetch_add(1, Ordering::Relaxed);
         }
-        WatchEvent::MaybeSelection { settle } => {
+        WatchEvent::MaybeSelection { settle, gesture } => {
             let config = state.config();
-            if !config.auto_popup
-                || state.paused.load(Ordering::Relaxed)
-                || Instant::now() < *state.quiet_until.lock().unwrap()
-            {
-                return;
+            if !config.auto_popup {
+                return trace_auto(gesture, None, &AutoOutcome::TurnedOff);
+            }
+            if state.paused.load(Ordering::Relaxed) {
+                return trace_auto(gesture, None, &AutoOutcome::Paused);
+            }
+            if Instant::now() < *state.quiet_until.lock().unwrap() {
+                return trace_auto(gesture, None, &AutoOutcome::JustApplied);
             }
             if state.session.lock().unwrap().as_ref().is_some_and(|s| s.keyboard) {
-                return;
+                return trace_auto(gesture, None, &AutoOutcome::ReviewOpen);
             }
             let generation = state.watch_generation.fetch_add(1, Ordering::Relaxed) + 1;
             let app = app.clone();
@@ -461,22 +468,155 @@ pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
                 tokio::time::sleep(settle).await;
                 let state = app.state::<AppState>();
                 if state.watch_generation.load(Ordering::Relaxed) != generation {
-                    return;
+                    return trace_auto(gesture, None, &AutoOutcome::Superseded);
                 }
-                if !matches!(check_target(&app), Target::Allowed) {
-                    return;
+                match check_target(&app) {
+                    Target::Allowed => {}
+                    Target::Ignored => return trace_auto(gesture, None, &AutoOutcome::OwnWindow),
+                    Target::Excluded(_) => return trace_auto(gesture, None, &AutoOutcome::Excluded),
+                    Target::NotTrusted => return trace_auto(gesture, None, &AutoOutcome::NotTrusted),
                 }
-                let Ok(captured) = capture(&app, false).await else { return };
-                let min = state.config().auto_min_chars;
-                let trimmed = captured.text.trim();
-                if !captured.editable || trimmed.chars().count() < min || !trimmed.chars().any(char::is_alphabetic) {
-                    return;
+                let mut captured = capture(&app, false).await;
+                // After ⌘A, some apps (Electron ones especially) take a moment to report the new
+                // selection through Accessibility. Try again briefly; never fall back to ⌘C.
+                if gesture == SelectionGesture::SelectAll {
+                    for attempt in 1..=SELECT_ALL_RETRIES {
+                        let Err(PlatformError::NoSelection) = captured else { break };
+                        trace_auto(gesture, None, &AutoOutcome::Retrying { attempt, of: SELECT_ALL_RETRIES });
+                        tokio::time::sleep(SELECT_ALL_RETRY_DELAY).await;
+                        if state.watch_generation.load(Ordering::Relaxed) != generation {
+                            return trace_auto(gesture, None, &AutoOutcome::Superseded);
+                        }
+                        captured = capture(&app, false).await;
+                    }
                 }
-                let same = state.session.lock().unwrap().as_ref().is_some_and(|s| s.capture.text == captured.text);
-                if !same && state.watch_generation.load(Ordering::Relaxed) == generation {
-                    begin(&app, captured, true, None);
+                let captured = match captured {
+                    Ok(captured) => captured,
+                    Err(error) => return trace_auto(gesture, None, &AutoOutcome::ReadFailed(error)),
+                };
+                let app_id = Some(captured.bundle_id.as_str());
+                let min_chars = state.config().auto_min_chars;
+                if let Some(outcome) = check_selection(&captured.text, captured.editable, min_chars) {
+                    return trace_auto(gesture, app_id, &outcome);
                 }
+                if state.session.lock().unwrap().as_ref().is_some_and(|s| s.capture.text == captured.text) {
+                    return trace_auto(gesture, app_id, &AutoOutcome::AlreadyShowing);
+                }
+                if state.watch_generation.load(Ordering::Relaxed) != generation {
+                    return trace_auto(gesture, app_id, &AutoOutcome::Superseded);
+                }
+                let bundle_id = captured.bundle_id.clone();
+                let outcome = match begin(&app, captured, true, None) {
+                    Ok(()) => AutoOutcome::Shown,
+                    Err(refused) => refused,
+                };
+                trace_auto(gesture, Some(bundle_id.as_str()), &outcome);
             });
         }
+    }
+}
+
+/// After ⌘A, how many more times an automatic suggestion reads a selection that isn't there yet,
+/// and how long it waits before each: about 300 ms in all.
+const SELECT_ALL_RETRIES: u32 = 3;
+const SELECT_ALL_RETRY_DELAY: Duration = Duration::from_millis(100);
+
+/// What became of one automatic suggestion attempt, for capture.log. Never holds selected text.
+#[derive(Debug)]
+enum AutoOutcome {
+    Shown,
+    TurnedOff,
+    Paused,
+    JustApplied,
+    ReviewOpen,
+    Superseded,
+    OwnWindow,
+    Excluded,
+    NotTrusted,
+    ReadFailed(PlatformError),
+    Retrying {
+        attempt: u32,
+        of: u32,
+    },
+    NotEditable,
+    TooShort {
+        chars: usize,
+        min: usize,
+    },
+    NoLetter,
+    AlreadyShowing,
+    /// The selection holds something that looks like a secret (`sensitive::find`).
+    Secret,
+}
+
+impl std::fmt::Display for AutoOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Shown => write!(f, "shown"),
+            Self::TurnedOff => write!(f, "skipped: automatic suggestions are turned off"),
+            Self::Paused => write!(f, "skipped: automatic suggestions are paused"),
+            Self::JustApplied => write!(f, "skipped: a fix was just applied"),
+            Self::ReviewOpen => write!(f, "skipped: a review opened with the shortcut is showing"),
+            Self::Superseded => write!(f, "skipped: a newer selection or keystroke replaced this one"),
+            Self::OwnWindow => write!(f, "skipped: SuperEditr's own window is in front"),
+            Self::Excluded => write!(f, "skipped: the app is excluded in Settings"),
+            Self::NotTrusted => write!(f, "skipped: Accessibility permission isn't granted"),
+            Self::ReadFailed(error) => write!(f, "skipped: the selection couldn't be read ({error})"),
+            Self::Retrying { attempt, of } => write!(f, "no selection yet, reading again ({attempt} of {of})"),
+            Self::NotEditable => write!(f, "skipped: the field isn't editable"),
+            Self::TooShort { chars, min } => write!(f, "skipped: {chars} characters, under the minimum of {min}"),
+            Self::NoLetter => write!(f, "skipped: the selection has no letter"),
+            Self::AlreadyShowing => write!(f, "skipped: the same text is already showing"),
+            Self::Secret => write!(f, "skipped: the selection looks like it holds a secret"),
+        }
+    }
+}
+
+/// Applies the rules an automatic suggestion's selection must pass; `None` when it may open.
+fn check_selection(text: &str, editable: bool, min_chars: usize) -> Option<AutoOutcome> {
+    let trimmed = text.trim();
+    let chars = trimmed.chars().count();
+    if !editable {
+        Some(AutoOutcome::NotEditable)
+    } else if chars < min_chars {
+        Some(AutoOutcome::TooShort { chars, min: min_chars })
+    } else if !trimmed.chars().any(char::is_alphabetic) {
+        Some(AutoOutcome::NoLetter)
+    } else {
+        None
+    }
+}
+
+fn trace_auto(gesture: SelectionGesture, app_id: Option<&str>, outcome: &AutoOutcome) {
+    match app_id {
+        Some(app_id) => platform::trace(format_args!("automatic {app_id}: after {gesture}, {outcome}")),
+        None => platform::trace(format_args!("automatic: after {gesture}, {outcome}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reason(text: &str, editable: bool, min_chars: usize) -> Option<String> {
+        check_selection(text, editable, min_chars).map(|outcome| outcome.to_string())
+    }
+
+    #[test]
+    fn a_long_enough_editable_selection_with_a_letter_may_open() {
+        assert_eq!(reason("Rhyan sent the KPI report.", true, 12), None);
+    }
+
+    #[test]
+    fn each_rejected_selection_names_its_rule() {
+        assert_eq!(reason("Rhyan sent the KPI report.", false, 12).unwrap(), "skipped: the field isn't editable");
+        assert_eq!(reason("  Glenmoor  ", true, 12).unwrap(), "skipped: 8 characters, under the minimum of 12");
+        assert_eq!(reason("1234 5678 9012", true, 12).unwrap(), "skipped: the selection has no letter");
+    }
+
+    #[test]
+    fn a_rejection_never_includes_the_selected_text() {
+        let line = reason("Brynlee", true, 12).unwrap();
+        assert!(!line.contains("Brynlee"), "{line}");
     }
 }

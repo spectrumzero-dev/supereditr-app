@@ -35,7 +35,7 @@ func skipEnvironment(_ reason: String) -> Never {
 
 let replayMark: Int64 = 0x5345_4454  // SuperEditr's marker on keys it replays ("SEDT")
 let keyE: CGKeyCode = 14, keyA: CGKeyCode = 0, keyEscape: CGKeyCode = 53, keyTab: CGKeyCode = 48, keySpace: CGKeyCode = 49
-let keyShift: CGKeyCode = 56, keyRight: CGKeyCode = 124, keyUp: CGKeyCode = 126, keyReturn: CGKeyCode = 36, keyV: CGKeyCode = 9
+let keyShift: CGKeyCode = 56, keyCommand: CGKeyCode = 55, keyRight: CGKeyCode = 124, keyUp: CGKeyCode = 126, keyReturn: CGKeyCode = 36, keyV: CGKeyCode = 9
 
 /// Holds Shift down (true) or lets it go (false), as a separate key, the way a person does.
 func shift(_ down: Bool) {
@@ -43,6 +43,18 @@ func shift(_ down: Bool) {
     event.flags = down ? .maskShift : []
     event.post(tap: .cghidEventTap)
     usleep(25_000)
+}
+
+/// ⌘A the way people often type it: ⌘ comes up before A does.
+func selectAllReleasingCommandFirst() {
+    let steps: [(CGKeyCode, Bool, CGEventFlags)] =
+        [(keyCommand, true, .maskCommand), (keyA, true, .maskCommand), (keyCommand, false, []), (keyA, false, [])]
+    for (code, down, flags) in steps {
+        guard let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down) else { continue }
+        event.flags = flags
+        event.post(tap: .cghidEventTap)
+        usleep(25_000)
+    }
 }
 
 func press(_ code: CGKeyCode, _ flags: CGEventFlags = []) {
@@ -430,6 +442,15 @@ let settled = waitFor(5) { overlay() }
 check(settled != nil, "one suggestion once Shift comes up", "no overlay within 5 s")
 press(keyEscape)
 check(waitFor(3) { overlay() == nil ? true : nil } != nil, "Escape dismisses it", "overlay still showing")
+
+// 1c. ⌘A counts as a selection even when ⌘ comes up before A.
+press(keyUp, .maskCommand)  // nothing selected
+pump(0.5)
+selectAllReleasingCommandFirst()
+let commandFirst = waitFor(5) { overlay() }
+check(commandFirst != nil, "a suggestion after ⌘A with ⌘ let go first", "no overlay within 5 s")
+press(keyEscape)
+check(waitFor(3) { overlay() == nil ? true : nil } != nil, "Escape dismisses that one too", "overlay still showing")
 
 // 2. A single ⌘E still reaches the app, replayed after the double-press window.
 pump(0.5)

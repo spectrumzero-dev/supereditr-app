@@ -20,6 +20,7 @@ let demoConfig: Config = {
   hotkeys: { review: "Command+E Command+E", quick_fix: "Control+Alt+Shift+E" },
   auto_popup: true,
   auto_min_chars: 12,
+  select_sentence: true,
   words: ["Rhyan", "1234 Glenmoor Ct"],
   excluded_apps: ["com.1password.1password", "com.apple.Terminal"],
   offered_exclusions: ["com.1password.1password", "com.apple.Terminal"],

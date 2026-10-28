@@ -69,7 +69,7 @@ pub fn own_pid() -> i32 {
     std::process::id() as i32
 }
 
-pub fn capture(_allow_clipboard: bool) -> Result<Capture, PlatformError> {
+pub fn capture(_allow_clipboard: bool, _select_sentence: bool) -> Result<Capture, PlatformError> {
     Err(PlatformError::Other("This platform isn’t supported yet.".into()))
 }
 

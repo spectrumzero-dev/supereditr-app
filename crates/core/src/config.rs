@@ -70,6 +70,9 @@ pub struct Config {
     pub auto_popup: bool,
     /// Minimum selection length (characters) for automatic suggestions.
     pub auto_min_chars: usize,
+    /// With nothing selected, the review shortcut and quick fix select the sentence before the
+    /// caret and review that. Automatic suggestions never do.
+    pub select_sentence: bool,
     /// Names, places, and terms to keep exactly as written: a word ("Rhyan") or a phrase
     /// ("1234 Glenmoor Ct"). See `words.rs`.
     pub words: Vec<String>,
@@ -97,6 +100,7 @@ impl Default for Config {
             hotkeys: Hotkeys::default(),
             auto_popup: true,
             auto_min_chars: 12,
+            select_sentence: true,
             words: Vec::new(),
             excluded_apps: DEFAULT_EXCLUSIONS.iter().map(|s| s.to_string()).collect(),
             offered_exclusions: DEFAULT_EXCLUSIONS.iter().map(|s| s.to_string()).collect(),
@@ -284,5 +288,13 @@ mod tests {
         let config = Config::load(Path::new("/nonexistent/supereditr.json"));
         assert_eq!(config.default_preset().id, "proofread");
         assert!(config.auto_popup);
+    }
+
+    #[test]
+    fn settings_saved_before_sentence_selection_turn_it_on() {
+        let old: Config = serde_json::from_str(r#"{"auto_popup": false}"#).unwrap();
+        assert!(old.select_sentence);
+        let off: Config = serde_json::from_str(r#"{"select_sentence": false}"#).unwrap();
+        assert!(!off.select_sentence);
     }
 }

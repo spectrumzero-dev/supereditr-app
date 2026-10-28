@@ -35,7 +35,7 @@ func skipEnvironment(_ reason: String) -> Never {
 
 let replayMark: Int64 = 0x5345_4454  // SuperEditr's marker on keys it replays ("SEDT")
 let keyE: CGKeyCode = 14, keyA: CGKeyCode = 0, keyEscape: CGKeyCode = 53, keyTab: CGKeyCode = 48, keySpace: CGKeyCode = 49
-let keyShift: CGKeyCode = 56, keyCommand: CGKeyCode = 55, keyRight: CGKeyCode = 124, keyUp: CGKeyCode = 126, keyReturn: CGKeyCode = 36, keyV: CGKeyCode = 9
+let keyShift: CGKeyCode = 56, keyCommand: CGKeyCode = 55, keyRight: CGKeyCode = 124, keyUp: CGKeyCode = 126, keyReturn: CGKeyCode = 36, keyV: CGKeyCode = 9, keyDown: CGKeyCode = 125
 
 /// Holds Shift down (true) or lets it go (false), as a separate key, the way a person does.
 func shift(_ down: Bool) {
@@ -786,6 +786,38 @@ for (index, how) in ["directly", "after closing the instruction box"].enumerated
           "front: \(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "none")")
     quitOpened("com.apple.TextEdit")
 }
+
+// 6e. With nothing selected, ⌘E E selects the sentence before the caret, visibly, and reviews it.
+let caretDraft = work + "/caret.txt"
+try! "We met at noon. Their going to love this, it work good.".write(toFile: caretDraft, atomically: true, encoding: .utf8)
+check(openFront("TextEdit", bundleID: "com.apple.TextEdit", file: caretDraft), "TextEdit opens the caret draft")
+// ⌘↓ puts the caret at the end; a freshly opened window may not take keys straight away.
+let atEnd = waitFor(4) { () -> Bool? in
+    press(keyDown, .maskCommand)
+    pump(0.3)
+    guard let element = focusedElement(), let value = attribute(element, kAXSelectedTextRangeAttribute) else { return nil }
+    var range = CFRange()
+    guard AXValueGetValue(value as! AXValue, .cfRange, &range), range.length == 0, range.location > 0 else { return nil }
+    return true
+}
+check(atEnd != nil, "the caret sits at the end of the caret draft with nothing selected")
+press(keyE, .maskCommand)
+pump(0.1)
+press(keyE, .maskCommand)
+let sentencePanel = waitFor(5) { overlay() }
+check(sentencePanel != nil, "⌘E E with nothing selected opens a review", "no overlay within 5 s. SuperEditr windows: \(describeWindows())")
+let selectedSentence = focusedElement().flatMap { attribute($0, kAXSelectedTextAttribute) as? String }
+check(selectedSentence == "Their going to love this, it work good.", "⌘E E selects the sentence before the caret",
+      "TextEdit's selection: \(selectedSentence.map { "\"\($0)\"" } ?? "none")")
+if sentencePanel != nil {
+    pump(1.5)  // the rule-based checker's result
+    screenshot(window: overlay(), to: outDir + "/sentence-before-caret.png")
+    let reviewed = panelText()
+    check(reviewed.contains("love this") && !reviewed.contains("We met at noon"), "the review covers only that sentence",
+          "panel text: \(reviewed)")
+    press(keyEscape)
+}
+quitOpened("com.apple.TextEdit")
 stop(app)
 // What SuperEditr logged about each read and write (app IDs, timings and lengths, no text).
 try? FileManager.default.copyItem(atPath: home + "/Library/Logs/SuperEditr/capture.log", toPath: outDir + "/capture.log")

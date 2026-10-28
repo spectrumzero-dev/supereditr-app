@@ -107,6 +107,21 @@ func overlay() -> Window? { windows(bundleID: superEditr).first { (400...700).co
 /// The permission guide card, about 380 points wide.
 func guideCard() -> Window? { windows(bundleID: superEditr).first { $0.frame.width < 400 } }
 
+/// What the window server's list shows of an app's windows. SuperEditr finds System Settings this
+/// way to place the guide card, so an empty list here explains a missing card.
+func windowServerView(_ bundleID: String) -> String {
+    let pids = Set(running(bundleID).map { Int($0.processIdentifier) })
+    let own = Set(running(superEditr).map { Int($0.processIdentifier) })
+    guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+        return "no window list"
+    }
+    let owner = { (window: [String: Any]) in window[kCGWindowOwnerPID as String] as? Int ?? -1 }
+    // Ordinary app windows, front to back, leaving out SuperEditr's own as it does.
+    let normal = list.filter { $0[kCGWindowLayer as String] as? Int == 0 && !own.contains(owner($0)) }
+    let ahead = normal.prefix { !pids.contains(owner($0)) }.compactMap { $0[kCGWindowOwnerName as String] as? String }
+    return "\(list.count) on-screen windows, \(normal.filter { pids.contains(owner($0)) }.count) of them \(bundleID)'s, in front of it: \(ahead)"
+}
+
 /// SuperEditr's windows as Accessibility reports them, for diagnosing a missing overlay.
 func describeWindows() -> String {
     let frames = windows(bundleID: superEditr).map { "\($0.frame)" }
@@ -158,8 +173,12 @@ func running(_ bundleID: String) -> [NSRunningApplication] {
     NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
 }
 
-/// Apps this test started, the only ones it ever quits.
-var opened: [NSRunningApplication] = []
+/// When the test began. An app instance launched after this is one the test started, the only kind
+/// it ever quits. Matching on launch time, not on the instances listed just after `open` returns,
+/// also catches an instance that wasn't listed yet while the one quit before it was still exiting.
+let testStart = Date()
+/// Bundle IDs of the apps this test opened, quit again when it finishes.
+var opened: Set<String> = []
 
 /// Starts an app that isn't already running (with a file, if given), waits until it is frontmost,
 /// and remembers it so it can be quit later.
@@ -169,15 +188,22 @@ func openFront(_ app: String, bundleID: String, file: String? = nil) -> Bool {
     open.arguments = ["-a", app] + (file.map { [$0] } ?? [])
     try? open.run()
     open.waitUntilExit()
-    opened += running(bundleID).filter { started in !opened.contains { $0.processIdentifier == started.processIdentifier } }
+    opened.insert(bundleID)
     return waitFor(8) { NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundleID ? true : nil } ?? false
 }
 
-/// Quits the instances of an app that this test started; anything else is left alone.
+/// The running instances of an app launched since the test began, oldest first.
+func launchedSinceStart(_ bundleID: String) -> [NSRunningApplication] {
+    running(bundleID).filter { ($0.launchDate ?? .distantPast) >= testStart }
+        .sorted { ($0.launchDate ?? .distantPast) < ($1.launchDate ?? .distantPast) }
+}
+
+/// Quits the instances of an app launched since the test began and waits for them to exit;
+/// anything else is left alone.
 func quitOpened(_ bundleID: String) {
-    for app in opened where app.bundleIdentifier == bundleID { app.forceTerminate() }
-    opened.removeAll { $0.bundleIdentifier == bundleID }
-    pump(0.5)
+    let ours = launchedSinceStart(bundleID)
+    ours.forEach { $0.forceTerminate() }
+    _ = waitFor(5) { ours.allSatisfy(\.isTerminated) ? true : nil }
 }
 
 /// The focused element of the frontmost app, through Accessibility.
@@ -326,7 +352,7 @@ FileManager.default.createFile(atPath: outDir + "/supereditr.log", contents: nil
 appLog = FileHandle(forWritingAtPath: outDir + "/supereditr.log") ?? FileHandle.nullDevice
 var app = launch(appPath, home: home)
 cleanups.append { stop(app) }
-cleanups.append { for app in opened { app.forceTerminate() } }
+cleanups.append { opened.forEach(quitOpened) }
 let pid = app.processIdentifier
 let started = waitFor(15) { () -> Bool? in
     guard let data = FileManager.default.contents(atPath: status),
@@ -353,9 +379,13 @@ check(automatic != nil, "automatic suggestion for an editable selection", "no ov
 if automatic == nil { screenshot(window: nil, rect: NSScreen.screens.first?.frame, to: outDir + "/no-automatic-suggestion.png") }
 if let automatic {
     screenshot(window: automatic, to: outDir + "/automatic.png")
-    // The panel opens at the selection: inside the TextEdit window, not elsewhere on screen.
+    // The panel opens at the selection: inside the TextEdit window, not elsewhere on screen. The
+    // panel's window extends 26 points past its card on each side for the shadow
+    // (PAD_SIDE in src-tauri/src/overlay.rs), so a selection near the window's left edge puts the
+    // window, though not the card, outside TextEdit's.
     if let editor = windows(bundleID: "com.apple.TextEdit").first?.frame {
-        let near = automatic.frame.minX >= editor.minX - 1 && automatic.frame.minX < editor.maxX
+        let cardX = automatic.frame.minX + 26
+        let near = cardX >= editor.minX - 1 && cardX < editor.maxX
             && automatic.frame.minY >= editor.minY && automatic.frame.minY < editor.maxY
         check(near, "the panel opens at the selection", "panel \(automatic.frame), TextEdit window \(editor)")
     }
@@ -556,11 +586,12 @@ if binary.range(of: Data("SUPEREDITR_PREVIEW_GUIDE".utf8)) == nil {
 } else {
     app = launch(appPath, home: home, environment: ["SUPEREDITR_PREVIEW_GUIDE": "1"])
     let settingsApp = waitFor(10) { running("com.apple.systempreferences").first }
-    if let settingsApp { opened.append(settingsApp) }
+    if settingsApp != nil { opened.insert("com.apple.systempreferences") }
     let settingsWindow = settingsApp == nil ? nil : waitFor(10) { windows(bundleID: "com.apple.systempreferences").first { $0.frame.height > 200 } }
     let card = waitFor(10) { guideCard() }
     check(settingsWindow != nil && card != nil, "the guide card appears with System Settings",
-          "System Settings window: \(String(describing: settingsWindow?.frame)), card: \(String(describing: card?.frame))")
+          "System Settings window: \(String(describing: settingsWindow?.frame)), card: \(String(describing: card?.frame)); "
+            + "window server: \(windowServerView("com.apple.systempreferences"))")
     if let s = settingsWindow?.frame, let c = card?.frame {
         let inside = c.maxX <= s.maxX + 1 && c.maxY <= s.maxY + 1 && c.minX >= s.minX && c.minY >= s.minY
         let corner = s.maxX - c.maxX < 60 && s.maxY - c.maxY < 60

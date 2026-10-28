@@ -727,6 +727,44 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
     }
     quitOpened(chrome)
 }
+// 6d. ↩ in a review applies the fix and never reaches the app: the panel doesn't take keyboard
+// focus, and SuperEditr's keyboard tap takes ↩ from the app instead. In a chat app, ↩ reaching the
+// app would send the message. The second time, the instruction box (/) takes focus first and esc
+// closes it, which must give the keys back to the review.
+let keySlash: CGKeyCode = 44
+let enterTypo = "Their going to love this."
+for (index, how) in ["directly", "after closing the instruction box"].enumerated() {
+    let enterDraft = work + "/enter-\(index).txt"
+    try! enterTypo.write(toFile: enterDraft, atomically: true, encoding: .utf8)
+    check(openFront("TextEdit", bundleID: "com.apple.TextEdit", file: enterDraft), "TextEdit opens a draft for ↩ \(how)")
+    check(selectAll(), "the draft for ↩ \(how) is selected")
+    press(keyE, .maskCommand)
+    pump(0.1)
+    press(keyE, .maskCommand)
+    let enterPanel = waitFor(5) { overlay() }
+    check(enterPanel != nil, "⌘E E reviews the draft for ↩ \(how)", "no overlay within 5 s")
+    guard enterPanel != nil else { quitOpened("com.apple.TextEdit"); continue }
+    pump(1.5)  // the rule-based checker's result
+    if index == 1 {
+        press(keySlash)
+        pump(0.5)
+        screenshot(window: overlay(), to: outDir + "/instruct.png")
+        press(keyEscape)
+        pump(0.5)
+        check(overlay() != nil, "esc closes the instruction box, not the review", "the panel closed")
+    }
+    KeyLog.seen.removeAll()
+    press(keyReturn)
+    check(waitFor(3) { overlay() == nil ? true : nil } != nil, "↩ \(how) applies and closes the review", "panel still showing")
+    pump(0.5)
+    let value = focusedElement().map { attribute($0, kAXValueAttribute) as? String ?? "" } ?? ""
+    check(!KeyLog.seen.contains { $0.code == Int64(keyReturn) }, "↩ \(how) never reaches TextEdit", "TextEdit received ↩")
+    check(!value.contains("\n"), "↩ \(how) adds no new line", "TextEdit reads \"\(value)\"")
+    check(!value.isEmpty && !value.contains("Their going"), "↩ \(how) writes the fix", "TextEdit reads \"\(value)\"")
+    check(NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.TextEdit", "TextEdit stays in front",
+          "front: \(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "none")")
+    quitOpened("com.apple.TextEdit")
+}
 stop(app)
 // What SuperEditr logged about each read and write (app IDs, timings and lengths, no text).
 try? FileManager.default.copyItem(atPath: home + "/Library/Logs/SuperEditr/capture.log", toPath: outDir + "/capture.log")

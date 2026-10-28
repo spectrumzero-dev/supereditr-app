@@ -405,6 +405,24 @@ pub fn focused_app_identity() -> Option<(i32, String, String)> {
     Some((pid, bundle_id, name))
 }
 
+/// Gives `pid`'s window keyboard focus back after the review panel had it for typing an
+/// instruction. The panel doesn't activate SuperEditr, so the app is still in front, but macOS
+/// leaves it without a key window until something asks for one. Runs on a thread of its own: AX
+/// calls can block on a busy app.
+pub fn return_focus(pid: i32) {
+    std::thread::spawn(move || {
+        let Some(app) = Element::from_create(unsafe { AXUIElementCreateApplication(pid) }) else { return };
+        let yes = CFBoolean::true_value();
+        if let Some(window) = app.element("AXFocusedWindow").or_else(|| app.element("AXMainWindow")) {
+            window.set("AXMain", yes.as_CFTypeRef());
+        }
+        app.set("AXFrontmost", yes.as_CFTypeRef());
+        if let Some(running) = running_app(pid) {
+            running.activateWithOptions(objc2_app_kit::NSApplicationActivationOptions::empty());
+        }
+    });
+}
+
 /// Reads the current selection. With `allow_clipboard`, falls back to a guarded ⌘C when the
 /// app doesn't expose its selection through Accessibility.
 pub fn capture(allow_clipboard: bool) -> Result<Capture, PlatformError> {
@@ -1064,9 +1082,12 @@ const REPLAY_MARK: i64 = 0x5345_4454; // "SEDT"
 static DOUBLE_CHORDS: Mutex<Vec<Chord>> = Mutex::new(Vec::new());
 static TAP_PORT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static TAP_PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// A review is open: the tap takes the panel's keys from the app (see `crate::review_keys`).
+static REVIEW_KEYS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 unsafe extern "C" {
     fn CGEventTapEnable(tap: *const c_void, enable: bool);
+    fn CGEventKeyboardGetUnicodeString(event: *const c_void, max: usize, actual: *mut usize, chars: *mut u16);
 }
 
 /// Physical keys a double press can use, by macOS virtual key code (ANSI positions, matching the
@@ -1120,6 +1141,56 @@ pub fn pause_double_presses(paused: bool) {
     TAP_PAUSED.store(paused, Ordering::Relaxed);
 }
 
+/// Starts or stops passing the review panel's keys to it instead of the app. Returns false when
+/// the tap isn't running (it waits for Accessibility access), so the keys can't be taken.
+pub fn take_review_keys(take: bool) -> bool {
+    REVIEW_KEYS.store(take, Ordering::Relaxed);
+    TAP_PORT.load(Ordering::Relaxed) != 0
+}
+
+/// Names a key press for the review panel, or `None` for a key it has no name for (F-keys, Home).
+fn review_key(event: &CGEvent, code: u16) -> Option<crate::review_keys::Key> {
+    use foreign_types::ForeignType;
+    let named = match code {
+        36 | 76 => Some("Enter"),
+        48 => Some("Tab"),
+        49 => Some(" "),
+        51 => Some("Backspace"),
+        53 => Some("Escape"),
+        117 => Some("Delete"),
+        123 => Some("ArrowLeft"),
+        124 => Some("ArrowRight"),
+        125 => Some("ArrowDown"),
+        126 => Some("ArrowUp"),
+        _ => None,
+    };
+    let key = match named {
+        Some(name) => name.to_string(),
+        None => {
+            // The character the key types in the current layout, with ⇧ and ⌥ applied, as the web's
+            // KeyboardEvent.key gives it.
+            let mut chars = [0u16; 4];
+            let mut len = 0;
+            unsafe { CGEventKeyboardGetUnicodeString(event.as_ptr() as _, chars.len(), &mut len, chars.as_mut_ptr()) };
+            let typed = String::from_utf16_lossy(&chars[..len.min(chars.len())]);
+            // Control characters (⌃C) and the private-use codes of function keys aren't text.
+            if typed.chars().any(|c| c.is_control() || ('\u{E000}'..='\u{F8FF}').contains(&c)) {
+                return None;
+            }
+            typed
+        }
+    };
+    let flags = event.get_flags();
+    Some(crate::review_keys::Key {
+        key,
+        meta_key: flags.contains(CGEventFlags::CGEventFlagCommand),
+        ctrl_key: flags.contains(CGEventFlags::CGEventFlagControl),
+        alt_key: flags.contains(CGEventFlags::CGEventFlagAlternate),
+        shift_key: flags.contains(CGEventFlags::CGEventFlagShift),
+    })
+    .filter(|key| key.for_panel())
+}
+
 fn modifiers(flags: CGEventFlags) -> u8 {
     [
         (CGEventFlags::CGEventFlagCommand, double_press::COMMAND),
@@ -1160,7 +1231,12 @@ fn replay(chord: &Chord, proxy: Option<core_graphics::event::CGEventTapProxy>) {
 
 /// Starts watching for double-press shortcuts on a thread of its own. The tap needs Accessibility
 /// access, so this waits for it; `on_fire` gets the index of the chord that was pressed twice.
-pub fn start_double_press_tap(on_fire: impl Fn(usize) + Send + Sync + 'static) {
+/// While `take_review_keys` is on, the same tap takes the review panel's keys from the app and
+/// gives them to `on_review_key`.
+pub fn start_double_press_tap(
+    on_fire: impl Fn(usize) + Send + Sync + 'static,
+    on_review_key: impl Fn(crate::review_keys::Key) + Send + Sync + 'static,
+) {
     use core_foundation::runloop::{CFRunLoop, kCFRunLoopCommonModes};
     use core_graphics::event::{
         CGEventTap, CGEventTapOptions, CGEventTapPlacement, CGEventType, CallbackResult, EventField,
@@ -1168,6 +1244,7 @@ pub fn start_double_press_tap(on_fire: impl Fn(usize) + Send + Sync + 'static) {
     use std::sync::Arc;
 
     let on_fire = Arc::new(on_fire);
+    let on_review_key = Arc::new(on_review_key);
     let detector = Arc::new(Mutex::new(double_press::Detector::default()));
     std::thread::Builder::new()
         .name("double-press".into())
@@ -1179,6 +1256,7 @@ pub fn start_double_press_tap(on_fire: impl Fn(usize) + Send + Sync + 'static) {
                 }
                 let detector = detector.clone();
                 let on_fire = on_fire.clone();
+                let on_review_key = on_review_key.clone();
                 let tap = CGEventTap::new(
                     CGEventTapLocation::Session,
                     CGEventTapPlacement::HeadInsertEventTap,
@@ -1199,14 +1277,22 @@ pub fn start_double_press_tap(on_fire: impl Fn(usize) + Send + Sync + 'static) {
                             return CallbackResult::Keep;
                         }
                         let chords = DOUBLE_CHORDS.lock().unwrap().clone();
-                        if chords.is_empty() {
-                            return CallbackResult::Keep;
-                        }
                         let code = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
                         let key = KEY_CODES.iter().find(|(_, c)| *c == code).map(|(key, _)| *key);
                         let mods = modifiers(event.get_flags());
                         let matched =
                             key.and_then(|key| chords.iter().position(|c| c.key == key && c.modifiers == mods));
+                        // A double-press shortcut still works during a review (⌘E E starts a new one).
+                        if matched.is_none()
+                            && REVIEW_KEYS.load(Ordering::Relaxed)
+                            && let Some(key) = review_key(event, code)
+                        {
+                            on_review_key(key);
+                            return CallbackResult::Drop;
+                        }
+                        if chords.is_empty() {
+                            return CallbackResult::Keep;
+                        }
                         let autorepeat = event.get_integer_value_field(EventField::KEYBOARD_EVENT_AUTOREPEAT) != 0;
                         let step = detector.lock().unwrap().press(matched, autorepeat, Instant::now());
                         if let Some(held) = step.replay.and_then(|i| chords.get(i)) {

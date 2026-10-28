@@ -730,7 +730,7 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
     let before = element.string("AXValue");
     let snapshot = pasteboard::Snapshot::take();
     let ours = pasteboard::write_transient_string(text);
-    let window = key_window_state(capture.pid);
+    let window = give_back_key_window(capture.pid);
     let started = Instant::now();
     post_command_key(capture.pid, Key::V);
     let landed = verify_replacement(element, capture, before.as_deref(), text, Duration::from_millis(600));
@@ -756,13 +756,30 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
     Ok(ReplaceMethod::Paste)
 }
 
-/// Whether `pid` is the front app and its focused window is the main, focused one, for the log.
-fn key_window_state(pid: i32) -> String {
+/// Makes `pid`'s window the key window again before keys are sent to it, and describes what it
+/// found for the log. The review panel takes key to read ↩; when it hides, macOS leaves the app in
+/// front with no key window, and a browser or Electron app then drops the ⌘V.
+fn give_back_key_window(pid: i32) -> String {
     let front = focused_app().is_some_and(|(_, front)| front == pid);
-    let window = Element::from_create(unsafe { AXUIElementCreateApplication(pid) })
-        .and_then(|app| app.element("AXFocusedWindow"));
-    let flag = |name| window.as_ref().and_then(|w| w.flag(name)).map_or("unknown".to_string(), |v| v.to_string());
-    format!("front {front}, window main {} focused {}", flag("AXMain"), flag("AXFocused"))
+    let Some(app) = Element::from_create(unsafe { AXUIElementCreateApplication(pid) }) else {
+        return format!("front {front}, no app element");
+    };
+    let Some(window) = app.element("AXFocusedWindow").or_else(|| app.element("AXMainWindow")) else {
+        return format!("front {front}, no window");
+    };
+    if window.flag("AXFocused") == Some(true) {
+        return format!("front {front}, window already focused");
+    }
+    let started = Instant::now();
+    let yes = CFBoolean::true_value();
+    window.set("AXMain", yes.as_CFTypeRef());
+    window.set("AXFocused", yes.as_CFTypeRef());
+    let deadline = started + Duration::from_millis(300);
+    while window.flag("AXFocused") != Some(true) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let focused = window.flag("AXFocused") == Some(true);
+    format!("front {front}, window refocused {focused} after {:?}", started.elapsed())
 }
 
 pub fn copy_to_clipboard(text: &str) {

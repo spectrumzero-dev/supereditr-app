@@ -580,6 +580,16 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         let lines = (try? String(contentsOfFile: captureLog, encoding: .utf8))?.split(separator: "\n") ?? []
         return lines.last { $0.contains("com.google.Chrome: read") }.map(String.init) ?? "none"
     }
+    // SuperEditr's first read in a new Chrome process can come before the tree is ready and fall back
+    // to a copy-only ⌘C read. One review closed straight away gets past it.
+    _ = selectAll()
+    press(keyE, .maskCommand)
+    pump(0.1)
+    press(keyE, .maskCommand)
+    if waitFor(5, { overlay() }) != nil {
+        press(keyEscape)
+        _ = waitFor(3) { overlay() == nil ? true : nil }
+    }
     for (index, field) in ["text box", "editable div"].enumerated() {
         if index == 1 { press(keyTab) ; pump(0.5) }  // Tab moves focus from the text box to the div
         check(selectAll() || selectAll(), "the \(field)'s text is selected")

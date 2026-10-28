@@ -757,9 +757,9 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
     let ours = pasteboard::write_transient_string(text);
     let window = key_window_state(capture.pid);
     let started = Instant::now();
-    // The app's own Paste menu item first. The review panel takes key to read ↩ and can still hold
-    // it when the paste runs; browsers and Electron apps then drop a posted ⌘V, but a menu item acts
-    // on the app's main window.
+    // The app's own Paste menu item first. The app can be left without a key window (after the
+    // panel had focus for an instruction, or the user clicked it); browsers and Electron apps then
+    // drop a posted ⌘V, but a menu item acts on the app's main window.
     let app = Element::from_create(unsafe { AXUIElementCreateApplication(capture.pid) });
     let how = if app.as_ref().and_then(|app| press_menu_item(app, "v")) == Some(true) {
         "the app's Paste menu item"

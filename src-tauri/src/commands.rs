@@ -42,9 +42,16 @@ pub fn resize_overlay(app: AppHandle, height: f64) {
 #[tauri::command]
 pub fn focus_overlay(app: AppHandle, state: State<'_, AppState>) {
     if let Some(session) = state.session.lock().unwrap().as_mut() {
-        session.key_window = true;
+        session.keyboard = true;
     }
-    overlay::focus(&app);
+    overlay::show(&app, true);
+}
+
+/// The panel's instruction box opened (`true`) or closed. Synchronous, so it runs on the main
+/// thread, and the panel has focus when the box asks for it.
+#[tauri::command]
+pub fn overlay_typing(app: AppHandle, typing: bool) {
+    review::typing(&app, typing);
 }
 
 /// "Always keep" in the panel: adds a word to the author's word list. Returns false when the list

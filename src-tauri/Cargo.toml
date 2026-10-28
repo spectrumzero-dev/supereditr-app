@@ -32,6 +32,8 @@ semver = "1"
 tauri-nspanel = "2.1.1"
 core-foundation = "0.10"
 core-graphics = { version = "0.25", features = ["elcapitan"] }
+# The raw event pointer, for Core Graphics calls the core-graphics crate doesn't wrap.
+foreign-types = "0.5"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSData", "NSArray", "NSURL", "NSGeometry", "NSNotification", "NSDictionary", "NSOperation", "block2"] }
 objc2-app-kit = { version = "0.3", features = ["NSPasteboard", "NSPasteboardItem", "NSRunningApplication", "NSEvent", "NSResponder", "NSApplication", "NSWindow", "NSGraphics", "NSWorkspace", "NSScreen", "block2"] }

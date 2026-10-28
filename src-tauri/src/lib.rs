@@ -7,6 +7,7 @@ mod overlay;
 mod permission_guide;
 mod platform;
 mod review;
+mod review_keys;
 mod secrets;
 mod shortcut_check;
 mod state;
@@ -243,6 +244,7 @@ pub fn run() {
             commands::copy_text,
             commands::resize_overlay,
             commands::focus_overlay,
+            commands::overlay_typing,
             commands::open_settings,
             commands::add_word,
             commands::get_settings,

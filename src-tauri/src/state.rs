@@ -29,7 +29,8 @@ pub struct AppState {
 pub struct Session {
     pub id: u64,
     pub capture: Capture,
-    pub key_window: bool,
+    /// A review the user opened (or switched to the keyboard): the panel takes the review keys.
+    pub keyboard: bool,
     pub anchor: Option<Rect>,
     pub height: f64,
     pub task: Option<tauri::async_runtime::JoinHandle<()>>,

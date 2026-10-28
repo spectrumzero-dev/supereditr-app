@@ -15,6 +15,16 @@ interface Handlers {
   status: (payload: StatusPayload) => void;
   focus: () => void;
   command: (command: string) => void;
+  /** A key the keyboard tap took from the app under review, for the panel. */
+  key: (key: PanelKeyPayload) => void;
+}
+
+export interface PanelKeyPayload {
+  key: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
 }
 
 export const ipc = {
@@ -24,6 +34,8 @@ export const ipc = {
   copy: (text: string) => invoke("copy_text", { text }),
   resize: (height: number) => invoke("resize_overlay", { height }),
   focus: () => invoke("focus_overlay"),
+  /** The instruction box opened or closed: the panel takes keyboard focus only while it's open. */
+  typing: (typing: boolean) => invoke("overlay_typing", { typing }),
   openSettings: () => invoke("open_settings", { section: null }),
   /** Adds a word to the word list; false when it's already there. */
   addWord: (word: string) => invoke<boolean>("add_word", { word }),
@@ -38,6 +50,7 @@ export const ipc = {
       listen<StatusPayload>("overlay:status", (e) => handlers.status(e.payload)).then((u) => stops.push(u));
       listen("overlay:focus", () => handlers.focus()).then((u) => stops.push(u));
       listen<string>("overlay:command", (e) => handlers.command(e.payload)).then((u) => stops.push(u));
+      listen<PanelKeyPayload>("overlay:key", (e) => handlers.key(e.payload)).then((u) => stops.push(u));
     });
     return () => stops.forEach((stop) => stop());
   },

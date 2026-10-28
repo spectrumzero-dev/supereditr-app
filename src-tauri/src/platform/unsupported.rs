@@ -51,7 +51,17 @@ pub fn set_double_presses(_chords: Vec<crate::double_press::Chord>) {}
 
 pub fn pause_double_presses(_paused: bool) {}
 
-pub fn start_double_press_tap(_on_fire: impl Fn(usize) + Send + Sync + 'static) {}
+pub fn start_double_press_tap(
+    _on_fire: impl Fn(usize) + Send + Sync + 'static,
+    _on_review_key: impl Fn(crate::review_keys::Key) + Send + Sync + 'static,
+) {
+}
+
+pub fn take_review_keys(_take: bool) -> bool {
+    false
+}
+
+pub fn return_focus(_pid: i32) {}
 
 pub fn refresh_keyboard_layout() {}
 

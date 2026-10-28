@@ -22,6 +22,10 @@
 </script>
 
 <div class="shortcuts">
+  <p class="intro">
+    Select text anywhere, then press {keySymbols(review)} to review it with these keys.{#if auto}{" "}Or just wait
+      a moment: a suggestion appears on its own, and <kbd>⌥↩</kbd> applies it (↩ stays with your app).{/if}
+  </p>
   <div class="keys">
     {#each items as item (item.id)}
       <div class="item">
@@ -30,7 +34,6 @@
       </div>
     {/each}
   </div>
-  <p class="foot">Select text anywhere, then press {keySymbols(review)}{auto ? ", or just wait a moment" : ""}.</p>
 </div>
 
 <style>
@@ -76,8 +79,8 @@
     color: var(--text-2);
     white-space: nowrap;
   }
-  .foot {
-    margin: 8px 0 0;
+  .intro {
+    margin: 0 0 8px;
     font-size: 12.5px;
     color: var(--text-2);
   }

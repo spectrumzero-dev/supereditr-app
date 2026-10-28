@@ -107,6 +107,21 @@ func overlay() -> Window? { windows(bundleID: superEditr).first { (400...700).co
 /// The permission guide card, about 380 points wide.
 func guideCard() -> Window? { windows(bundleID: superEditr).first { $0.frame.width < 400 } }
 
+/// What the window server's list shows of an app's windows. SuperEditr finds System Settings this
+/// way to place the guide card, so an empty list here explains a missing card.
+func windowServerView(_ bundleID: String) -> String {
+    let pids = Set(running(bundleID).map { Int($0.processIdentifier) })
+    let own = Set(running(superEditr).map { Int($0.processIdentifier) })
+    guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+        return "no window list"
+    }
+    let owner = { (window: [String: Any]) in window[kCGWindowOwnerPID as String] as? Int ?? -1 }
+    // Ordinary app windows, front to back, leaving out SuperEditr's own as it does.
+    let normal = list.filter { $0[kCGWindowLayer as String] as? Int == 0 && !own.contains(owner($0)) }
+    let ahead = normal.prefix { !pids.contains(owner($0)) }.compactMap { $0[kCGWindowOwnerName as String] as? String }
+    return "\(list.count) on-screen windows, \(normal.filter { pids.contains(owner($0)) }.count) of them \(bundleID)'s, in front of it: \(ahead)"
+}
+
 /// SuperEditr's windows as Accessibility reports them, for diagnosing a missing overlay.
 func describeWindows() -> String {
     let frames = windows(bundleID: superEditr).map { "\($0.frame)" }
@@ -571,7 +586,8 @@ if binary.range(of: Data("SUPEREDITR_PREVIEW_GUIDE".utf8)) == nil {
     let settingsWindow = settingsApp == nil ? nil : waitFor(10) { windows(bundleID: "com.apple.systempreferences").first { $0.frame.height > 200 } }
     let card = waitFor(10) { guideCard() }
     check(settingsWindow != nil && card != nil, "the guide card appears with System Settings",
-          "System Settings window: \(String(describing: settingsWindow?.frame)), card: \(String(describing: card?.frame))")
+          "System Settings window: \(String(describing: settingsWindow?.frame)), card: \(String(describing: card?.frame)); "
+            + "window server: \(windowServerView("com.apple.systempreferences"))")
     if let s = settingsWindow?.frame, let c = card?.frame {
         let inside = c.maxX <= s.maxX + 1 && c.maxY <= s.maxY + 1 && c.minX >= s.minX && c.minY >= s.minY
         let corner = s.maxX - c.maxX < 60 && s.maxY - c.maxY < 60

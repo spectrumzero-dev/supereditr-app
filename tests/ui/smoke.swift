@@ -178,7 +178,10 @@ func openFront(_ app: String, bundleID: String, file: String? = nil, newInstance
         return new.isEmpty ? nil : new
     } ?? []
     opened += started.filter { new in !opened.contains { $0.processIdentifier == new.processIdentifier } }
-    return waitFor(8) { NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundleID ? true : nil } ?? false
+    // Success means the test's own process is in front, never a copy that was already open.
+    let ours = Set(started.map(\.processIdentifier))
+    guard !ours.isEmpty else { return false }
+    return waitFor(8) { ours.contains(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1) ? true : nil } ?? false
 }
 
 /// Quits the instances of an app that this test started; anything else is left alone.
@@ -572,89 +575,92 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
     let chromeOpened = openFront(chromeApp, bundleID: chrome, file: page, newInstance: true,
                                  launchArguments: ["--user-data-dir=\(work)/chrome", "--no-first-run", "--no-default-browser-check"])
     check(chromeOpened, "Chrome opens the page with two fields")
-    // Chrome builds its Accessibility tree only once asked, as SuperEditr does when it reads. Asking
-    // first, and waiting for the tree, makes SuperEditr read the field through Accessibility, as it
-    // does in an app whose tree is already on, instead of falling back to a copy-only ⌘C read.
-    if let ours = opened.last(where: { $0.bundleIdentifier == chrome }) {
-        let element = AXUIElementCreateApplication(ours.processIdentifier)
-        for flag in ["AXManualAccessibility", "AXEnhancedUserInterface"] {
-            AXUIElementSetAttributeValue(element, flag as CFString, kCFBooleanTrue)
-        }
-    }
-    pump(2)
-    let captureLog = home + "/Library/Logs/SuperEditr/capture.log"
-    func lastChromeRead() -> String {
-        let lines = (try? String(contentsOfFile: captureLog, encoding: .utf8))?.split(separator: "\n") ?? []
-        return lines.last { $0.contains("com.google.Chrome: read") }.map(String.init) ?? "none"
-    }
-    // SuperEditr's first read in a new Chrome process can come before the tree is ready and fall back
-    // to a copy-only ⌘C read. One review closed straight away gets past it.
-    _ = selectAll()
-    press(keyE, .maskCommand)
-    pump(0.1)
-    press(keyE, .maskCommand)
-    if waitFor(5, { overlay() }) != nil {
-        press(keyEscape)
-        _ = waitFor(3) { overlay() == nil ? true : nil }
-    }
-    // Control, without SuperEditr: does Chrome's window report focus here, and does a plain ⌘V land?
-    // This tells a SuperEditr bug apart from a runner session that can't paste into Chrome at all.
-    func chromeWindowFocused() -> String {
-        guard let ours = opened.last(where: { $0.bundleIdentifier == chrome }),
-              let window = attribute(AXUIElementCreateApplication(ours.processIdentifier), kAXFocusedWindowAttribute) else { return "no window" }
-        return "main \(attribute(window as! AXUIElement, kAXMainAttribute) as? Bool ?? false), focused \(attribute(window as! AXUIElement, kAXFocusedAttribute) as? Bool ?? false)"
-    }
-    log("NOTE control: Chrome's window before any paste: \(chromeWindowFocused())")
-    for (how, toProcess) in [("a ⌘V keystroke", false), ("⌘V posted to Chrome's process", true)] {
-        let marker = "Pasted by the test \(toProcess ? 2 : 1)."
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(marker, forType: .string)
-        _ = selectAll()
-        if toProcess, let ours = opened.last(where: { $0.bundleIdentifier == chrome }) {
-            for down in [true, false] {
-                let event = CGEvent(keyboardEventSource: nil, virtualKey: keyV, keyDown: down)
-                event?.flags = .maskCommand
-                event?.postToPid(ours.processIdentifier)
-                usleep(25_000)
+    // Keys go only to the test's own Chrome; stop here rather than type into another one.
+    if chromeOpened {
+        // Chrome builds its Accessibility tree only once asked, as SuperEditr does when it reads. Asking
+        // first, and waiting for the tree, makes SuperEditr read the field through Accessibility, as it
+        // does in an app whose tree is already on, instead of falling back to a copy-only ⌘C read.
+        if let ours = opened.last(where: { $0.bundleIdentifier == chrome }) {
+            let element = AXUIElementCreateApplication(ours.processIdentifier)
+            for flag in ["AXManualAccessibility", "AXEnhancedUserInterface"] {
+                AXUIElementSetAttributeValue(element, flag as CFString, kCFBooleanTrue)
             }
-        } else {
-            press(keyV, .maskCommand)
         }
-        pump(1)
-        let value = focusedElement().map { allText($0) } ?? ""
-        log("NOTE control: \(how) \(value.contains(marker) ? "landed" : "did not land"); window \(chromeWindowFocused())")
-    }
-    for (index, field) in ["text box", "editable div"].enumerated() {
-        press(keyTab)  // from the control field to the text box, then to the div
-        pump(0.5)
-        check(selectAll() || selectAll(), "the \(field)'s text is selected")
+        pump(2)
+        let captureLog = home + "/Library/Logs/SuperEditr/capture.log"
+        func lastChromeRead() -> String {
+            let lines = (try? String(contentsOfFile: captureLog, encoding: .utf8))?.split(separator: "\n") ?? []
+            return lines.last { $0.contains("com.google.Chrome: read") }.map(String.init) ?? "none"
+        }
+        // SuperEditr's first read in a new Chrome process can come before the tree is ready and fall back
+        // to a copy-only ⌘C read. One review closed straight away gets past it.
+        _ = selectAll()
         press(keyE, .maskCommand)
         pump(0.1)
         press(keyE, .maskCommand)
-        let panel = waitFor(5) { overlay() }
-        check(panel != nil, "⌘E E reviews the \(field)", "no overlay within 5 s")
-        guard panel != nil else { continue }
-        pump(1.5)  // the rule-based checker's result
-        let read = lastChromeRead()
-        check(read.contains("via Accessibility"), "the \(field) is read through Accessibility", "last read: \(read)")
-        screenshot(window: overlay(), to: outDir + "/web-\(index)-review.png")
-        press(keyReturn)
-        let notice = waitFor(3) { () -> String? in
-            guard let app = running(superEditr).first,
-                  let list = attribute(AXUIElementCreateApplication(app.processIdentifier), kAXWindowsAttribute) as? [AXUIElement] else { return nil }
-            let text = list.map { allText($0, levels: 40) }.joined(separator: " ")
-            return text.contains("confirm") ? text : nil
-        }
-        let value = focusedElement().map { allText($0) } ?? ""
-        check(notice == nil, "↩ applies in the \(field) without a warning", "SuperEditr said: \(notice ?? "")")
-        check(!value.isEmpty && !value.contains(typo), "the \(field) holds the fix", "the field reads \"\(value)\"")
-        screenshot(window: nil, rect: windows(bundleID: chrome).first?.frame, to: outDir + "/web-\(index)-applied.png")
-        if overlay() != nil {
-            log("NOTE the panel was still open after ↩ in the \(field)")
+        if waitFor(5, { overlay() }) != nil {
             press(keyEscape)
             _ = waitFor(3) { overlay() == nil ? true : nil }
         }
-    }
+        // Control, without SuperEditr: does Chrome's window report focus here, and does a plain ⌘V land?
+        // This tells a SuperEditr bug apart from a runner session that can't paste into Chrome at all.
+        func chromeWindowFocused() -> String {
+            guard let ours = opened.last(where: { $0.bundleIdentifier == chrome }),
+                  let window = attribute(AXUIElementCreateApplication(ours.processIdentifier), kAXFocusedWindowAttribute) else { return "no window" }
+            return "main \(attribute(window as! AXUIElement, kAXMainAttribute) as? Bool ?? false), focused \(attribute(window as! AXUIElement, kAXFocusedAttribute) as? Bool ?? false)"
+        }
+        log("NOTE control: Chrome's window before any paste: \(chromeWindowFocused())")
+        for (how, toProcess) in [("a ⌘V keystroke", false), ("⌘V posted to Chrome's process", true)] {
+            let marker = "Pasted by the test \(toProcess ? 2 : 1)."
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(marker, forType: .string)
+            _ = selectAll()
+            if toProcess, let ours = opened.last(where: { $0.bundleIdentifier == chrome }) {
+                for down in [true, false] {
+                    let event = CGEvent(keyboardEventSource: nil, virtualKey: keyV, keyDown: down)
+                    event?.flags = .maskCommand
+                    event?.postToPid(ours.processIdentifier)
+                    usleep(25_000)
+                }
+            } else {
+                press(keyV, .maskCommand)
+            }
+            pump(1)
+            let value = focusedElement().map { allText($0) } ?? ""
+            log("NOTE control: \(how) \(value.contains(marker) ? "landed" : "did not land"); window \(chromeWindowFocused())")
+        }
+        for (index, field) in ["text box", "editable div"].enumerated() {
+            press(keyTab)  // from the control field to the text box, then to the div
+            pump(0.5)
+            check(selectAll() || selectAll(), "the \(field)'s text is selected")
+            press(keyE, .maskCommand)
+            pump(0.1)
+            press(keyE, .maskCommand)
+            let panel = waitFor(5) { overlay() }
+            check(panel != nil, "⌘E E reviews the \(field)", "no overlay within 5 s")
+            guard panel != nil else { continue }
+            pump(1.5)  // the rule-based checker's result
+            let read = lastChromeRead()
+            check(read.contains("via Accessibility"), "the \(field) is read through Accessibility", "last read: \(read)")
+            screenshot(window: overlay(), to: outDir + "/web-\(index)-review.png")
+            press(keyReturn)
+            let notice = waitFor(3) { () -> String? in
+                guard let app = running(superEditr).first,
+                      let list = attribute(AXUIElementCreateApplication(app.processIdentifier), kAXWindowsAttribute) as? [AXUIElement] else { return nil }
+                let text = list.map { allText($0, levels: 40) }.joined(separator: " ")
+                return text.contains("confirm") ? text : nil
+            }
+            let value = focusedElement().map { allText($0) } ?? ""
+            check(notice == nil, "↩ applies in the \(field) without a warning", "SuperEditr said: \(notice ?? "")")
+            check(!value.isEmpty && !value.contains(typo), "the \(field) holds the fix", "the field reads \"\(value)\"")
+            screenshot(window: nil, rect: windows(bundleID: chrome).first?.frame, to: outDir + "/web-\(index)-applied.png")
+            if overlay() != nil {
+                log("NOTE the panel was still open after ↩ in the \(field)")
+                press(keyEscape)
+                _ = waitFor(3) { overlay() == nil ? true : nil }
+            }
+        }
+}
     quitOpened(chrome)
 }
 stop(app)

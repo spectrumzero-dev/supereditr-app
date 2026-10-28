@@ -713,10 +713,11 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             }
         }
         func divValue() -> String { focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? "" }
-        func plainPaste(_ text: String) -> Bool {
+        func plainPaste(_ text: String, wait: Double = 0) -> Bool {
             _ = selectAll()
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
+            if wait > 0 { pump(wait) }
             postPaste()
             pump(1)
             return divValue().contains(text)
@@ -725,8 +726,10 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         pump(0.5)
         var restoredRounds = 0, restoredFailures = 0, plainRounds = 0, plainFailures = 0, lateRounds = 0, lateFailures = 0
         log("NOTE experiment: setup paste \(plainPaste("Setup.") ? "landed" : "did not land")")
-        // Variants cycle none, 120 ms, 1.5 s from round 1, so a fresh-Chrome effect lands on "none".
-        for (round, delay) in (1...12).map({ ($0, [0.0, 0.12, 1.5][($0 - 1) % 3]) }) {
+        // Every round restores after 120 ms; the next paste waits 100 ms after its write or doesn't,
+        // alternating from a waiting round, so a fresh-Chrome effect lands on "waits".
+        for (round, nextWait) in (1...12).map({ ($0, $0 % 2 == 1 ? 0.1 : 0.0) }) {
+            let delay = 0.12
             let restore = delay > 0
             _ = selectAll()
             let pb = NSPasteboard.general
@@ -755,38 +758,34 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 })
             }
             pump(2)
-            let next = plainPaste("Next \(round).")
-            log("NOTE experiment round \(round), restore after \(delay) s: menu paste (sent \(pressed)) \(first ? "landed" : "did not land"); next ⌘V \(next ? "landed" : "did not land")")
-            if delay == 0 { plainRounds += 1; if !next { plainFailures += 1 } }
-            else if delay < 1 { restoredRounds += 1; if !next { restoredFailures += 1 } }
-            else { lateRounds += 1; if !next { lateFailures += 1 } }
+            let next = plainPaste("Next \(round).", wait: nextWait)
+            log("NOTE experiment round \(round), next paste waits \(nextWait) s: menu paste (sent \(pressed)) \(first ? "landed" : "did not land"); next ⌘V \(next ? "landed" : "did not land")")
+            if nextWait > 0 { lateRounds += 1; if !next { lateFailures += 1 } } else { restoredRounds += 1; if !next { restoredFailures += 1 } }
             if !next { log("NOTE experiment round \(round): recovery paste \(plainPaste("Recover \(round).") ? "landed" : "did not land")") }
         }
-        log("NOTE experiment summary: next paste ignored after \(plainFailures) of \(plainRounds) rounds without a restore, \(restoredFailures) of \(restoredRounds) with it at 120 ms, \(lateFailures) of \(lateRounds) with it at 1.5 s")
-        // A paste straight after one of SuperEditr's in the same Chrome window can be ignored
-        // (spectrumzero-dev/supereditr-app#10), so before the editable div's review the test puts
-        // its text back with its own ⌘V, posted to Chrome's process, which the control above shows
-        // lands. The div's review then follows a test-made paste, not SuperEditr's text box paste.
-        for (index, field) in ["text box", "editable div"].enumerated() {
-            press(keyTab)  // from the control field to the text box, then to the div
-            pump(0.5)
-            if field == "editable div", let ours = launchedSinceStart(chrome).last {
-                // A paste straight after one of SuperEditr's can be dropped, so retry the reset.
-                for _ in 0..<3 {
-                    _ = selectAll()
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(typo, forType: .string)
-                    for down in [true, false] {
-                        let event = CGEvent(keyboardEventSource: nil, virtualKey: keyV, keyDown: down)
-                        event?.flags = .maskCommand
-                        event?.postToPid(ours.processIdentifier)
-                        usleep(25_000)
-                    }
-                    pump(1)
-                    let reset = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
-                    if reset.contains(typo) { break }
-                    log("NOTE the test's reset paste into the \(field) was ignored; retrying")
+        log("NOTE experiment summary: after a restore, the next paste was ignored \(restoredFailures) of \(restoredRounds) times when sent straight after its write, \(lateFailures) of \(lateRounds) times 100 ms after")
+        // The editable div is applied three times in a row; the first straight after the text box,
+        // which Chrome used to ignore (spectrumzero-dev/supereditr-app#10). Before each repeat the
+        // test puts the typo back with its own paste, sent 100 ms after its clipboard write, as
+        // SuperEditr's are, so Chrome has seen the write.
+        let runs: [(field: String, attempt: Int)] = [("text box", 1)] + (1...3).map { ("editable div", $0) }
+        for (index, run) in runs.enumerated() {
+            let field = run.field == "editable div" ? "editable div (apply \(run.attempt))" : run.field
+            if run.attempt == 1 {
+                press(keyTab)  // from the control div to the text box, then to the editable div
+                pump(0.5)
+            } else if let ours = launchedSinceStart(chrome).last {
+                _ = selectAll()
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(typo, forType: .string)
+                pump(0.1)
+                for down in [true, false] {
+                    let event = CGEvent(keyboardEventSource: nil, virtualKey: keyV, keyDown: down)
+                    event?.flags = .maskCommand
+                    event?.postToPid(ours.processIdentifier)
+                    usleep(25_000)
                 }
+                pump(1)
             }
             check(selectAll() || selectAll(), "the \(field)'s text is selected")
             let start = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""

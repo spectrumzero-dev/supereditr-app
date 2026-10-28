@@ -374,12 +374,15 @@ fn is_chromium_browser(bundle_id: &str) -> bool {
 }
 
 fn is_browser_or_electron(bundle_id: &str, pid: i32) -> bool {
-    if is_chromium_browser(bundle_id) || bundle_id == "com.apple.Safari" || bundle_id.starts_with("org.mozilla.") {
-        return true;
-    }
-    app_bundle_path(pid).is_some_and(|path| {
-        std::path::Path::new(&path).join("Contents/Frameworks/Electron Framework.framework").exists()
-    })
+    bundle_id == "com.apple.Safari" || bundle_id.starts_with("org.mozilla.") || is_chromium_based(bundle_id, pid)
+}
+
+/// Chrome-family browsers and Electron apps, which share Chromium's clipboard code.
+fn is_chromium_based(bundle_id: &str, pid: i32) -> bool {
+    is_chromium_browser(bundle_id)
+        || app_bundle_path(pid).is_some_and(|path| {
+            std::path::Path::new(&path).join("Contents/Frameworks/Electron Framework.framework").exists()
+        })
 }
 
 fn running_app(pid: i32) -> Option<objc2::rc::Retained<objc2_app_kit::NSRunningApplication>> {
@@ -888,6 +891,13 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
     let before = element.string("AXValue");
     let snapshot = pasteboard::Snapshot::take();
     let ours = pasteboard::write_transient_string(text);
+    // Chromium learns of a clipboard change from an asynchronous notice, and Chrome 156 treats one
+    // that arrives after a paste has started as the clipboard changing under it, and drops the
+    // paste (crbug.com/568453825). Writes just before, such as the restore after a previous paste,
+    // make that likely, so give a Chromium-based app a moment to see this write before pasting it.
+    if is_chromium_based(&capture.bundle_id, capture.pid) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
     let window = key_window_state(capture.pid);
     let started = Instant::now();
     // The app's own Paste menu item first. The app can be left without a key window (after the

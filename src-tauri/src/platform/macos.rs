@@ -891,30 +891,46 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
     let before = element.string("AXValue");
     let snapshot = pasteboard::Snapshot::take();
     let ours = pasteboard::write_transient_string(text);
-    // Chromium learns of a clipboard change from an asynchronous notice, and Chrome 156 treats one
-    // that arrives after a paste has started as the clipboard changing under it, and drops the
-    // paste (crbug.com/568453825). Writes just before, such as the restore after a previous paste,
-    // make that likely, so give a Chromium-based app a moment to see this write before pasting it.
-    if is_chromium_based(&capture.bundle_id, capture.pid) {
-        std::thread::sleep(Duration::from_millis(100));
-    }
     let window = key_window_state(capture.pid);
     let started = Instant::now();
     // The app's own Paste menu item first. The app can be left without a key window (after the
     // panel had focus for an instruction, or the user clicked it); browsers and Electron apps then
     // drop a posted ⌘V, but a menu item acts on the app's main window.
     let app = Element::from_create(unsafe { AXUIElementCreateApplication(capture.pid) });
-    let how = if app.as_ref().and_then(|app| press_menu_item(app, "v")) == Some(true) {
-        "the app's Paste menu item"
-    } else {
-        post_command_key(capture.pid, Key::V);
-        "⌘V to the app's process"
+    let press = || {
+        if app.as_ref().and_then(|app| press_menu_item(app, "v")) == Some(true) {
+            "the app's Paste menu item"
+        } else {
+            post_command_key(capture.pid, Key::V);
+            "⌘V to the app's process"
+        }
     };
-    let landed = verify_replacement(element, capture, before.as_deref(), text, Duration::from_millis(600));
+    // Chrome 156 drops a paste when its asynchronous clipboard-change notice arrives after the
+    // paste started (crbug.com/568453825); the restore after a previous paste makes that likely,
+    // and waiting before the paste didn't help in testing. A dropped paste never lands late, and
+    // the paste after one always landed, so paste again, but only while the field and the
+    // selection are untouched: a slow paste that did land replaces the selection, so it is never
+    // pasted twice. Other apps get one paste and the full wait.
+    let windows: &[u64] = if is_chromium_based(&capture.bundle_id, capture.pid) { &[250, 500, 600] } else { &[600] };
+    let mut how = "";
+    let mut attempts = 0;
+    let mut landed = false;
+    for (i, wait) in windows.iter().enumerate() {
+        if i > 0 && (element.string("AXValue") != before || !selection_unchanged(capture)) {
+            break;
+        }
+        how = press();
+        attempts += 1;
+        landed = verify_replacement(element, capture, before.as_deref(), text, Duration::from_millis(*wait));
+        if landed {
+            break;
+        }
+    }
     trace(format_args!(
-        "{}: pasted {} characters with {how}, {window}; {} after {:?}, field value {}",
+        "{}: pasted {} characters with {how} ({attempts} {}), {window}; {} after {:?}, field value {}",
         capture.bundle_id,
         text.chars().count(),
+        if attempts == 1 { "attempt" } else { "attempts" },
         if landed { "verified" } else { "not verified" },
         started.elapsed(),
         if element.string("AXValue") == before { "unchanged" } else { "changed" },

@@ -165,13 +165,19 @@ var opened: [NSRunningApplication] = []
 /// and remembers it so it can be quit later. `newInstance` starts a separate copy even when the app
 /// is already open, passing it `launchArguments`.
 func openFront(_ app: String, bundleID: String, file: String? = nil, newInstance: Bool = false, launchArguments: [String] = []) -> Bool {
+    // Only a process that appears after this launch is the test's; one already running never is.
+    let before = Set(running(bundleID).map(\.processIdentifier))
     let open = Process()
     open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
     open.arguments = (newInstance ? ["-n"] : []) + ["-a", app] + (file.map { [$0] } ?? [])
         + (launchArguments.isEmpty ? [] : ["--args"] + launchArguments)
     try? open.run()
     open.waitUntilExit()
-    opened += running(bundleID).filter { started in !opened.contains { $0.processIdentifier == started.processIdentifier } }
+    let started = waitFor(5) { () -> [NSRunningApplication]? in
+        let new = running(bundleID).filter { !before.contains($0.processIdentifier) }
+        return new.isEmpty ? nil : new
+    } ?? []
+    opened += started.filter { new in !opened.contains { $0.processIdentifier == new.processIdentifier } }
     return waitFor(8) { NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundleID ? true : nil } ?? false
 }
 

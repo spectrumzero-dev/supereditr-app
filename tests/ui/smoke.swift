@@ -379,9 +379,13 @@ check(automatic != nil, "automatic suggestion for an editable selection", "no ov
 if automatic == nil { screenshot(window: nil, rect: NSScreen.screens.first?.frame, to: outDir + "/no-automatic-suggestion.png") }
 if let automatic {
     screenshot(window: automatic, to: outDir + "/automatic.png")
-    // The panel opens at the selection: inside the TextEdit window, not elsewhere on screen.
+    // The panel opens at the selection: inside the TextEdit window, not elsewhere on screen. The
+    // panel's window extends 26 points past its card on each side for the shadow
+    // (PAD_SIDE in src-tauri/src/overlay.rs), so a selection near the window's left edge puts the
+    // window, though not the card, outside TextEdit's.
     if let editor = windows(bundleID: "com.apple.TextEdit").first?.frame {
-        let near = automatic.frame.minX >= editor.minX - 1 && automatic.frame.minX < editor.maxX
+        let cardX = automatic.frame.minX + 26
+        let near = cardX >= editor.minX - 1 && cardX < editor.maxX
             && automatic.frame.minY >= editor.minY && automatic.frame.minY < editor.maxY
         check(near, "the panel opens at the selection", "panel \(automatic.frame), TextEdit window \(editor)")
     }

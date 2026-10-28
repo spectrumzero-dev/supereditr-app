@@ -478,8 +478,9 @@ let keepPanel = waitFor(5) { overlay() }
 check(keepPanel != nil, "⌘E E reviews the named draft", "no overlay within 5 s")
 if keepPanel != nil {
     pump(1.5)  // the rule-based checker's result
+    // The footer's "replace", not the tip line's "replaces".
     let footer = panelText()
-    check(footer.contains("⌥↩") && footer.contains("replace"), "the footer shows ⌥↩ replace", "panel text: \(footer)")
+    check(footer.range(of: #"\breplace\b"#, options: .regularExpression) != nil, "the footer shows ⌥↩ replace", "panel text: \(footer)")
     press(keyTab)
     pump(0.3)
     press(keySpace)

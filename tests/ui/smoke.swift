@@ -626,7 +626,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 press(keyV, .maskCommand)
             }
             pump(1)
-            let value = focusedElement().map { allText($0) } ?? ""
+            let value = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
             log("NOTE control: \(how) \(value.contains(marker) ? "landed" : "did not land"); window \(chromeWindowFocused())")
         }
         for (index, field) in ["text box", "editable div"].enumerated() {
@@ -650,7 +650,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 let text = list.map { allText($0, levels: 40) }.joined(separator: " ")
                 return text.contains("confirm") ? text : nil
             }
-            let value = focusedElement().map { allText($0) } ?? ""
+            let value = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
             check(notice == nil, "↩ applies in the \(field) without a warning", "SuperEditr said: \(notice ?? "")")
             check(!value.isEmpty && !value.contains(typo), "the \(field) holds the fix", "the field reads \"\(value)\"")
             screenshot(window: nil, rect: windows(bundleID: chrome).first?.frame, to: outDir + "/web-\(index)-applied.png")

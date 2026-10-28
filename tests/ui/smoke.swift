@@ -35,7 +35,7 @@ func skipEnvironment(_ reason: String) -> Never {
 
 let replayMark: Int64 = 0x5345_4454  // SuperEditr's marker on keys it replays ("SEDT")
 let keyE: CGKeyCode = 14, keyA: CGKeyCode = 0, keyEscape: CGKeyCode = 53, keyTab: CGKeyCode = 48, keySpace: CGKeyCode = 49
-let keyShift: CGKeyCode = 56, keyRight: CGKeyCode = 124, keyUp: CGKeyCode = 126
+let keyShift: CGKeyCode = 56, keyRight: CGKeyCode = 124, keyUp: CGKeyCode = 126, keyReturn: CGKeyCode = 36
 
 /// Holds Shift down (true) or lets it go (false), as a separate key, the way a person does.
 func shift(_ down: Bool) {
@@ -162,11 +162,13 @@ func running(_ bundleID: String) -> [NSRunningApplication] {
 var opened: [NSRunningApplication] = []
 
 /// Starts an app that isn't already running (with a file, if given), waits until it is frontmost,
-/// and remembers it so it can be quit later.
-func openFront(_ app: String, bundleID: String, file: String? = nil) -> Bool {
+/// and remembers it so it can be quit later. `newInstance` starts a separate copy even when the app
+/// is already open, passing it `launchArguments`.
+func openFront(_ app: String, bundleID: String, file: String? = nil, newInstance: Bool = false, launchArguments: [String] = []) -> Bool {
     let open = Process()
     open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-    open.arguments = ["-a", app] + (file.map { [$0] } ?? [])
+    open.arguments = (newInstance ? ["-n"] : []) + ["-a", app] + (file.map { [$0] } ?? [])
+        + (launchArguments.isEmpty ? [] : ["--args"] + launchArguments)
     try? open.run()
     open.waitUntilExit()
     opened += running(bundleID).filter { started in !opened.contains { $0.processIdentifier == started.processIdentifier } }
@@ -545,7 +547,58 @@ check(refusal.map { !$0.contains("Ab3dE5gH7jK9") } ?? true, "the refusal doesn't
 screenshot(window: overlay(), to: outDir + "/secret-refused.png")
 press(keyEscape)
 quitOpened("com.apple.TextEdit")
+
+// 6c. ↩ in the review writes the fix into a web page's text field. Browsers and Electron apps take
+// the paste path rather than an Accessibility write. Checked in a plain text box and in an editable
+// div, the kind of field chat apps use. Chrome runs as its own copy with a throwaway profile.
+let chromeApp = "/Applications/Google Chrome.app", chrome = "com.google.Chrome"
+if !FileManager.default.fileExists(atPath: chromeApp) {
+    log("SKIP applying in a web page: Chrome isn't installed")
+} else {
+    let typo = "Their going to love this."
+    let page = work + "/fields.html"
+    try! """
+    <!doctype html><meta charset="utf-8"><title>Fields</title>
+    <textarea id="plain" autofocus rows="3" cols="60">\(typo)</textarea>
+    <div id="rich" contenteditable="true" style="border:1px solid; width:30em; min-height:3em">\(typo)</div>
+    """.write(toFile: page, atomically: true, encoding: .utf8)
+    let chromeOpened = openFront(chromeApp, bundleID: chrome, file: page, newInstance: true,
+                                 launchArguments: ["--user-data-dir=\(work)/chrome", "--no-first-run", "--no-default-browser-check"])
+    check(chromeOpened, "Chrome opens the page with two fields")
+    // Chrome builds its Accessibility tree only once asked, as SuperEditr does when it reads.
+    if let ours = opened.last(where: { $0.bundleIdentifier == chrome }) {
+        AXUIElementSetAttributeValue(AXUIElementCreateApplication(ours.processIdentifier), "AXManualAccessibility" as CFString, kCFBooleanTrue)
+    }
+    pump(2)
+    for (index, field) in ["text box", "editable div"].enumerated() {
+        if index == 1 { press(keyTab) ; pump(0.5) }  // Tab moves focus from the text box to the div
+        check(selectAll(), "the \(field)'s text is selected")
+        press(keyE, .maskCommand)
+        pump(0.1)
+        press(keyE, .maskCommand)
+        let panel = waitFor(5) { overlay() }
+        check(panel != nil, "⌘E E reviews the \(field)", "no overlay within 5 s")
+        guard panel != nil else { continue }
+        pump(1.5)  // the rule-based checker's result
+        screenshot(window: overlay(), to: outDir + "/web-\(index)-review.png")
+        press(keyReturn)
+        let notice = waitFor(3) { () -> String? in
+            guard let app = running(superEditr).first,
+                  let list = attribute(AXUIElementCreateApplication(app.processIdentifier), kAXWindowsAttribute) as? [AXUIElement] else { return nil }
+            let text = list.map { allText($0, levels: 40) }.joined(separator: " ")
+            return text.contains("confirm") ? text : nil
+        }
+        let value = focusedElement().map { allText($0) } ?? ""
+        check(notice == nil, "↩ applies in the \(field) without a warning", "SuperEditr said: \(notice ?? "")")
+        check(!value.isEmpty && !value.contains(typo), "the \(field) holds the fix", "the field reads \"\(value)\"")
+        screenshot(window: nil, rect: windows(bundleID: chrome).first?.frame, to: outDir + "/web-\(index)-applied.png")
+        if notice != nil { press(keyEscape) ; pump(0.5) }
+    }
+    quitOpened(chrome)
+}
 stop(app)
+// What SuperEditr logged about each read and write (app IDs, timings and lengths, no text).
+try? FileManager.default.copyItem(atPath: home + "/Library/Logs/SuperEditr/capture.log", toPath: outDir + "/capture.log")
 
 // 7. The Accessibility guide card, when this build has it, sits at System Settings' bottom-right.
 let binary = (try? Data(contentsOf: URL(fileURLWithPath: "\(appPath)/Contents/MacOS/supereditr"))) ?? Data()

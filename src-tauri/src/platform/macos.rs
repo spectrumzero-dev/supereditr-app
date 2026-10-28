@@ -440,8 +440,8 @@ pub fn capture(allow_clipboard: bool) -> Result<Capture, PlatformError> {
     result
 }
 
-/// Appends one line about a selection read to ~/Library/Logs/SuperEditr/capture.log, so a failure
-/// in a particular app can be diagnosed. It records app IDs, timings and lengths, never text.
+/// Appends one line about a selection read or write to ~/Library/Logs/SuperEditr/capture.log, so a
+/// failure in a particular app can be diagnosed. It records app IDs, timings and lengths, never text.
 fn trace(message: std::fmt::Arguments) {
     use std::io::Write;
     let Some(home) = std::env::var_os("HOME") else { return };
@@ -656,6 +656,10 @@ pub fn replace(capture: &Capture, text: &str) -> Result<ReplaceMethod, PlatformE
             .and_then(|(app, _)| app.element("AXFocusedUIElement"))
             .is_some_and(|focus| is_same_or_descendant(&focus, element));
         if !still_focused || !selection_unchanged(capture) {
+            trace(format_args!(
+                "{}: not written: focus moved ({}) or selection changed",
+                capture.bundle_id, !still_focused
+            ));
             return Err(PlatformError::Stale);
         }
         if !capture.web && element.settable("AXSelectedText") {
@@ -667,6 +671,10 @@ pub fn replace(capture: &Capture, text: &str) -> Result<ReplaceMethod, PlatformE
                 }
                 // The write may have been applied without being verifiable; never paste on top of it.
                 if element.string("AXValue") != before || !selection_unchanged(capture) {
+                    trace(format_args!(
+                        "{}: Accessibility write changed the field but didn't verify",
+                        capture.bundle_id
+                    ));
                     copy_to_clipboard(text);
                     return Err(PlatformError::Unverified);
                 }
@@ -722,8 +730,19 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
     let before = element.string("AXValue");
     let snapshot = pasteboard::Snapshot::take();
     let ours = pasteboard::write_transient_string(text);
+    let window = key_window_state(capture.pid);
+    let started = Instant::now();
     post_command_key(capture.pid, Key::V);
-    if !verify_replacement(element, capture, before.as_deref(), text, Duration::from_millis(600)) {
+    let landed = verify_replacement(element, capture, before.as_deref(), text, Duration::from_millis(600));
+    trace(format_args!(
+        "{}: pasted {} characters with ⌘V to the app's process, {window}; {} after {:?}, field value {}",
+        capture.bundle_id,
+        text.chars().count(),
+        if landed { "verified" } else { "not verified" },
+        started.elapsed(),
+        if element.string("AXValue") == before { "unchanged" } else { "changed" },
+    ));
+    if !landed {
         // The paste may still land late. Leave the suggestion on the clipboard rather than
         // restoring, so a late paste can't insert the user's old clipboard instead.
         return Err(PlatformError::Unverified);
@@ -735,6 +754,15 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
         snapshot.restore_if_unchanged_since(ours);
     });
     Ok(ReplaceMethod::Paste)
+}
+
+/// Whether `pid` is the front app and its focused window is the main, focused one, for the log.
+fn key_window_state(pid: i32) -> String {
+    let front = focused_app().is_some_and(|(_, front)| front == pid);
+    let window = Element::from_create(unsafe { AXUIElementCreateApplication(pid) })
+        .and_then(|app| app.element("AXFocusedWindow"));
+    let flag = |name| window.as_ref().and_then(|w| w.flag(name)).map_or("unknown".to_string(), |v| v.to_string());
+    format!("front {front}, window main {} focused {}", flag("AXMain"), flag("AXFocused"))
 }
 
 pub fn copy_to_clipboard(text: &str) {

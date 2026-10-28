@@ -458,7 +458,7 @@ pub fn capture(allow_clipboard: bool, select_sentence: bool) -> Result<Capture, 
     let started = Instant::now();
     let mut first = capture_ax(&app, pid, &bundle_id, &app_name);
     if select_sentence && matches!(first, Err(PlatformError::NoSelection)) {
-        let caret = select_before_caret(&app, pid, &bundle_id);
+        let caret = select_before_caret(&app);
         trace(format_args!("{bundle_id}: nothing selected; {caret:?}"));
         if caret != CaretSelection::Nothing {
             first = capture_ax(&app, pid, &bundle_id, &app_name);
@@ -569,17 +569,16 @@ fn capture_ax(app: &Element, pid: i32, bundle_id: &str, app_name: &str) -> Resul
 enum CaretSelection {
     /// Selected the sentence before the caret through Accessibility.
     Sentence,
-    /// The field hides its text, so ⌥⇧↑ asked the app to select back to the paragraph's start.
-    Paragraph,
-    /// Left alone: an empty field, a caret at the start, or no text field at all.
+    /// Left alone: an empty field, a caret at the start, no text field at all, or a field that
+    /// hides its text or caret from Accessibility. No key is ever sent to select instead: the same
+    /// keys mean different things in different apps (⌥⇧↑ copies a line in some code editors).
     Nothing,
 }
 
 /// With nothing selected, selects the text a review of "what I just wrote" should cover, so the
 /// user sees it and the usual capture, same-field and unchanged-selection checks apply to it.
-fn select_before_caret(app: &Element, pid: i32, bundle_id: &str) -> CaretSelection {
-    let focused = app.element("AXFocusedUIElement");
-    let mut current = focused.clone();
+fn select_before_caret(app: &Element) -> CaretSelection {
+    let mut current = app.element("AXFocusedUIElement");
     for _ in 0..8 {
         let Some(element) = current else { break };
         if element.string("AXSubrole").as_deref() == Some("AXSecureTextField") {
@@ -598,22 +597,7 @@ fn select_before_caret(app: &Element, pid: i32, bundle_id: &str) -> CaretSelecti
         }
         current = element.element("AXParent");
     }
-    // Many web and Electron editors expose neither their text nor the caret. Only a text field gets
-    // the keystroke: in a list or a terminal, ⌥⇧↑ means something else.
-    let text_field = focused.as_ref().is_some_and(|element| {
-        matches!(element.string("AXRole").as_deref(), Some("AXTextArea" | "AXTextField" | "AXComboBox"))
-            || element.attr("AXEditableAncestor").is_some()
-    });
-    let web = is_browser_or_electron(bundle_id, pid);
-    if !text_field && !web {
-        return CaretSelection::Nothing;
-    }
-    // As with ⌘C, browsers and Electron apps can ignore keys sent to their process.
-    let keystroke = web && focused_app().is_some_and(|(_, front)| front == pid);
-    let flags = CGEventFlags::CGEventFlagAlternate | CGEventFlags::CGEventFlagShift;
-    post_key(if keystroke { 0 } else { pid }, KEY_UP_ARROW, flags);
-    std::thread::sleep(Duration::from_millis(150));
-    CaretSelection::Paragraph
+    CaretSelection::Nothing
 }
 
 /// Sets the field's selection to `range` and waits briefly for the app to report it.
@@ -1012,9 +996,6 @@ pub fn refresh_keyboard_layout() {
         CFRelease(source as CFTypeRef);
     }
 }
-
-/// The up arrow's key code, the same on every layout.
-const KEY_UP_ARROW: u16 = 126;
 
 fn post_command_key(pid: i32, key: Key) {
     let code = match key {

@@ -43,7 +43,7 @@
     <div class="row">
       <div>
         <div class="label">With nothing selected, use the sentence before the cursor</div>
-        <div class="hint">The shortcuts select the sentence you just wrote, so you see what they’ll change, and review it. Where an app hides its text, they select back to the start of the paragraph. Automatic suggestions never do this.</div>
+        <div class="hint">The shortcuts select the sentence you just wrote, so you see what they’ll change, and review it. In an app that hides its text, select it yourself. Automatic suggestions never do this.</div>
       </div>
       <input type="checkbox" class="switch" bind:checked={config.select_sentence} onchange={onchange} />
     </div>

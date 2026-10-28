@@ -1,7 +1,7 @@
 //! Global keyboard shortcuts.
 //!
 //! Persistent shortcuts come from settings: review, quick fix, and optional per-preset keys.
-//! While an automatic overlay is showing (without focus), ⌥↩ applies its suggestion and ⌥⎋
+//! While the overlay is showing, with or without focus, ⌥↩ applies its suggestion and ⌥⎋
 //! dismisses it, so the user never has to reach for the mouse.
 //!
 //! A shortcut written as the same chord twice ("Command+E Command+E", shown as ⌘E E) is a double

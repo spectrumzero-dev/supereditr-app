@@ -344,7 +344,7 @@
       {/if}
 
       {#if showTips && hasFocus && phase === "done" && list.length}
-        <p class="tips">Tip: <kbd>↩</kbd> applies everything you see · <kbd>tab</kbd> steps through changes · <kbd>␣</kbd> switches a change between yours and the suggestion · <kbd>esc</kbd> closes</p>
+        <p class="tips">Tip: <kbd>⌥↩</kbd> {session.canApply ? "replaces your text with" : "copies"} everything you see · <kbd>tab</kbd> steps through changes · <kbd>␣</kbd> switches a change between yours and the suggestion · <kbd>esc</kbd> closes</p>
       {/if}
       <footer>
         <div class="status" title={[summarize(view), source, timing].filter(Boolean).join(" · ")}>
@@ -362,15 +362,18 @@
           {#if phase === "done" && source}<span class="muted source">· {source.replace(" (backup)", "")}</span>{/if}
           {#if session.showTiming && timing}<span class="muted time">· {timing}</span>{/if}
         </div>
+        <!-- ⌥↩ works with or without focus, so it is the one replace key shown; ↩ also works with
+             focus. Nothing to replace, nothing to show. -->
         <div class="keys">
           {#if hasFocus}
             {#if list.length > 1}<span><kbd>tab</kbd> next</span>{/if}
             {#if focusedId != null}<span><kbd>␣</kbd> {rejected.has(focusedId) ? "restore" : "keep original"}</span>{/if}
             <span><kbd>/</kbd> instruct</span>
-            <span><kbd>↩</kbd> {session.canApply ? "apply" : "copy"}</span>
+          {/if}
+          {#if !unchanged}<span><kbd>⌥↩</kbd> {session.canApply ? "replace" : "copy fix"}</span>{/if}
+          {#if hasFocus}
             <span><kbd>esc</kbd></span>
           {:else}
-            <span><kbd>⌥↩</kbd> apply</span>
             <button class="link" onclick={() => ipc.focus()}>use keyboard</button>
           {/if}
         </div>

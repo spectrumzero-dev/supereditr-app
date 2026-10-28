@@ -43,14 +43,13 @@
     <div class="row keys">
       <div class="label">In the suggestion panel</div>
       <div class="cheats">
-        <span><kbd>↩</kbd> apply</span>
+        <span><kbd>⌥↩</kbd> or <kbd>↩</kbd> replace</span>
         <span><kbd>tab</kbd> next change</span>
         <span><kbd>␣</kbd> keep original</span>
         <span><kbd>1</kbd>–<kbd>7</kbd> style</span>
         <span><kbd>/</kbd> instruct</span>
         <span><kbd>R</kbd> retry</span>
         <span><kbd>⌘C</kbd> copy</span>
-        <span><kbd>⌥↩</kbd> apply without focus</span>
       </div>
     </div>
     {#if problems.length}

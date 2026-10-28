@@ -225,6 +225,13 @@ func allText(_ element: AXUIElement, levels: Int = 6) -> String {
     return ([ownText(element)] + children.map { allText($0, levels: levels - 1) }).joined(separator: " ")
 }
 
+/// Every word in SuperEditr's windows, as Accessibility reads them.
+func panelText() -> String {
+    guard let app = running(superEditr).first,
+          let list = attribute(AXUIElementCreateApplication(app.processIdentifier), kAXWindowsAttribute) as? [AXUIElement] else { return "" }
+    return list.map { allText($0, levels: 40) }.joined(separator: " ")
+}
+
 /// The first element, depth first, that `match` accepts.
 func findElement(_ root: AXUIElement, depth: Int = 0, _ match: (AXUIElement) -> Bool) -> AXUIElement? {
     if match(root) { return root }
@@ -471,6 +478,13 @@ let keepPanel = waitFor(5) { overlay() }
 check(keepPanel != nil, "⌘E E reviews the named draft", "no overlay within 5 s")
 if keepPanel != nil {
     pump(1.5)  // the rule-based checker's result
+    // The footer's "replace", not the tip line's "replaces". The web view's text can take a moment
+    // to reach Accessibility.
+    let footer = waitFor(3) { () -> String? in
+        let text = panelText()
+        return text.range(of: #"\breplace\b"#, options: .regularExpression) != nil ? text : nil
+    }
+    check(footer != nil, "the footer shows ⌥↩ replace", "panel text: \(panelText())")
     press(keyTab)
     pump(0.3)
     press(keySpace)
@@ -490,6 +504,28 @@ if keepPanel != nil {
 }
 quitOpened("com.apple.TextEdit")
 
+// 6a. With nothing to fix, the footer says so and offers no replace key.
+let clean = work + "/clean.txt"
+try! "We meet at noon.".write(toFile: clean, atomically: true, encoding: .utf8)
+check(openFront("TextEdit", bundleID: "com.apple.TextEdit", file: clean), "TextEdit opens the clean draft")
+check(selectAll(), "the clean draft's text is selected")
+press(keyE, .maskCommand)
+pump(0.1)
+press(keyE, .maskCommand)
+let cleanPanel = waitFor(5) { overlay() }
+check(cleanPanel != nil, "⌘E E reviews the clean draft", "no overlay within 5 s")
+if cleanPanel != nil {
+    pump(1.5)  // the rule-based checker's result
+    screenshot(window: overlay(), to: outDir + "/no-changes.png")
+    let footer = waitFor(3) { () -> String? in
+        let text = panelText()
+        return text.contains("No changes") ? text : nil
+    }
+    check(footer.map { !$0.contains("⌥↩") } ?? false, "no changes hides the replace key", "panel text: \(footer ?? panelText())")
+    press(keyEscape)
+}
+quitOpened("com.apple.TextEdit")
+
 // 6b. A selection holding a secret isn't reviewed: ⌘E E says why instead of opening a review. The
 // token is assembled from pieces so the source holds no secret-shaped string.
 let secretDraft = work + "/secret.txt"
@@ -501,9 +537,7 @@ press(keyE, .maskCommand)
 pump(0.1)
 press(keyE, .maskCommand)
 let refusal = waitFor(5) { () -> String? in
-    guard let app = running(superEditr).first,
-          let list = attribute(AXUIElementCreateApplication(app.processIdentifier), kAXWindowsAttribute) as? [AXUIElement] else { return nil }
-    let text = list.map { allText($0, levels: 40) }.joined(separator: " ")
+    let text = panelText()
     return text.contains("a GitHub token") ? text : nil
 }
 check(refusal != nil, "a selected token is refused, not reviewed", "no message naming a GitHub token within 5 s")

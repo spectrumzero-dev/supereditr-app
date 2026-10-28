@@ -35,7 +35,7 @@ func skipEnvironment(_ reason: String) -> Never {
 
 let replayMark: Int64 = 0x5345_4454  // SuperEditr's marker on keys it replays ("SEDT")
 let keyE: CGKeyCode = 14, keyA: CGKeyCode = 0, keyEscape: CGKeyCode = 53, keyTab: CGKeyCode = 48, keySpace: CGKeyCode = 49
-let keyShift: CGKeyCode = 56, keyRight: CGKeyCode = 124, keyUp: CGKeyCode = 126, keyReturn: CGKeyCode = 36
+let keyShift: CGKeyCode = 56, keyRight: CGKeyCode = 124, keyUp: CGKeyCode = 126, keyReturn: CGKeyCode = 36, keyV: CGKeyCode = 9
 
 /// Holds Shift down (true) or lets it go (false), as a separate key, the way a person does.
 func shift(_ down: Bool) {
@@ -559,7 +559,8 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
     let page = work + "/fields.html"
     try! """
     <!doctype html><meta charset="utf-8"><title>Fields</title>
-    <textarea id="plain" autofocus rows="3" cols="60">\(typo)</textarea>
+    <textarea id="control" autofocus rows="2" cols="60">Control field.</textarea>
+    <textarea id="plain" rows="3" cols="60">\(typo)</textarea>
     <div id="rich" contenteditable="true" style="border:1px solid; width:30em; min-height:3em">\(typo)</div>
     """.write(toFile: page, atomically: true, encoding: .utf8)
     let chromeOpened = openFront(chromeApp, bundleID: chrome, file: page, newInstance: true,
@@ -590,8 +591,36 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         press(keyEscape)
         _ = waitFor(3) { overlay() == nil ? true : nil }
     }
+    // Control, without SuperEditr: does Chrome's window report focus here, and does a plain ⌘V land?
+    // This tells a SuperEditr bug apart from a runner session that can't paste into Chrome at all.
+    func chromeWindowFocused() -> String {
+        guard let ours = opened.last(where: { $0.bundleIdentifier == chrome }),
+              let window = attribute(AXUIElementCreateApplication(ours.processIdentifier), kAXFocusedWindowAttribute) else { return "no window" }
+        return "main \(attribute(window as! AXUIElement, kAXMainAttribute) as? Bool ?? false), focused \(attribute(window as! AXUIElement, kAXFocusedAttribute) as? Bool ?? false)"
+    }
+    log("NOTE control: Chrome's window before any paste: \(chromeWindowFocused())")
+    for (how, toProcess) in [("a ⌘V keystroke", false), ("⌘V posted to Chrome's process", true)] {
+        let marker = "Pasted by the test \(toProcess ? 2 : 1)."
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(marker, forType: .string)
+        _ = selectAll()
+        if toProcess, let ours = opened.last(where: { $0.bundleIdentifier == chrome }) {
+            for down in [true, false] {
+                let event = CGEvent(keyboardEventSource: nil, virtualKey: keyV, keyDown: down)
+                event?.flags = .maskCommand
+                event?.postToPid(ours.processIdentifier)
+                usleep(25_000)
+            }
+        } else {
+            press(keyV, .maskCommand)
+        }
+        pump(1)
+        let value = focusedElement().map { allText($0) } ?? ""
+        log("NOTE control: \(how) \(value.contains(marker) ? "landed" : "did not land"); window \(chromeWindowFocused())")
+    }
     for (index, field) in ["text box", "editable div"].enumerated() {
-        if index == 1 { press(keyTab) ; pump(0.5) }  // Tab moves focus from the text box to the div
+        press(keyTab)  // from the control field to the text box, then to the div
+        pump(0.5)
         check(selectAll() || selectAll(), "the \(field)'s text is selected")
         press(keyE, .maskCommand)
         pump(0.1)

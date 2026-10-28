@@ -569,6 +569,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
     try! """
     <!doctype html><meta charset="utf-8"><title>Fields</title>
     <textarea id="control" autofocus rows="2" cols="60">Control field.</textarea>
+    <div id="controlrich" contenteditable="true" style="border:1px dashed; width:30em; min-height:2em">Control div.</div>
     <textarea id="plain" rows="3" cols="60">\(typo)</textarea>
     <div id="rich" contenteditable="true" style="border:1px solid; width:30em; min-height:3em">\(typo)</div>
     """.write(toFile: page, atomically: true, encoding: .utf8)
@@ -629,7 +630,29 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             let value = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
             log("NOTE control: \(how) \(value.contains(marker) ? "landed" : "did not land"); window \(chromeWindowFocused())")
         }
-        for (index, field) in ["text box", "editable div"].enumerated() {
+        // The same control in an editable div, also pressing Chrome's own Edit ▸ Paste item as SuperEditr does.
+    func pressChromePaste() -> Bool {
+        guard let ours = opened.last(where: { $0.bundleIdentifier == chrome }),
+              let bar = attribute(AXUIElementCreateApplication(ours.processIdentifier), kAXMenuBarAttribute) else { return false }
+        let item = findElement(bar as! AXUIElement) { element in
+            (attribute(element, kAXMenuItemCmdCharAttribute) as? String)?.lowercased() == "v"
+                && (attribute(element, kAXMenuItemCmdModifiersAttribute) as? Int) == 0
+        }
+        return item.map { AXUIElementPerformAction($0, kAXPressAction as CFString) == .success } ?? false
+    }
+    press(keyTab)  // from the control text box to the control div
+    pump(0.5)
+    for (how, useMenu) in [("a ⌘V keystroke", false), ("Chrome's Edit ▸ Paste item", true)] {
+        let marker = "Div paste \(useMenu ? 2 : 1)."
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(marker, forType: .string)
+        _ = selectAll()
+        let pressed = useMenu ? pressChromePaste() : { press(keyV, .maskCommand); return true }()
+        pump(1)
+        let value = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
+        log("NOTE control div: \(how) (sent \(pressed)) \(value.contains(marker) ? "landed" : "did not land"); field reads \"\(value)\"")
+    }
+    for (index, field) in ["text box", "editable div"].enumerated() {
             press(keyTab)  // from the control field to the text box, then to the div
             pump(0.5)
             check(selectAll() || selectAll(), "the \(field)'s text is selected")

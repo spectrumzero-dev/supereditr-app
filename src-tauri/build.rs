@@ -48,17 +48,33 @@ fn join_universal(binaries: &Path) {
         return;
     }
     let output = binaries.join("supereditr-fm-universal-apple-darwin");
-    let joined = Command::new("lipo")
-        .arg("-create")
-        .args(&parts)
-        .arg("-output")
-        .arg(&output)
-        .status()
-        .is_ok_and(|status| status.success());
-    if !joined {
+    if parts.iter().any(|part| is_stub(part)) {
         // lipo can't join a stub, which is a shell script; a stub runs on either architecture.
         write_stub(&output);
+        return;
     }
+    let status = Command::new("lipo").arg("-create").args(&parts).arg("-output").arg(&output).status();
+    assert!(
+        status.as_ref().is_ok_and(|status| status.success()),
+        "lipo couldn't join the Apple Intelligence helpers: {status:?}"
+    );
+    // lipo -create skips an input it doesn't recognise and still succeeds, so check the result.
+    let archs = Command::new("lipo")
+        .arg("-archs")
+        .arg(&output)
+        .output()
+        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned());
+    let archs = archs.unwrap_or_default();
+    let words: Vec<&str> = archs.split_whitespace().collect();
+    assert!(
+        words.contains(&"arm64") && words.contains(&"x86_64"),
+        "the universal Apple Intelligence helper is missing an architecture: {archs:?}"
+    );
+}
+
+/// A stub is the shell script `write_stub` writes; a compiled helper is a Mach-O binary.
+fn is_stub(path: &Path) -> bool {
+    std::fs::read(path).is_ok_and(|bytes| bytes.starts_with(b"#!"))
 }
 
 fn write_stub(path: &Path) {

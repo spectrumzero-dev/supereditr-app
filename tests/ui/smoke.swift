@@ -658,27 +658,38 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         // the time. Before each repeat the test puts the typo back itself, with a ⌘V posted to
         // Chrome's process, which the control above shows lands.
         let runs: [(field: String, attempt: Int)] = [("text box", 1)] + (1...5).map { ("editable div", $0) }
-        var divApplied = 0
+        var divApplied = 0, divAttempts = 0
         for (index, run) in runs.enumerated() {
             let field = run.field == "editable div" ? "editable div (attempt \(run.attempt))" : run.field
             if run.attempt == 1 {
                 press(keyTab)  // from the control field to the text box, then to the div
                 pump(0.5)
             } else if let ours = launchedSinceStart(chrome).last {
-                _ = selectAll()
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(typo, forType: .string)
-                for down in [true, false] {
-                    let event = CGEvent(keyboardEventSource: nil, virtualKey: keyV, keyDown: down)
-                    event?.flags = .maskCommand
-                    event?.postToPid(ours.processIdentifier)
-                    usleep(25_000)
+                // A paste straight after one of SuperEditr's can be dropped, so retry the reset.
+                for _ in 0..<3 {
+                    _ = selectAll()
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(typo, forType: .string)
+                    for down in [true, false] {
+                        let event = CGEvent(keyboardEventSource: nil, virtualKey: keyV, keyDown: down)
+                        event?.flags = .maskCommand
+                        event?.postToPid(ours.processIdentifier)
+                        usleep(25_000)
+                    }
+                    pump(1)
+                    let reset = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
+                    if reset.contains(typo) { break }
+                    log("NOTE the test's reset paste into the \(field) was dropped; retrying")
                 }
-                pump(1)
             }
             check(selectAll() || selectAll(), "the \(field)'s text is selected")
             let start = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
-            if !start.contains(typo) { log("NOTE the \(field) didn't start with the typo; it reads \"\(start)\"") }
+            if run.field == "editable div" && !start.contains(typo) {
+                // Nothing to fix, so this attempt can't show whether the paste lands.
+                log("NOTE skipped the \(field): it didn't start with the typo; it reads \"\(start)\"")
+                continue
+            }
+            if run.field == "editable div" { divAttempts += 1 }
             press(keyE, .maskCommand)
             pump(0.1)
             press(keyE, .maskCommand)
@@ -713,7 +724,8 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 _ = waitFor(3) { overlay() == nil ? true : nil }
             }
         }
-        check(divApplied == 5, "↩ applies in the editable div every time", "applied \(divApplied) of 5 times")
+        check(divAttempts >= 3 && divApplied == divAttempts, "↩ applies in the editable div every time",
+              "applied \(divApplied) of \(divAttempts) attempts that started from the typo")
     }
     quitOpened(chrome)
 }

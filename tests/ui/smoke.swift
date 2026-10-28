@@ -535,7 +535,8 @@ if keepPanel != nil {
         let text = panelText()
         return text.range(of: #"\breplace\b"#, options: .regularExpression) != nil ? text : nil
     }
-    check(footer != nil, "the footer shows ⌥↩ replace", "panel text: \(panelText())")
+    check(footer.map { $0.contains("↩") && !$0.contains("⌥↩") } ?? false, "the review's footer shows ↩ replace, not ⌥↩",
+          "panel text: \(footer ?? panelText())")
     press(keyTab)
     pump(0.3)
     press(keySpace)
@@ -572,7 +573,7 @@ if cleanPanel != nil {
         let text = panelText()
         return text.contains("No changes") ? text : nil
     }
-    check(footer.map { !$0.contains("⌥↩") } ?? false, "no changes hides the replace key", "panel text: \(footer ?? panelText())")
+    check(footer.map { !$0.contains("↩") } ?? false, "no changes hides the replace key", "panel text: \(footer ?? panelText())")
     press(keyEscape)
 }
 quitOpened("com.apple.TextEdit")

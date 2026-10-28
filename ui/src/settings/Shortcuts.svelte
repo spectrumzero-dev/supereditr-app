@@ -30,7 +30,10 @@
       </div>
     {/each}
   </div>
-  <p class="foot">Select text anywhere, then press {keySymbols(review)}{auto ? ", or just wait a moment" : ""}.</p>
+  <p class="foot">
+    Select text anywhere, then press {keySymbols(review)} to review it with these keys.{#if auto}
+      Or just wait a moment: a suggestion appears on its own, and <kbd>⌥↩</kbd> applies it (↩ stays with your app).{/if}
+  </p>
 </div>
 
 <style>

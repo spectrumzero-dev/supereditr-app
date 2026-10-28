@@ -723,8 +723,9 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         }
         press(keyTab)  // from the control text box to the control div
         pump(0.5)
+        var restoredRounds = 0, restoredFailures = 0, plainRounds = 0, plainFailures = 0
         log("NOTE experiment: setup paste \(plainPaste("Setup.") ? "landed" : "did not land")")
-        for (round, restore) in [(1, true), (2, false), (3, true), (4, false)] {
+        for (round, restore) in (1...12).map({ ($0, $0 % 2 == 1) }) {
             _ = selectAll()
             let pb = NSPasteboard.general
             let saved: [[(NSPasteboard.PasteboardType, Data)]] = (pb.pasteboardItems ?? []).map { item in
@@ -753,8 +754,10 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             pump(2)
             let next = plainPaste("Next \(round).")
             log("NOTE experiment round \(round), restore \(restore): menu paste (sent \(pressed)) \(first ? "landed" : "did not land"); next ⌘V \(next ? "landed" : "did not land")")
+            if restore { restoredRounds += 1; if !next { restoredFailures += 1 } } else { plainRounds += 1; if !next { plainFailures += 1 } }
             if !next { log("NOTE experiment round \(round): recovery paste \(plainPaste("Recover \(round).") ? "landed" : "did not land")") }
         }
+        log("NOTE experiment summary: next paste ignored after \(restoredFailures) of \(restoredRounds) rounds with the restore, \(plainFailures) of \(plainRounds) without")
         // A paste straight after one of SuperEditr's in the same Chrome window can be ignored
         // (spectrumzero-dev/supereditr-app#10), so before the editable div's review the test puts
         // its text back with its own ⌘V, posted to Chrome's process, which the control above shows

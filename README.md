@@ -25,6 +25,8 @@ Select text in any Mac app and get fixes in about half a second. Accept them wit
 
 Add names, places, and terms under Settings → Your words, as a word ("Rhyan") or a phrase ("1234 Glenmoor Ct"). The offline checker treats them as correctly spelled, the AI is told to keep the ones in the selected text (the rest of the list stays on your Mac), and a change that drops one anyway starts out rejected. When you keep your original spelling of an unfamiliar word in the panel, **A** adds it. Even before you add them, the offline checker leaves capitalized names in the middle of a sentence alone ("I am taking Rhyan to tennis").
 
+With nothing selected, ⌘E E and ⌃⌥⇧E select the sentence before the cursor and review that. In an app that hides its text from Accessibility, select the text yourself. Turn this off in Settings → Behavior.
+
 Typing or clicking elsewhere hides an automatic suggestion. Turn automatic suggestions off in Settings → Behavior to use the shortcut only. All shortcuts can be changed, and any style can have its own global shortcut.
 
 ## Install

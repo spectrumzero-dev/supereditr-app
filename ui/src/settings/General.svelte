@@ -40,6 +40,13 @@
       </div>
       <ShortcutInput slot="quick_fix" value={config.hotkeys.quick_fix} onchange={(v) => { config.hotkeys.quick_fix = v; onchange(); }} />
     </div>
+    <div class="row">
+      <div>
+        <div class="label">With nothing selected, use the sentence before the cursor</div>
+        <div class="hint">The shortcuts select the sentence you just wrote, so you see what they’ll change, and review it. In an app that hides its text, select it yourself. Automatic suggestions never do this.</div>
+      </div>
+      <input type="checkbox" class="switch" bind:checked={config.select_sentence} onchange={onchange} />
+    </div>
     <div class="row keys">
       <div class="label">In the suggestion panel</div>
       <div class="cheats">

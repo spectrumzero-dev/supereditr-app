@@ -84,6 +84,23 @@ unsafe extern "C" {
     fn AXValueGetTypeID() -> CFTypeID;
 }
 
+type CFStringTokenizerRef = *const c_void;
+const kCFStringTokenizerUnitSentence: usize = 1;
+const kCFStringTokenizerTokenNone: usize = 0;
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFStringTokenizerCreate(
+        alloc: *const c_void,
+        string: CFStringRef,
+        range: CFRange,
+        options: usize,
+        locale: *const c_void,
+    ) -> CFStringTokenizerRef;
+    fn CFStringTokenizerGoToTokenAtIndex(tokenizer: CFStringTokenizerRef, index: isize) -> usize;
+    fn CFStringTokenizerGetCurrentTokenRange(tokenizer: CFStringTokenizerRef) -> CFRange;
+}
+
 #[link(name = "Carbon", kind = "framework")]
 unsafe extern "C" {
     fn TISCopyCurrentKeyboardLayoutInputSource() -> *mut c_void;
@@ -426,7 +443,9 @@ pub fn return_focus(pid: i32) {
 /// Reads the current selection. With `allow_clipboard`, falls back to a guarded ⌘C when the
 /// app doesn't expose its selection through Accessibility. Only a shortcut allows the clipboard;
 /// an automatic suggestion never copies, so the log calls the read "shortcut" or "automatic".
-pub fn capture(allow_clipboard: bool) -> Result<Capture, PlatformError> {
+/// With `select_sentence` and nothing selected, first selects the sentence before the caret,
+/// visibly, and reads that.
+pub fn capture(allow_clipboard: bool, select_sentence: bool) -> Result<Capture, PlatformError> {
     if !accessibility_trusted(false) {
         return Err(PlatformError::NotTrusted);
     }
@@ -437,7 +456,15 @@ pub fn capture(allow_clipboard: bool) -> Result<Capture, PlatformError> {
     };
     let (bundle_id, app_name) = app_identity(pid);
     let started = Instant::now();
-    let result = match capture_ax(&app, pid, &bundle_id, &app_name) {
+    let mut first = capture_ax(&app, pid, &bundle_id, &app_name);
+    if select_sentence && matches!(first, Err(PlatformError::NoSelection)) {
+        let caret = select_before_caret(&app);
+        trace(format_args!("{bundle_id}: nothing selected; {caret:?}"));
+        if caret != CaretSelection::Nothing {
+            first = capture_ax(&app, pid, &bundle_id, &app_name);
+        }
+    }
+    let result = match first {
         Ok(capture) => Ok(capture),
         Err(PlatformError::SecureField) => Err(PlatformError::SecureField),
         Err(error) => {
@@ -535,6 +562,105 @@ fn capture_ax(app: &Element, pid: i32, bundle_id: &str, app_name: &str) -> Resul
         range: range.map(|r| (r.location, r.length)),
         playground: false,
     })
+}
+
+/// What [`select_before_caret`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaretSelection {
+    /// Selected the sentence before the caret through Accessibility.
+    Sentence,
+    /// Left alone: an empty field, a caret at the start, no text field at all, or a field that
+    /// hides its text or caret from Accessibility. No key is ever sent to select instead: the same
+    /// keys mean different things in different apps (⌥⇧↑ copies a line in some code editors).
+    Nothing,
+}
+
+/// With nothing selected, selects the text a review of "what I just wrote" should cover, so the
+/// user sees it and the usual capture, same-field and unchanged-selection checks apply to it.
+fn select_before_caret(app: &Element) -> CaretSelection {
+    let mut current = app.element("AXFocusedUIElement");
+    for _ in 0..8 {
+        let Some(element) = current else { break };
+        if element.string("AXSubrole").as_deref() == Some("AXSecureTextField") {
+            return CaretSelection::Nothing;
+        }
+        if let Some(caret) = element.range("AXSelectedTextRange").filter(|r| r.length == 0)
+            && let Some(value) = element.string("AXValue")
+        {
+            let Some(sentence) = sentence_before(&value, caret.location.max(0) as usize) else {
+                return CaretSelection::Nothing;
+            };
+            if select_range(&element, sentence) {
+                return CaretSelection::Sentence;
+            }
+            break;
+        }
+        current = element.element("AXParent");
+    }
+    CaretSelection::Nothing
+}
+
+/// Sets the field's selection to `range` and waits briefly for the app to report it.
+fn select_range(element: &Element, range: CFRange) -> bool {
+    let value = unsafe { AXValueCreate(kAXValueCFRangeType, &range as *const CFRange as *const c_void) };
+    if value.is_null() {
+        return false;
+    }
+    let value = unsafe { CFType::wrap_under_create_rule(value) };
+    if !element.set("AXSelectedTextRange", value.as_CFTypeRef()) {
+        return false;
+    }
+    let deadline = Instant::now() + Duration::from_millis(150);
+    loop {
+        if element
+            .range("AXSelectedTextRange")
+            .is_some_and(|r| r.location == range.location && r.length == range.length)
+        {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// The sentence that ends at or contains the caret, skipping whitespace just before it, as a range
+/// of UTF-16 units in `text` without its surrounding whitespace. Sentences come from Core
+/// Foundation's segmentation, which keeps abbreviations such as "e.g." and "Dr." inside a sentence.
+fn sentence_before(text: &str, caret: usize) -> Option<CFRange> {
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let space = |unit: u16| char::from_u32(unit as u32).is_some_and(char::is_whitespace);
+    let last = units[..caret.min(units.len())].iter().rposition(|&u| !space(u))?;
+    let string = CFString::new(text);
+    let whole = CFRange { location: 0, length: units.len() as isize };
+    let tokenizer = unsafe {
+        CFStringTokenizerCreate(
+            std::ptr::null(),
+            string.as_concrete_TypeRef(),
+            whole,
+            kCFStringTokenizerUnitSentence,
+            std::ptr::null(),
+        )
+    };
+    if tokenizer.is_null() {
+        return None;
+    }
+    let tokenizer = unsafe { CFType::wrap_under_create_rule(tokenizer) };
+    let raw = tokenizer.as_CFTypeRef();
+    if unsafe { CFStringTokenizerGoToTokenAtIndex(raw, last as isize) } == kCFStringTokenizerTokenNone {
+        return None;
+    }
+    let token = unsafe { CFStringTokenizerGetCurrentTokenRange(raw) };
+    let mut start = token.location.max(0) as usize;
+    let mut end = ((token.location + token.length) as usize).min(units.len());
+    while start < end && space(units[start]) {
+        start += 1;
+    }
+    while end > start && space(units[end - 1]) {
+        end -= 1;
+    }
+    (end > start).then_some(CFRange { location: start as isize, length: (end - start) as isize })
 }
 
 fn in_web_area(element: &Element) -> bool {
@@ -876,11 +1002,16 @@ fn post_command_key(pid: i32, key: Key) {
         Key::C => KEY_C.load(Ordering::Relaxed),
         Key::V => KEY_V.load(Ordering::Relaxed),
     };
+    post_key(pid, code, CGEventFlags::CGEventFlagCommand);
+}
+
+/// Sends one key press with exactly `flags`, to `pid`, or as a keystroke to the front app when 0.
+fn post_key(pid: i32, code: u16, flags: CGEventFlags) {
     let Ok(source) = CGEventSource::new(CGEventSourceStateID::CombinedSessionState) else { return };
     for down in [true, false] {
         if let Ok(event) = CGEvent::new_keyboard_event(source.clone(), code, down) {
-            // Explicit flags so modifiers still held from the hotkey don't leak into the paste.
-            event.set_flags(CGEventFlags::CGEventFlagCommand);
+            // Explicit flags so modifiers still held from the hotkey don't leak into the key.
+            event.set_flags(flags);
             if pid > 0 {
                 event.post_to_pid(pid);
             } else {
@@ -1431,5 +1562,76 @@ mod pasteboard {
                 .collect();
             pb.writeObjects(&NSArray::from_retained_slice(&restored));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The sentence `sentence_before` picks with the caret at `|`.
+    fn pick(marked: &str) -> Option<String> {
+        let caret = marked.find('|').unwrap();
+        let text = marked.replacen('|', "", 1);
+        let caret = text[..caret].encode_utf16().count();
+        let range = sentence_before(&text, caret)?;
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let start = range.location as usize;
+        Some(String::from_utf16(&units[start..start + range.length as usize]).unwrap())
+    }
+
+    #[test]
+    fn picks_the_sentence_that_ends_at_the_caret() {
+        assert_eq!(pick("We met at noon. Their going to love this.|").as_deref(), Some("Their going to love this."));
+    }
+
+    #[test]
+    fn skips_spaces_and_line_breaks_before_the_caret() {
+        assert_eq!(pick("First one. Second one. |").as_deref(), Some("Second one."));
+        assert_eq!(pick("Rhyan has tennis today.\n\n|").as_deref(), Some("Rhyan has tennis today."));
+    }
+
+    #[test]
+    fn picks_the_whole_sentence_around_a_caret_inside_it() {
+        assert_eq!(pick("First one. Sec|ond one. Third one.").as_deref(), Some("Second one."));
+    }
+
+    #[test]
+    fn a_sentence_still_being_typed_has_no_full_stop() {
+        assert_eq!(pick("Done here. And then we|").as_deref(), Some("And then we"));
+    }
+
+    #[test]
+    fn abbreviations_stay_inside_the_sentence() {
+        assert_eq!(
+            pick("Bring snacks, e.g. apples and pears, to the KPI review.|").as_deref(),
+            Some("Bring snacks, e.g. apples and pears, to the KPI review.")
+        );
+        assert_eq!(
+            pick("We left early. Dr. Brynlee met us at 1234 Glenmoor Ct.|").as_deref(),
+            Some("Dr. Brynlee met us at 1234 Glenmoor Ct.")
+        );
+    }
+
+    #[test]
+    fn a_new_line_starts_a_new_sentence() {
+        assert_eq!(pick("Notes from Kyndal\nThe plan works.|").as_deref(), Some("The plan works."));
+    }
+
+    #[test]
+    fn ranges_count_utf16_units() {
+        assert_eq!(pick("Ship it 🚀 now. Then rest 😴.|").as_deref(), Some("Then rest 😴."));
+    }
+
+    #[test]
+    fn nothing_before_the_caret_selects_nothing() {
+        assert_eq!(pick("|First one."), None);
+        assert_eq!(pick("   |"), None);
+        assert_eq!(pick("|"), None);
+    }
+
+    #[test]
+    fn a_caret_past_the_end_counts_as_the_end() {
+        assert_eq!(sentence_before("One. Two.", 99).map(|r| (r.location, r.length)), Some((5, 4)));
     }
 }

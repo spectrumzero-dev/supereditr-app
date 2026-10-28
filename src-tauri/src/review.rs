@@ -59,8 +59,9 @@ fn state(app: &AppHandle) -> tauri::State<'_, AppState> {
 }
 
 /// Reads the selection on a worker thread. AX calls can block on a busy app; they must never
-/// run on the UI thread.
-async fn capture(app: &AppHandle, allow_clipboard: bool) -> Result<Capture, PlatformError> {
+/// run on the UI thread. `select_sentence` is for the shortcuts only: an automatic suggestion
+/// never changes what the user selected.
+async fn capture(app: &AppHandle, allow_clipboard: bool, select_sentence: bool) -> Result<Capture, PlatformError> {
     #[cfg(target_os = "macos")]
     {
         // Keyboard-layout lookups must happen on the main thread.
@@ -72,7 +73,7 @@ async fn capture(app: &AppHandle, allow_clipboard: bool) -> Result<Capture, Plat
         let _ = tokio::time::timeout(Duration::from_millis(100), rx).await;
     }
     let _ = app;
-    tauri::async_runtime::spawn_blocking(move || platform::capture(allow_clipboard))
+    tauri::async_runtime::spawn_blocking(move || platform::capture(allow_clipboard, select_sentence))
         .await
         .unwrap_or_else(|e| Err(PlatformError::Other(e.to_string())))
 }
@@ -148,7 +149,8 @@ pub async fn start_manual(app: &AppHandle, preset_id: Option<String>) {
         Target::NotTrusted => return show_error(app, NOT_TRUSTED.into()),
     }
     warm_connection(app);
-    match capture(app, true).await {
+    let select_sentence = state(app).config().select_sentence;
+    match capture(app, true, select_sentence).await {
         Ok(captured) => {
             let _ = begin(app, captured, false, preset_id);
         }
@@ -359,7 +361,7 @@ pub async fn quick_fix(app: &AppHandle) {
     }
     warm_connection(app);
     let state = state(app);
-    let captured = match capture(app, true).await {
+    let captured = match capture(app, true, state.config().select_sentence).await {
         Ok(c) => c,
         Err(error) => return show_error(app, error.to_string()),
     };
@@ -476,7 +478,7 @@ pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
                     Target::Excluded(_) => return trace_auto(gesture, None, &AutoOutcome::Excluded),
                     Target::NotTrusted => return trace_auto(gesture, None, &AutoOutcome::NotTrusted),
                 }
-                let mut captured = capture(&app, false).await;
+                let mut captured = capture(&app, false, false).await;
                 // After ⌘A, some apps (Electron ones especially) take a moment to report the new
                 // selection through Accessibility. Try again briefly; never fall back to ⌘C.
                 if gesture == SelectionGesture::SelectAll {
@@ -487,7 +489,7 @@ pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
                         if state.watch_generation.load(Ordering::Relaxed) != generation {
                             return trace_auto(gesture, None, &AutoOutcome::Superseded);
                         }
-                        captured = capture(&app, false).await;
+                        captured = capture(&app, false, false).await;
                     }
                 }
                 let captured = match captured {

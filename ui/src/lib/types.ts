@@ -87,6 +87,8 @@ export interface Config {
   hotkeys: { review: string; quick_fix: string };
   auto_popup: boolean;
   auto_min_chars: number;
+  /** With nothing selected, the shortcuts select and review the sentence before the cursor. */
+  select_sentence: boolean;
   /** Names and terms to keep exactly as written: a word or a phrase. */
   words: string[];
   excluded_apps: string[];

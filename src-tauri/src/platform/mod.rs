@@ -57,11 +57,32 @@ pub enum PlatformError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WatchEvent {
     /// A selection may be finished: review it if nothing else happens within `settle`.
-    MaybeSelection { settle: Duration },
+    MaybeSelection { settle: Duration, gesture: SelectionGesture },
     /// The user typed or clicked elsewhere; transient UI should get out of the way.
     Interaction,
     /// The user may be about to continue a selection: hold off a review that hasn't started.
     Wait,
+}
+
+/// How the user made a selection, for capture.log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionGesture {
+    Drag,
+    DoubleClick,
+    SelectAll,
+    /// Shift with the arrow keys, Home/End or Page Up/Down, or a Shift-click.
+    Shift,
+}
+
+impl std::fmt::Display for SelectionGesture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Drag => "drag",
+            Self::DoubleClick => "double-click",
+            Self::SelectAll => "⌘A",
+            Self::Shift => "Shift selection",
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

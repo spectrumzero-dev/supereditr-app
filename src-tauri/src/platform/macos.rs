@@ -449,12 +449,17 @@ pub fn capture(allow_clipboard: bool) -> Result<Capture, PlatformError> {
         }
     };
     match &result {
-        Ok(capture) => trace(format_args!(
-            "{source} {bundle_id}: read {} characters via {} in {:?}",
-            capture.text.chars().count(),
-            if capture.element.is_some() { "Accessibility" } else { "⌘C" },
-            started.elapsed()
-        )),
+        Ok(capture) => {
+            // The field's whole length shows a stale read: a selection made with ⌘A should match it.
+            let field = capture.element.as_ref().and_then(|e| e.number("AXNumberOfCharacters"));
+            trace(format_args!(
+                "{source} {bundle_id}: read {} characters{} via {} in {:?}",
+                capture.text.chars().count(),
+                field.map(|n| format!(" of {n} in the field")).unwrap_or_default(),
+                if capture.element.is_some() { "Accessibility" } else { "⌘C" },
+                started.elapsed()
+            ))
+        }
         Err(error) => trace(format_args!("{source} {bundle_id}: {error} ({:?})", started.elapsed())),
     }
     result
@@ -908,6 +913,8 @@ pub fn start_selection_watcher(on_event: impl Fn(WatchEvent) + Send + Sync + 'st
     use std::ptr::NonNull;
 
     let down_at = Mutex::new((0.0f64, 0.0f64));
+    // ⌘A went down; its key-up counts as a selection only while ⌘ is still held.
+    let select_all_down = std::sync::atomic::AtomicBool::new(false);
     let handler = RcBlock::new(move |event: NonNull<NSEvent>| {
         let event = unsafe { event.as_ref() };
         let kind = event.r#type();
@@ -925,9 +932,15 @@ pub fn start_selection_watcher(on_event: impl Fn(WatchEvent) + Send + Sync + 'st
             let dragged = (p.x - x).abs() > 3.0 || (p.y - y).abs() > 3.0;
             Input::MouseUp { dragged, clicks: event.clickCount(), shift }
         } else if kind == NSEventType::KeyDown {
+            if flags.contains(NSEventModifierFlags::Command) && event.keyCode() == KEY_A {
+                select_all_down.store(true, Ordering::Relaxed);
+            }
             Input::KeyDown { navigation: navigation(), shift }
         } else if kind == NSEventType::KeyUp {
             let select_all = flags.contains(NSEventModifierFlags::Command) && event.keyCode() == KEY_A;
+            if event.keyCode() == KEY_A && select_all_down.swap(false, Ordering::Relaxed) && !select_all {
+                trace(format_args!("automatic: ⌘A not treated as a selection: ⌘ came up before A"));
+            }
             Input::KeyUp { navigation: navigation(), shift, select_all }
         } else if kind == NSEventType::FlagsChanged {
             Input::ModifiersChanged { shift }

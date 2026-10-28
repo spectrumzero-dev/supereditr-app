@@ -6,7 +6,7 @@
 //! leaves the keys alone and any typing or clicking elsewhere dismisses it.
 
 use crate::overlay;
-use crate::platform::{self, Capture, PlatformError, WatchEvent};
+use crate::platform::{self, Capture, PlatformError, SelectionGesture, WatchEvent};
 use crate::state::{AppState, Session};
 use serde::Serialize;
 use std::sync::atomic::Ordering;
@@ -442,19 +442,19 @@ pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
         WatchEvent::Wait => {
             state.watch_generation.fetch_add(1, Ordering::Relaxed);
         }
-        WatchEvent::MaybeSelection { settle } => {
+        WatchEvent::MaybeSelection { settle, gesture } => {
             let config = state.config();
             if !config.auto_popup {
-                return trace_auto(None, &AutoOutcome::TurnedOff);
+                return trace_auto(gesture, None, &AutoOutcome::TurnedOff);
             }
             if state.paused.load(Ordering::Relaxed) {
-                return trace_auto(None, &AutoOutcome::Paused);
+                return trace_auto(gesture, None, &AutoOutcome::Paused);
             }
             if Instant::now() < *state.quiet_until.lock().unwrap() {
-                return trace_auto(None, &AutoOutcome::JustApplied);
+                return trace_auto(gesture, None, &AutoOutcome::JustApplied);
             }
             if state.session.lock().unwrap().as_ref().is_some_and(|s| s.keyboard) {
-                return trace_auto(None, &AutoOutcome::ReviewOpen);
+                return trace_auto(gesture, None, &AutoOutcome::ReviewOpen);
             }
             let generation = state.watch_generation.fetch_add(1, Ordering::Relaxed) + 1;
             let app = app.clone();
@@ -464,30 +464,30 @@ pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
                 tokio::time::sleep(settle).await;
                 let state = app.state::<AppState>();
                 if state.watch_generation.load(Ordering::Relaxed) != generation {
-                    return trace_auto(None, &AutoOutcome::Superseded);
+                    return trace_auto(gesture, None, &AutoOutcome::Superseded);
                 }
                 match check_target(&app) {
                     Target::Allowed => {}
-                    Target::Ignored => return trace_auto(None, &AutoOutcome::OwnWindow),
-                    Target::Excluded(_) => return trace_auto(None, &AutoOutcome::Excluded),
-                    Target::NotTrusted => return trace_auto(None, &AutoOutcome::NotTrusted),
+                    Target::Ignored => return trace_auto(gesture, None, &AutoOutcome::OwnWindow),
+                    Target::Excluded(_) => return trace_auto(gesture, None, &AutoOutcome::Excluded),
+                    Target::NotTrusted => return trace_auto(gesture, None, &AutoOutcome::NotTrusted),
                 }
                 let captured = match capture(&app, false).await {
                     Ok(captured) => captured,
-                    Err(error) => return trace_auto(None, &AutoOutcome::ReadFailed(error)),
+                    Err(error) => return trace_auto(gesture, None, &AutoOutcome::ReadFailed(error)),
                 };
                 let app_id = Some(captured.bundle_id.as_str());
                 let min_chars = state.config().auto_min_chars;
                 if let Some(outcome) = check_selection(&captured.text, captured.editable, min_chars) {
-                    return trace_auto(app_id, &outcome);
+                    return trace_auto(gesture, app_id, &outcome);
                 }
                 if state.session.lock().unwrap().as_ref().is_some_and(|s| s.capture.text == captured.text) {
-                    return trace_auto(app_id, &AutoOutcome::AlreadyShowing);
+                    return trace_auto(gesture, app_id, &AutoOutcome::AlreadyShowing);
                 }
                 if state.watch_generation.load(Ordering::Relaxed) != generation {
-                    return trace_auto(app_id, &AutoOutcome::Superseded);
+                    return trace_auto(gesture, app_id, &AutoOutcome::Superseded);
                 }
-                trace_auto(app_id, &AutoOutcome::Shown);
+                trace_auto(gesture, app_id, &AutoOutcome::Shown);
                 begin(&app, captured, true, None);
             });
         }
@@ -549,10 +549,10 @@ fn check_selection(text: &str, editable: bool, min_chars: usize) -> Option<AutoO
     }
 }
 
-fn trace_auto(app_id: Option<&str>, outcome: &AutoOutcome) {
+fn trace_auto(gesture: SelectionGesture, app_id: Option<&str>, outcome: &AutoOutcome) {
     match app_id {
-        Some(app_id) => platform::trace(format_args!("automatic {app_id}: {outcome}")),
-        None => platform::trace(format_args!("automatic: {outcome}")),
+        Some(app_id) => platform::trace(format_args!("automatic {app_id}: after {gesture}, {outcome}")),
+        None => platform::trace(format_args!("automatic: after {gesture}, {outcome}")),
     }
 }
 

@@ -472,7 +472,21 @@ pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
                     Target::Excluded(_) => return trace_auto(gesture, None, &AutoOutcome::Excluded),
                     Target::NotTrusted => return trace_auto(gesture, None, &AutoOutcome::NotTrusted),
                 }
-                let captured = match capture(&app, false).await {
+                let mut captured = capture(&app, false).await;
+                // After ⌘A, some apps (Electron ones especially) take a moment to report the new
+                // selection through Accessibility. Try again briefly; never fall back to ⌘C.
+                if gesture == SelectionGesture::SelectAll {
+                    for attempt in 1..=SELECT_ALL_RETRIES {
+                        let Err(PlatformError::NoSelection) = captured else { break };
+                        trace_auto(gesture, None, &AutoOutcome::Retrying { attempt, of: SELECT_ALL_RETRIES });
+                        tokio::time::sleep(SELECT_ALL_RETRY_DELAY).await;
+                        if state.watch_generation.load(Ordering::Relaxed) != generation {
+                            return trace_auto(gesture, None, &AutoOutcome::Superseded);
+                        }
+                        captured = capture(&app, false).await;
+                    }
+                }
+                let captured = match captured {
                     Ok(captured) => captured,
                     Err(error) => return trace_auto(gesture, None, &AutoOutcome::ReadFailed(error)),
                 };
@@ -494,6 +508,11 @@ pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
     }
 }
 
+/// After ⌘A, how many more times an automatic suggestion reads a selection that isn't there yet,
+/// and how long it waits before each: about 300 ms in all.
+const SELECT_ALL_RETRIES: u32 = 3;
+const SELECT_ALL_RETRY_DELAY: Duration = Duration::from_millis(100);
+
 /// What became of one automatic suggestion attempt, for capture.log. Never holds selected text.
 #[derive(Debug)]
 enum AutoOutcome {
@@ -507,6 +526,7 @@ enum AutoOutcome {
     Excluded,
     NotTrusted,
     ReadFailed(PlatformError),
+    Retrying { attempt: u32, of: u32 },
     NotEditable,
     TooShort { chars: usize, min: usize },
     NoLetter,
@@ -526,6 +546,7 @@ impl std::fmt::Display for AutoOutcome {
             Self::Excluded => write!(f, "skipped: the app is excluded in Settings"),
             Self::NotTrusted => write!(f, "skipped: Accessibility permission isn't granted"),
             Self::ReadFailed(error) => write!(f, "skipped: the selection couldn't be read ({error})"),
+            Self::Retrying { attempt, of } => write!(f, "no selection yet, reading again ({attempt} of {of})"),
             Self::NotEditable => write!(f, "skipped: the field isn't editable"),
             Self::TooShort { chars, min } => write!(f, "skipped: {chars} characters, under the minimum of {min}"),
             Self::NoLetter => write!(f, "skipped: the selection has no letter"),

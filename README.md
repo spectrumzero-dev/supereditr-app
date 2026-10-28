@@ -111,7 +111,7 @@ This is a first working version.
   - The Claude Code subscription bridge proofreads end to end.
   - Apple Intelligence proofreads end to end on a Mac Studio: median 416 ms to first words and 708 ms total over four warm runs, with every error in the test sentence fixed.
   - The overlay and settings pages render correctly in light and dark mode.
-  - Live UI tests (`tests/ui/smoke.swift`, run by `scripts/ui-smoke.sh` on a Mac with Accessibility access) cover automatic suggestions in TextEdit, waiting for a Shift selection to end, opening the keyboard review, ignoring terminal output, shortcut recording, adding a kept name to Your words, and refusing a selection that holds a token.
+  - Live UI tests (`tests/ui/smoke.swift`, run by `scripts/ui-smoke.sh` on a Mac with Accessibility access) cover automatic suggestions in TextEdit, waiting for a Shift selection to end, ⌘A with ⌘ let go before A, opening the keyboard review, ignoring terminal output, shortcut recording, adding a kept name to Your words, and refusing a selection that holds a token.
 - **Not yet covered by automated tests:** applying a revision, capture in other apps (Notes, Mail, Chrome/Gmail, Slack, Claude, ChatGPT), and real-world latency with an API key.
 
 ## Contributing

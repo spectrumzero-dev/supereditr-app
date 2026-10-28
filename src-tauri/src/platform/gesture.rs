@@ -26,15 +26,16 @@ pub enum Input {
         clicks: isize,
         shift: bool,
     },
-    /// `navigation`: an arrow, Home/End, or Page Up/Down key.
+    /// `navigation`: an arrow, Home/End, or Page Up/Down key. `select_all`: ⌘A, first press only
+    /// (not a key repeat). It counts on the way down, since people often let go of ⌘ before A.
     KeyDown {
         navigation: bool,
         shift: bool,
+        select_all: bool,
     },
     KeyUp {
         navigation: bool,
         shift: bool,
-        select_all: bool,
     },
     /// A modifier key went down or up; `shift` is whether Shift is now held.
     ModifiersChanged {
@@ -71,7 +72,11 @@ impl Gesture {
                 self.adjusting = false;
                 Some(WatchEvent::Wait)
             }
-            Input::KeyDown { navigation: true, shift: true } => {
+            Input::KeyDown { select_all: true, .. } => {
+                self.adjusting = false;
+                Some(WatchEvent::MaybeSelection { settle: AFTER_MOUSE, gesture: SelectionGesture::SelectAll })
+            }
+            Input::KeyDown { navigation: true, shift: true, .. } => {
                 self.adjusting = true;
                 Some(WatchEvent::Interaction)
             }
@@ -88,9 +93,6 @@ impl Gesture {
             Input::MouseUp { dragged, clicks, .. } if dragged || clicks >= 2 => {
                 let gesture = if dragged { SelectionGesture::Drag } else { SelectionGesture::DoubleClick };
                 Some(WatchEvent::MaybeSelection { settle: AFTER_MOUSE, gesture })
-            }
-            Input::KeyUp { select_all: true, .. } => {
-                Some(WatchEvent::MaybeSelection { settle: AFTER_MOUSE, gesture: SelectionGesture::SelectAll })
             }
             Input::ModifiersChanged { shift: false } if self.adjusting => {
                 self.adjusting = false;
@@ -114,9 +116,9 @@ mod tests {
 
     const SHIFT_DOWN: Input = Input::ModifiersChanged { shift: true };
     const SHIFT_UP: Input = Input::ModifiersChanged { shift: false };
-    const SHIFT_ARROW_DOWN: Input = Input::KeyDown { navigation: true, shift: true };
-    const SHIFT_ARROW_UP: Input = Input::KeyUp { navigation: true, shift: true, select_all: false };
-    const KEY_DOWN: Input = Input::KeyDown { navigation: false, shift: false };
+    const SHIFT_ARROW_DOWN: Input = Input::KeyDown { navigation: true, shift: true, select_all: false };
+    const SHIFT_ARROW_UP: Input = Input::KeyUp { navigation: true, shift: true };
+    const KEY_DOWN: Input = Input::KeyDown { navigation: false, shift: false, select_all: false };
 
     #[test]
     fn a_shift_arrow_selection_finishes_when_shift_comes_up() {
@@ -149,7 +151,7 @@ mod tests {
 
     #[test]
     fn releasing_the_arrow_after_shift_still_finishes_on_shift() {
-        let arrow_up = Input::KeyUp { navigation: true, shift: false, select_all: false };
+        let arrow_up = Input::KeyUp { navigation: true, shift: false };
         let events = run(&[SHIFT_DOWN, SHIFT_ARROW_DOWN, SHIFT_UP, arrow_up]);
         assert_eq!(
             events[2],
@@ -173,7 +175,7 @@ mod tests {
     fn mouse_selections_and_select_all_are_finished_at_once() {
         let drag = Input::MouseUp { dragged: true, clicks: 1, shift: false };
         let double = Input::MouseUp { dragged: false, clicks: 2, shift: false };
-        let select_all = Input::KeyUp { navigation: false, shift: false, select_all: true };
+        let select_all = Input::KeyDown { navigation: false, shift: false, select_all: true };
         for (input, gesture) in [
             (drag, SelectionGesture::Drag),
             (double, SelectionGesture::DoubleClick),
@@ -185,10 +187,20 @@ mod tests {
     }
 
     #[test]
+    fn select_all_counts_once_whether_command_or_a_comes_up_first() {
+        let command_a = Input::KeyDown { navigation: false, shift: false, select_all: true };
+        let a_up = Input::KeyUp { navigation: false, shift: false };
+        let command_up = Input::ModifiersChanged { shift: false };
+        let selection = Some(WatchEvent::MaybeSelection { settle: AFTER_MOUSE, gesture: SelectionGesture::SelectAll });
+        assert_eq!(run(&[command_a, a_up, command_up]), [selection, None, None]);
+        assert_eq!(run(&[command_a, command_up, a_up]), [selection, None, None]);
+    }
+
+    #[test]
     fn typing_capitals_with_shift_is_not_a_selection() {
-        let capital = Input::KeyUp { navigation: false, shift: true, select_all: false };
+        let capital = Input::KeyUp { navigation: false, shift: true };
         assert_eq!(
-            run(&[SHIFT_DOWN, Input::KeyDown { navigation: false, shift: true }, capital, SHIFT_UP]),
+            run(&[SHIFT_DOWN, Input::KeyDown { navigation: false, shift: true, select_all: false }, capital, SHIFT_UP]),
             [Some(WatchEvent::Wait), Some(WatchEvent::Interaction), None, None]
         );
     }
@@ -206,8 +218,8 @@ mod tests {
 
     #[test]
     fn plain_arrows_are_not_a_selection() {
-        let arrow_down = Input::KeyDown { navigation: true, shift: false };
-        let arrow_up = Input::KeyUp { navigation: true, shift: false, select_all: false };
+        let arrow_down = Input::KeyDown { navigation: true, shift: false, select_all: false };
+        let arrow_up = Input::KeyUp { navigation: true, shift: false };
         assert_eq!(run(&[arrow_down, arrow_up]), [Some(WatchEvent::Interaction), None]);
     }
 
@@ -232,7 +244,7 @@ mod tests {
 
     #[test]
     fn another_key_or_scroll_ends_the_selection() {
-        let shift_tab = Input::KeyDown { navigation: false, shift: true };
+        let shift_tab = Input::KeyDown { navigation: false, shift: true, select_all: false };
         for interruption in [shift_tab, Input::Scroll, Input::MouseDown] {
             let events = run(&[SHIFT_DOWN, SHIFT_ARROW_DOWN, SHIFT_ARROW_UP, interruption, SHIFT_UP]);
             assert_eq!(events[3], Some(WatchEvent::Interaction), "{interruption:?}");

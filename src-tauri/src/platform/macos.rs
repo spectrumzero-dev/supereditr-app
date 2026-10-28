@@ -913,8 +913,6 @@ pub fn start_selection_watcher(on_event: impl Fn(WatchEvent) + Send + Sync + 'st
     use std::ptr::NonNull;
 
     let down_at = Mutex::new((0.0f64, 0.0f64));
-    // ⌘A went down; its key-up counts as a selection only while ⌘ is still held.
-    let select_all_down = std::sync::atomic::AtomicBool::new(false);
     let handler = RcBlock::new(move |event: NonNull<NSEvent>| {
         let event = unsafe { event.as_ref() };
         let kind = event.r#type();
@@ -932,16 +930,14 @@ pub fn start_selection_watcher(on_event: impl Fn(WatchEvent) + Send + Sync + 'st
             let dragged = (p.x - x).abs() > 3.0 || (p.y - y).abs() > 3.0;
             Input::MouseUp { dragged, clicks: event.clickCount(), shift }
         } else if kind == NSEventType::KeyDown {
-            if flags.contains(NSEventModifierFlags::Command) && event.keyCode() == KEY_A {
-                select_all_down.store(true, Ordering::Relaxed);
-            }
-            Input::KeyDown { navigation: navigation(), shift }
-        } else if kind == NSEventType::KeyUp {
             let select_all = flags.contains(NSEventModifierFlags::Command) && event.keyCode() == KEY_A;
-            if event.keyCode() == KEY_A && select_all_down.swap(false, Ordering::Relaxed) && !select_all {
-                trace(format_args!("automatic: ⌘A not treated as a selection: ⌘ came up before A"));
+            if select_all && event.isARepeat() {
+                // Holding ⌘A selects nothing new; a repeat must not cancel the pending review.
+                return;
             }
-            Input::KeyUp { navigation: navigation(), shift, select_all }
+            Input::KeyDown { navigation: navigation(), shift, select_all }
+        } else if kind == NSEventType::KeyUp {
+            Input::KeyUp { navigation: navigation(), shift }
         } else if kind == NSEventType::FlagsChanged {
             Input::ModifiersChanged { shift }
         } else if kind == NSEventType::ScrollWheel {

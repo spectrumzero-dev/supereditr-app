@@ -184,6 +184,8 @@ var opened: Set<String> = []
 /// and remembers it so it can be quit later. `newInstance` starts a separate copy even when the app
 /// is already open, passing it `launchArguments`.
 func openFront(_ app: String, bundleID: String, file: String? = nil, newInstance: Bool = false, launchArguments: [String] = []) -> Bool {
+    // Only a process that appears after this launch is the test's; one already running never is.
+    let before = Set(running(bundleID).map(\.processIdentifier))
     let open = Process()
     open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
     open.arguments = (newInstance ? ["-n"] : []) + ["-a", app] + (file.map { [$0] } ?? [])
@@ -191,11 +193,18 @@ func openFront(_ app: String, bundleID: String, file: String? = nil, newInstance
     try? open.run()
     open.waitUntilExit()
     opened.insert(bundleID)
-    // Success means an instance the test launched is in front, never a copy that was already open.
-    return waitFor(8) { () -> Bool? in
-        let ours = Set(launchedSinceStart(bundleID).map(\.processIdentifier))
-        return ours.contains(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1) ? true : nil
-    } ?? false
+    // Success means an instance this launch started is in front, never a copy that was already open.
+    let front = waitFor(8) { () -> Bool? in
+        guard let app = NSWorkspace.shared.frontmostApplication, app.bundleIdentifier == bundleID,
+              !before.contains(app.processIdentifier) else { return nil }
+        return true
+    }
+    if front == nil {
+        let app = NSWorkspace.shared.frontmostApplication
+        log("     openFront: \(bundleID) not in front; front is \(app?.bundleIdentifier ?? "none") pid \(app?.processIdentifier ?? -1), " +
+            "running before \(before.sorted()), now \(running(bundleID).map(\.processIdentifier).sorted())")
+    }
+    return front ?? false
 }
 
 /// The running instances of an app launched since the test began, oldest first.

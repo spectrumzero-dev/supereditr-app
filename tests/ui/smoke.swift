@@ -194,10 +194,16 @@ func openFront(_ app: String, bundleID: String, file: String? = nil, newInstance
     open.waitUntilExit()
     opened.insert(bundleID)
     // Success means an instance this launch started is in front, never a copy that was already open.
-    let front = waitFor(8) { () -> Bool? in
+    func ourFront() -> Bool? {
         guard let app = NSWorkspace.shared.frontmostApplication, app.bundleIdentifier == bundleID,
               !before.contains(app.processIdentifier) else { return nil }
         return true
+    }
+    // A first launch in a fresh VM can be slow to come forward; then ask the new instance itself.
+    var front = waitFor(10, ourFront)
+    if front == nil {
+        running(bundleID).filter { !before.contains($0.processIdentifier) }.forEach { $0.activate() }
+        front = waitFor(10, ourFront)
     }
     if front == nil {
         let app = NSWorkspace.shared.frontmostApplication

@@ -629,10 +629,31 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             let value = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
             log("NOTE control: \(how) \(value.contains(marker) ? "landed" : "did not land"); window \(chromeWindowFocused())")
         }
-        for (index, field) in ["text box", "editable div"].enumerated() {
-            press(keyTab)  // from the control field to the text box, then to the div
-            pump(0.5)
+        // The editable div is reviewed five times, because the paste into it has failed only some of
+        // the time. Before each repeat the test puts the typo back itself, with a ⌘V posted to
+        // Chrome's process, which the control above shows lands.
+        let runs: [(field: String, attempt: Int)] = [("text box", 1)] + (1...5).map { ("editable div", $0) }
+        var divApplied = 0
+        for (index, run) in runs.enumerated() {
+            let field = run.field == "editable div" ? "editable div (attempt \(run.attempt))" : run.field
+            if run.attempt == 1 {
+                press(keyTab)  // from the control field to the text box, then to the div
+                pump(0.5)
+            } else if let ours = opened.last(where: { $0.bundleIdentifier == chrome }) {
+                _ = selectAll()
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(typo, forType: .string)
+                for down in [true, false] {
+                    let event = CGEvent(keyboardEventSource: nil, virtualKey: keyV, keyDown: down)
+                    event?.flags = .maskCommand
+                    event?.postToPid(ours.processIdentifier)
+                    usleep(25_000)
+                }
+                pump(1)
+            }
             check(selectAll() || selectAll(), "the \(field)'s text is selected")
+            let start = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
+            if !start.contains(typo) { log("NOTE the \(field) didn't start with the typo; it reads \"\(start)\"") }
             press(keyE, .maskCommand)
             pump(0.1)
             press(keyE, .maskCommand)
@@ -651,8 +672,15 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 return text.contains("confirm") ? text : nil
             }
             let value = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
-            check(notice == nil, "↩ applies in the \(field) without a warning", "SuperEditr said: \(notice ?? "")")
-            check(!value.isEmpty && !value.contains(typo), "the \(field) holds the fix", "the field reads \"\(value)\"")
+            let applied = notice == nil && !value.isEmpty && !value.contains(typo)
+            if run.field == "editable div" {
+                // Counted below, so one run shows how often it fails.
+                log("NOTE \(applied ? "applied" : "not applied") in the \(field)\(applied ? "" : notice != nil ? ": warning shown" : ": the field reads \"\(value)\"")")
+                if applied { divApplied += 1 }
+            } else {
+                check(notice == nil, "↩ applies in the \(field) without a warning", "SuperEditr said: \(notice ?? "")")
+                check(!value.isEmpty && !value.contains(typo), "the \(field) holds the fix", "the field reads \"\(value)\"")
+            }
             screenshot(window: nil, rect: windows(bundleID: chrome).first?.frame, to: outDir + "/web-\(index)-applied.png")
             if overlay() != nil {
                 log("NOTE the panel was still open after ↩ in the \(field)")
@@ -660,7 +688,8 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 _ = waitFor(3) { overlay() == nil ? true : nil }
             }
         }
-}
+        check(divApplied == 5, "↩ applies in the editable div every time", "applied \(divApplied) of 5 times")
+    }
     quitOpened(chrome)
 }
 stop(app)

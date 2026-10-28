@@ -723,9 +723,11 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         }
         press(keyTab)  // from the control text box to the control div
         pump(0.5)
-        var restoredRounds = 0, restoredFailures = 0, plainRounds = 0, plainFailures = 0
+        var restoredRounds = 0, restoredFailures = 0, plainRounds = 0, plainFailures = 0, lateRounds = 0, lateFailures = 0
         log("NOTE experiment: setup paste \(plainPaste("Setup.") ? "landed" : "did not land")")
-        for (round, restore) in (1...12).map({ ($0, $0 % 2 == 1) }) {
+        // Variants cycle none, 120 ms, 1.5 s from round 1, so a fresh-Chrome effect lands on "none".
+        for (round, delay) in (1...12).map({ ($0, [0.0, 0.12, 1.5][($0 - 1) % 3]) }) {
+            let restore = delay > 0
             _ = selectAll()
             let pb = NSPasteboard.general
             let saved: [[(NSPasteboard.PasteboardType, Data)]] = (pb.pasteboardItems ?? []).map { item in
@@ -743,6 +745,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             let pressed = pressChromePaste()
             pump(0.12)
             let first = divValue().contains(text)
+            if delay > 0.12 { pump(delay - 0.12) }
             if restore && pb.changeCount == ours {
                 pb.clearContents()
                 pb.writeObjects(saved.map { reps in
@@ -753,11 +756,13 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             }
             pump(2)
             let next = plainPaste("Next \(round).")
-            log("NOTE experiment round \(round), restore \(restore): menu paste (sent \(pressed)) \(first ? "landed" : "did not land"); next ⌘V \(next ? "landed" : "did not land")")
-            if restore { restoredRounds += 1; if !next { restoredFailures += 1 } } else { plainRounds += 1; if !next { plainFailures += 1 } }
+            log("NOTE experiment round \(round), restore after \(delay) s: menu paste (sent \(pressed)) \(first ? "landed" : "did not land"); next ⌘V \(next ? "landed" : "did not land")")
+            if delay == 0 { plainRounds += 1; if !next { plainFailures += 1 } }
+            else if delay < 1 { restoredRounds += 1; if !next { restoredFailures += 1 } }
+            else { lateRounds += 1; if !next { lateFailures += 1 } }
             if !next { log("NOTE experiment round \(round): recovery paste \(plainPaste("Recover \(round).") ? "landed" : "did not land")") }
         }
-        log("NOTE experiment summary: next paste ignored after \(restoredFailures) of \(restoredRounds) rounds with the restore, \(plainFailures) of \(plainRounds) without")
+        log("NOTE experiment summary: next paste ignored after \(plainFailures) of \(plainRounds) rounds without a restore, \(restoredFailures) of \(restoredRounds) with it at 120 ms, \(lateFailures) of \(lateRounds) with it at 1.5 s")
         // A paste straight after one of SuperEditr's in the same Chrome window can be ignored
         // (spectrumzero-dev/supereditr-app#10), so before the editable div's review the test puts
         // its text back with its own ⌘V, posted to Chrome's process, which the control above shows

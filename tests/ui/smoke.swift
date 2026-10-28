@@ -654,17 +654,14 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             let value = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
             log("NOTE control: \(how) \(value.contains(marker) ? "landed" : "did not land"); window \(chromeWindowFocused())")
         }
-        // The editable div is reviewed five times, because the paste into it has failed only some of
-        // the time. Before each repeat the test puts the typo back itself, with a ⌘V posted to
-        // Chrome's process, which the control above shows lands.
-        let runs: [(field: String, attempt: Int)] = [("text box", 1)] + (1...5).map { ("editable div", $0) }
-        var divApplied = 0, divAttempts = 0
-        for (index, run) in runs.enumerated() {
-            let field = run.field == "editable div" ? "editable div (attempt \(run.attempt))" : run.field
-            if run.attempt == 1 {
-                press(keyTab)  // from the control field to the text box, then to the div
-                pump(0.5)
-            } else if let ours = launchedSinceStart(chrome).last {
+        // A paste straight after one of SuperEditr's in the same Chrome window can be ignored
+        // (spectrumzero-dev/supereditr-app#10), so before the editable div's review the test puts
+        // its text back with its own ⌘V, posted to Chrome's process, which the control above shows
+        // lands. The div's review then follows a test-made paste, not SuperEditr's text box paste.
+        for (index, field) in ["text box", "editable div"].enumerated() {
+            press(keyTab)  // from the control field to the text box, then to the div
+            pump(0.5)
+            if field == "editable div", let ours = launchedSinceStart(chrome).last {
                 // A paste straight after one of SuperEditr's can be dropped, so retry the reset.
                 for _ in 0..<3 {
                     _ = selectAll()
@@ -679,17 +676,12 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                     pump(1)
                     let reset = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
                     if reset.contains(typo) { break }
-                    log("NOTE the test's reset paste into the \(field) was dropped; retrying")
+                    log("NOTE the test's reset paste into the \(field) was ignored; retrying")
                 }
             }
             check(selectAll() || selectAll(), "the \(field)'s text is selected")
             let start = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
-            if run.field == "editable div" && !start.contains(typo) {
-                // Nothing to fix, so this attempt can't show whether the paste lands.
-                log("NOTE skipped the \(field): it didn't start with the typo; it reads \"\(start)\"")
-                continue
-            }
-            if run.field == "editable div" { divAttempts += 1 }
+            check(start.contains(typo), "the \(field) starts with the typo", "it reads \"\(start)\"")
             press(keyE, .maskCommand)
             pump(0.1)
             press(keyE, .maskCommand)
@@ -708,15 +700,8 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 return text.contains("confirm") ? text : nil
             }
             let value = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
-            let applied = notice == nil && !value.isEmpty && !value.contains(typo)
-            if run.field == "editable div" {
-                // Counted below, so one run shows how often it fails.
-                log("NOTE \(applied ? "applied" : "not applied") in the \(field)\(applied ? "" : notice != nil ? ": warning shown" : ": the field reads \"\(value)\"")")
-                if applied { divApplied += 1 }
-            } else {
-                check(notice == nil, "↩ applies in the \(field) without a warning", "SuperEditr said: \(notice ?? "")")
-                check(!value.isEmpty && !value.contains(typo), "the \(field) holds the fix", "the field reads \"\(value)\"")
-            }
+            check(notice == nil, "↩ applies in the \(field) without a warning", "SuperEditr said: \(notice ?? "")")
+            check(!value.isEmpty && !value.contains(typo), "the \(field) holds the fix", "the field reads \"\(value)\"")
             screenshot(window: nil, rect: windows(bundleID: chrome).first?.frame, to: outDir + "/web-\(index)-applied.png")
             if overlay() != nil {
                 log("NOTE the panel was still open after ↩ in the \(field)")
@@ -724,8 +709,6 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 _ = waitFor(3) { overlay() == nil ? true : nil }
             }
         }
-        check(divAttempts >= 3 && divApplied == divAttempts, "↩ applies in the editable div every time",
-              "applied \(divApplied) of \(divAttempts) attempts that started from the typo")
     }
     quitOpened(chrome)
 }

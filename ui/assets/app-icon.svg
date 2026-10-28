@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="#FFD60A"/>
+  <!-- Drawn on a 104-unit grid: a blue-pencil nib finishing a stroke -->
+  <g transform="translate(100 100) scale(7.923)">
+    <path d="M14 80 H44" stroke="#0A64D8" stroke-width="4.5" stroke-linecap="round"/>
+    <g transform="rotate(35 44 80)">
+      <path fill="#0A64D8" d="M44 80 L28 50 Q24 43 29 34 L33 16 H55 L59 34 Q64 43 60 50 Z"/>
+      <path d="M44 80 V52" stroke="#FFD60A" stroke-width="3"/>
+      <circle cx="44" cy="48" r="4.5" fill="#FFD60A"/>
+    </g>
+  </g>
+</svg>

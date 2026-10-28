@@ -1,0 +1,15 @@
+[package]
+name = "supereditr-cli"
+description = "Command-line access to the SuperEditr engine, for scripting and latency benchmarks."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "supereditr"
+path = "src/main.rs"
+
+[dependencies]
+supereditr-core.workspace = true
+tokio.workspace = true
+serde_json.workspace = true

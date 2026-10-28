@@ -1,0 +1,34 @@
+name: CI
+
+# Checks for the public source repository, where pull requests from forks arrive. It runs on
+# GitHub-hosted runners with a read-only token, so contributor code never reaches the machines that
+# sign official builds. The job runs only in this repository; forks skip it.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    if: github.repository == 'spectrumzero-dev/supereditr-app'
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Install the Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - name: Run every check
+        run: ./scripts/check.sh

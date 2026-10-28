@@ -1,0 +1,89 @@
+:root {
+  color-scheme: light dark;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+
+  --bg: #ffffff;
+  --bg-raised: #ffffff;
+  --bg-sunken: #f4f4f7;
+  --bg-hover: #eeeef3;
+  --border: rgba(20, 20, 40, 0.1);
+  --border-strong: rgba(20, 20, 40, 0.18);
+  --text: #18181f;
+  --text-2: #5d5d6c;
+  --text-3: #8e8e9c;
+  --accent: #5b3fe6;
+  --accent-2: #6d6afe;
+  --accent-soft: rgba(91, 63, 230, 0.1);
+  --accent-text: #ffffff;
+  --ins: #0d7a4a;
+  --ins-bg: rgba(22, 163, 98, 0.14);
+  --del: #c02f3b;
+  --del-bg: rgba(225, 60, 70, 0.1);
+  --warn-bg: #fff6e0;
+  --warn: #8a5a00;
+  --focus-ring: 0 0 0 2px var(--accent);
+  --shadow-card: 0 10px 24px rgba(18, 12, 60, 0.16), 0 1px 4px rgba(18, 12, 60, 0.08);
+  --radius: 14px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1b22;
+    --bg-raised: #24232c;
+    --bg-sunken: #16151b;
+    --bg-hover: #2e2d38;
+    --border: rgba(255, 255, 255, 0.09);
+    --border-strong: rgba(255, 255, 255, 0.16);
+    --text: #f1f0f7;
+    --text-2: #b1afc2;
+    --text-3: #7f7d90;
+    --accent: #8b7dff;
+    --accent-2: #a29aff;
+    --accent-soft: rgba(139, 125, 255, 0.16);
+    --ins: #58d69b;
+    --ins-bg: rgba(64, 200, 140, 0.16);
+    --del: #ff7a85;
+    --del-bg: rgba(255, 90, 105, 0.13);
+    --warn-bg: #3a2f14;
+    --warn: #f3c969;
+    --shadow-card: 0 10px 24px rgba(0, 0, 0, 0.5), 0 1px 4px rgba(0, 0, 0, 0.3);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+kbd {
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-sunken);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

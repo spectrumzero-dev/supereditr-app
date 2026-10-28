@@ -1,0 +1,89 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "SuperEditr",
+  "version": "0.1.0",
+  "identifier": "com.sghael.supereditr",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../ui/dist"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "overlay",
+        "url": "overlay.html",
+        "title": "SuperEditr",
+        "width": 548,
+        "height": 240,
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "resizable": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "focus": false,
+        "acceptFirstMouse": true
+      },
+      {
+        "label": "settings",
+        "url": "settings.html",
+        "title": "SuperEditr Settings",
+        "width": 900,
+        "height": 760,
+        "minWidth": 760,
+        "minHeight": 520,
+        "visible": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "center": true
+      },
+      {
+        "label": "guide",
+        "url": "guide.html",
+        "title": "SuperEditr",
+        "width": 380,
+        "height": 152,
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "resizable": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "focus": false,
+        "acceptFirstMouse": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "category": "public.app-category.productivity",
+    "shortDescription": "Instant, keyboard-first proofreading for any text field.",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "infoPlist": "Info.plist",
+      "dmg": {
+        "appPosition": { "x": 180, "y": 170 },
+        "applicationFolderPosition": { "x": 480, "y": 170 },
+        "windowSize": { "width": 660, "height": 400 }
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM3QTI2RTFGODRFNTY5MkYKUldRdmFlV0VIMjZpTjJDelVkVzFvdUxhYUhKbEFvcFpNbm5CMHJmVE9NOEFzNWl2cFYwb1R6d0YK",
+      "endpoints": ["https://github.com/spectrumzero-dev/supereditr-app/releases/latest/download/latest.json"],
+      "requireSignedVersion": true
+    }
+  }
+}

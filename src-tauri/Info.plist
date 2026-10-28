@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+  </dict>
+  <key>NSAccessibilityUsageDescription</key>
+  <string>SuperEditr reads the text you select and replaces it when you accept a suggestion.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>SuperEditr can start at login.</string>
+</dict>
+</plist>

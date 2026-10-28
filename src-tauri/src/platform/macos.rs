@@ -165,7 +165,11 @@ impl Element {
     }
 
     fn press(&self) -> bool {
-        let action = CFString::new("AXPress");
+        self.perform("AXPress")
+    }
+
+    fn perform(&self, action: &str) -> bool {
+        let action = CFString::new(action);
         unsafe { AXUIElementPerformAction(self.0, action.as_concrete_TypeRef()) == kAXErrorSuccess }
     }
 
@@ -737,7 +741,7 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
     let before = element.string("AXValue");
     let snapshot = pasteboard::Snapshot::take();
     let ours = pasteboard::write_transient_string(text);
-    let window = key_window_state(capture.pid);
+    let window = restore_key_window(capture.pid);
     let started = Instant::now();
     // The app's own Paste menu item first. The review panel took key to read ↩, and when it hides
     // macOS can leave the app in front with no key window. Browsers and Electron apps then drop a
@@ -772,13 +776,46 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
     Ok(ReplaceMethod::Paste)
 }
 
-/// Whether `pid` is the front app and its focused window is the main, focused one, for the log.
-fn key_window_state(pid: i32) -> String {
+/// Gives `pid`'s window keyboard focus back before writing into it, and describes each step for
+/// the log. The review panel takes key to read ↩; when it hides, macOS can leave the app in front
+/// with no key window, and a browser or Electron app then ignores the paste.
+fn restore_key_window(pid: i32) -> String {
     let front = focused_app().is_some_and(|(_, front)| front == pid);
-    let window = Element::from_create(unsafe { AXUIElementCreateApplication(pid) })
-        .and_then(|app| app.element("AXFocusedWindow"));
-    let flag = |name| window.as_ref().and_then(|w| w.flag(name)).map_or("unknown".to_string(), |v| v.to_string());
-    format!("front {front}, window main {} focused {}", flag("AXMain"), flag("AXFocused"))
+    let own = Element::from_create(unsafe { AXUIElementCreateApplication(std::process::id() as i32) })
+        .is_some_and(|me| me.element("AXFocusedWindow").is_some());
+    let mut log = format!("front {front}, SuperEditr window focused {own}");
+    let Some(app) = Element::from_create(unsafe { AXUIElementCreateApplication(pid) }) else {
+        return log + ", no app element";
+    };
+    let Some(window) = app.element("AXFocusedWindow").or_else(|| app.element("AXMainWindow")) else {
+        return log + ", no window";
+    };
+    let focused = || window.flag("AXFocused") == Some(true);
+    let wait = |ms| {
+        let deadline = Instant::now() + Duration::from_millis(ms);
+        while !focused() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        focused()
+    };
+    if focused() {
+        return log + ", window already focused";
+    }
+    // Raising the window and marking the app frontmost is how window managers focus a window.
+    let yes = CFBoolean::true_value();
+    let raised = window.perform("AXRaise");
+    app.set("AXFrontmost", yes.as_CFTypeRef());
+    let after_raise = wait(200);
+    log += &format!(", raise {raised} focused {after_raise}");
+    if after_raise {
+        return log;
+    }
+    // Activating the app asks the window server to give its window key again.
+    let activated = running_app(pid).is_some_and(|running| {
+        running.activateWithOptions(objc2_app_kit::NSApplicationActivationOptions::ActivateAllWindows)
+    });
+    let after_activate = wait(300);
+    log + &format!(", activate {activated} focused {after_activate}")
 }
 
 pub fn copy_to_clipboard(text: &str) {

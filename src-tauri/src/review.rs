@@ -149,7 +149,9 @@ pub async fn start_manual(app: &AppHandle, preset_id: Option<String>) {
     }
     warm_connection(app);
     match capture(app, true).await {
-        Ok(captured) => begin(app, captured, false, preset_id),
+        Ok(captured) => {
+            let _ = begin(app, captured, false, preset_id);
+        }
         Err(error) => show_error(app, error.to_string()),
     }
 }
@@ -167,24 +169,25 @@ fn show_error(app: &AppHandle, message: String) {
     overlay::show(app, true);
 }
 
-fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<String>) {
+/// Opens the panel for a selection. Returns why it didn't, for an automatic suggestion's log line.
+fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<String>) -> Result<(), AutoOutcome> {
     let state = state(app);
     let config = state.config();
     if captured.pid == platform::own_pid() && !captured.playground {
-        return;
+        return Err(AutoOutcome::OwnWindow);
     }
     // Never open an empty review: say what to do instead (only when asked, by shortcut).
     if captured.text.trim().is_empty() {
         if !auto {
             show_error(app, PlatformError::NoSelection.to_string());
         }
-        return;
+        return Err(AutoOutcome::ReadFailed(PlatformError::NoSelection));
     }
     if config.is_excluded(&captured.bundle_id) {
         if !auto {
             show_error(app, excluded_message(&captured.app_name));
         }
-        return;
+        return Err(AutoOutcome::Excluded);
     }
     // A selection holding a secret never opens a review. The engine refuses it too; stopping here
     // keeps the panel from showing the secret, and keeps automatic suggestions silent.
@@ -192,7 +195,7 @@ fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<Strin
         if !auto {
             show_error(app, found.message());
         }
-        return;
+        return Err(AutoOutcome::Secret);
     }
     let preset_id = preset_id.unwrap_or_else(|| config.default_preset().id.clone());
     let id = state.next_session_id();
@@ -221,6 +224,7 @@ fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<Strin
     overlay::show(app, !auto);
     crate::hotkeys::set_overlay_shortcuts(app, true);
     run(app, id, preset_id, None);
+    Ok(())
 }
 
 /// Starts (or restarts) the model run for a session with a preset and optional steering.
@@ -300,7 +304,7 @@ pub async fn apply(app: &AppHandle, id: u64, text: String) -> Result<String, Str
 /// Settings' "Try it now" box asked for a review (⌘E E, or its Review button), as if its text were
 /// selected in another app.
 pub fn review_playground(app: &AppHandle, text: String, bounds: platform::Rect) {
-    begin(app, platform::playground_capture(text, bounds), false, None);
+    let _ = begin(app, platform::playground_capture(text, bounds), false, None);
 }
 
 pub fn dismiss(app: &AppHandle, id: Option<u64>) {
@@ -501,8 +505,12 @@ pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
                 if state.watch_generation.load(Ordering::Relaxed) != generation {
                     return trace_auto(gesture, app_id, &AutoOutcome::Superseded);
                 }
-                trace_auto(gesture, app_id, &AutoOutcome::Shown);
-                begin(&app, captured, true, None);
+                let bundle_id = captured.bundle_id.clone();
+                let outcome = match begin(&app, captured, true, None) {
+                    Ok(()) => AutoOutcome::Shown,
+                    Err(refused) => refused,
+                };
+                trace_auto(gesture, Some(bundle_id.as_str()), &outcome);
             });
         }
     }
@@ -526,11 +534,19 @@ enum AutoOutcome {
     Excluded,
     NotTrusted,
     ReadFailed(PlatformError),
-    Retrying { attempt: u32, of: u32 },
+    Retrying {
+        attempt: u32,
+        of: u32,
+    },
     NotEditable,
-    TooShort { chars: usize, min: usize },
+    TooShort {
+        chars: usize,
+        min: usize,
+    },
     NoLetter,
     AlreadyShowing,
+    /// The selection holds something that looks like a secret (`sensitive::find`).
+    Secret,
 }
 
 impl std::fmt::Display for AutoOutcome {
@@ -551,6 +567,7 @@ impl std::fmt::Display for AutoOutcome {
             Self::TooShort { chars, min } => write!(f, "skipped: {chars} characters, under the minimum of {min}"),
             Self::NoLetter => write!(f, "skipped: the selection has no letter"),
             Self::AlreadyShowing => write!(f, "skipped: the same text is already showing"),
+            Self::Secret => write!(f, "skipped: the selection looks like it holds a secret"),
         }
     }
 }

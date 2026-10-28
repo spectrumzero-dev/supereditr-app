@@ -35,7 +35,7 @@ func skipEnvironment(_ reason: String) -> Never {
 
 let replayMark: Int64 = 0x5345_4454  // SuperEditr's marker on keys it replays ("SEDT")
 let keyE: CGKeyCode = 14, keyA: CGKeyCode = 0, keyEscape: CGKeyCode = 53, keyTab: CGKeyCode = 48, keySpace: CGKeyCode = 49
-let keyShift: CGKeyCode = 56, keyRight: CGKeyCode = 124, keyUp: CGKeyCode = 126
+let keyShift: CGKeyCode = 56, keyRight: CGKeyCode = 124, keyUp: CGKeyCode = 126, keyReturn: CGKeyCode = 36, keyV: CGKeyCode = 9
 
 /// Holds Shift down (true) or lets it go (false), as a separate key, the way a person does.
 func shift(_ down: Bool) {
@@ -181,15 +181,21 @@ let testStart = Date()
 var opened: Set<String> = []
 
 /// Starts an app that isn't already running (with a file, if given), waits until it is frontmost,
-/// and remembers it so it can be quit later.
-func openFront(_ app: String, bundleID: String, file: String? = nil) -> Bool {
+/// and remembers it so it can be quit later. `newInstance` starts a separate copy even when the app
+/// is already open, passing it `launchArguments`.
+func openFront(_ app: String, bundleID: String, file: String? = nil, newInstance: Bool = false, launchArguments: [String] = []) -> Bool {
     let open = Process()
     open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-    open.arguments = ["-a", app] + (file.map { [$0] } ?? [])
+    open.arguments = (newInstance ? ["-n"] : []) + ["-a", app] + (file.map { [$0] } ?? [])
+        + (launchArguments.isEmpty ? [] : ["--args"] + launchArguments)
     try? open.run()
     open.waitUntilExit()
     opened.insert(bundleID)
-    return waitFor(8) { NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundleID ? true : nil } ?? false
+    // Success means an instance the test launched is in front, never a copy that was already open.
+    return waitFor(8) { () -> Bool? in
+        let ours = Set(launchedSinceStart(bundleID).map(\.processIdentifier))
+        return ours.contains(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1) ? true : nil
+    } ?? false
 }
 
 /// The running instances of an app launched since the test began, oldest first.
@@ -575,7 +581,145 @@ check(refusal.map { !$0.contains("Ab3dE5gH7jK9") } ?? true, "the refusal doesn't
 screenshot(window: overlay(), to: outDir + "/secret-refused.png")
 press(keyEscape)
 quitOpened("com.apple.TextEdit")
+
+// 6c. ↩ in the review writes the fix into a web page's text field. Browsers and Electron apps take
+// the paste path rather than an Accessibility write. Checked in a plain text box and in an editable
+// div, the kind of field chat apps use. Chrome runs as its own copy with a throwaway profile.
+let chromeApp = "/Applications/Google Chrome.app", chrome = "com.google.Chrome"
+if !FileManager.default.fileExists(atPath: chromeApp) {
+    log("SKIP applying in a web page: Chrome isn't installed")
+} else {
+    let typo = "Their going to love this."
+    let page = work + "/fields.html"
+    try! """
+    <!doctype html><meta charset="utf-8"><title>Fields</title>
+    <textarea id="control" autofocus rows="2" cols="60">Control field.</textarea>
+    <textarea id="plain" rows="3" cols="60">\(typo)</textarea>
+    <div id="rich" contenteditable="true" style="border:1px solid; width:30em; min-height:3em">\(typo)</div>
+    """.write(toFile: page, atomically: true, encoding: .utf8)
+    let chromeOpened = openFront(chromeApp, bundleID: chrome, file: page, newInstance: true,
+                                 launchArguments: ["--user-data-dir=\(work)/chrome", "--no-first-run", "--no-default-browser-check"])
+    check(chromeOpened, "Chrome opens the page with two fields")
+    // Keys go only to the test's own Chrome; stop here rather than type into another one.
+    if chromeOpened {
+        // Chrome builds its Accessibility tree only once asked, as SuperEditr does when it reads. Asking
+        // first, and waiting for the tree, makes SuperEditr read the field through Accessibility, as it
+        // does in an app whose tree is already on, instead of falling back to a copy-only ⌘C read.
+        if let ours = launchedSinceStart(chrome).last {
+            let element = AXUIElementCreateApplication(ours.processIdentifier)
+            for flag in ["AXManualAccessibility", "AXEnhancedUserInterface"] {
+                AXUIElementSetAttributeValue(element, flag as CFString, kCFBooleanTrue)
+            }
+        }
+        pump(2)
+        let captureLog = home + "/Library/Logs/SuperEditr/capture.log"
+        func lastChromeRead() -> String {
+            let lines = (try? String(contentsOfFile: captureLog, encoding: .utf8))?.split(separator: "\n") ?? []
+            return lines.last { $0.contains("com.google.Chrome: read") }.map(String.init) ?? "none"
+        }
+        // SuperEditr's first read in a new Chrome process can come before the tree is ready and fall back
+        // to a copy-only ⌘C read. One review closed straight away gets past it.
+        _ = selectAll()
+        press(keyE, .maskCommand)
+        pump(0.1)
+        press(keyE, .maskCommand)
+        if waitFor(5, { overlay() }) != nil {
+            press(keyEscape)
+            _ = waitFor(3) { overlay() == nil ? true : nil }
+        }
+        // Control, without SuperEditr: does Chrome's window report focus here, and does a plain ⌘V land?
+        // This tells a SuperEditr bug apart from a runner session that can't paste into Chrome at all.
+        func chromeWindowFocused() -> String {
+            guard let ours = launchedSinceStart(chrome).last,
+                  let window = attribute(AXUIElementCreateApplication(ours.processIdentifier), kAXFocusedWindowAttribute) else { return "no window" }
+            return "main \(attribute(window as! AXUIElement, kAXMainAttribute) as? Bool ?? false), focused \(attribute(window as! AXUIElement, kAXFocusedAttribute) as? Bool ?? false)"
+        }
+        log("NOTE control: Chrome's window before any paste: \(chromeWindowFocused())")
+        for (how, toProcess) in [("a ⌘V keystroke", false), ("⌘V posted to Chrome's process", true)] {
+            let marker = "Pasted by the test \(toProcess ? 2 : 1)."
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(marker, forType: .string)
+            _ = selectAll()
+            if toProcess, let ours = launchedSinceStart(chrome).last {
+                for down in [true, false] {
+                    let event = CGEvent(keyboardEventSource: nil, virtualKey: keyV, keyDown: down)
+                    event?.flags = .maskCommand
+                    event?.postToPid(ours.processIdentifier)
+                    usleep(25_000)
+                }
+            } else {
+                press(keyV, .maskCommand)
+            }
+            pump(1)
+            let value = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
+            log("NOTE control: \(how) \(value.contains(marker) ? "landed" : "did not land"); window \(chromeWindowFocused())")
+        }
+        // The editable div is reviewed five times, because the paste into it has failed only some of
+        // the time. Before each repeat the test puts the typo back itself, with a ⌘V posted to
+        // Chrome's process, which the control above shows lands.
+        let runs: [(field: String, attempt: Int)] = [("text box", 1)] + (1...5).map { ("editable div", $0) }
+        var divApplied = 0
+        for (index, run) in runs.enumerated() {
+            let field = run.field == "editable div" ? "editable div (attempt \(run.attempt))" : run.field
+            if run.attempt == 1 {
+                press(keyTab)  // from the control field to the text box, then to the div
+                pump(0.5)
+            } else if let ours = launchedSinceStart(chrome).last {
+                _ = selectAll()
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(typo, forType: .string)
+                for down in [true, false] {
+                    let event = CGEvent(keyboardEventSource: nil, virtualKey: keyV, keyDown: down)
+                    event?.flags = .maskCommand
+                    event?.postToPid(ours.processIdentifier)
+                    usleep(25_000)
+                }
+                pump(1)
+            }
+            check(selectAll() || selectAll(), "the \(field)'s text is selected")
+            let start = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
+            if !start.contains(typo) { log("NOTE the \(field) didn't start with the typo; it reads \"\(start)\"") }
+            press(keyE, .maskCommand)
+            pump(0.1)
+            press(keyE, .maskCommand)
+            let panel = waitFor(5) { overlay() }
+            check(panel != nil, "⌘E E reviews the \(field)", "no overlay within 5 s")
+            guard panel != nil else { continue }
+            pump(1.5)  // the rule-based checker's result
+            let read = lastChromeRead()
+            check(read.contains("via Accessibility"), "the \(field) is read through Accessibility", "last read: \(read)")
+            screenshot(window: overlay(), to: outDir + "/web-\(index)-review.png")
+            press(keyReturn)
+            let notice = waitFor(3) { () -> String? in
+                guard let app = running(superEditr).first,
+                      let list = attribute(AXUIElementCreateApplication(app.processIdentifier), kAXWindowsAttribute) as? [AXUIElement] else { return nil }
+                let text = list.map { allText($0, levels: 40) }.joined(separator: " ")
+                return text.contains("confirm") ? text : nil
+            }
+            let value = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
+            let applied = notice == nil && !value.isEmpty && !value.contains(typo)
+            if run.field == "editable div" {
+                // Counted below, so one run shows how often it fails.
+                log("NOTE \(applied ? "applied" : "not applied") in the \(field)\(applied ? "" : notice != nil ? ": warning shown" : ": the field reads \"\(value)\"")")
+                if applied { divApplied += 1 }
+            } else {
+                check(notice == nil, "↩ applies in the \(field) without a warning", "SuperEditr said: \(notice ?? "")")
+                check(!value.isEmpty && !value.contains(typo), "the \(field) holds the fix", "the field reads \"\(value)\"")
+            }
+            screenshot(window: nil, rect: windows(bundleID: chrome).first?.frame, to: outDir + "/web-\(index)-applied.png")
+            if overlay() != nil {
+                log("NOTE the panel was still open after ↩ in the \(field)")
+                press(keyEscape)
+                _ = waitFor(3) { overlay() == nil ? true : nil }
+            }
+        }
+        check(divApplied == 5, "↩ applies in the editable div every time", "applied \(divApplied) of 5 times")
+    }
+    quitOpened(chrome)
+}
 stop(app)
+// What SuperEditr logged about each read and write (app IDs, timings and lengths, no text).
+try? FileManager.default.copyItem(atPath: home + "/Library/Logs/SuperEditr/capture.log", toPath: outDir + "/capture.log")
 
 // 7. The Accessibility guide card, when this build has it, sits at System Settings' bottom-right.
 let binary = (try? Data(contentsOf: URL(fileURLWithPath: "\(appPath)/Contents/MacOS/supereditr"))) ?? Data()

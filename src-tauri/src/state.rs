@@ -47,6 +47,7 @@ impl Session {
 impl AppState {
     pub fn new(config_path: PathBuf) -> Self {
         let config = Config::load(&config_path);
+        crate::platform::set_trace(config.diagnostic_log);
         let engine = Engine::new(&config.dialect);
         Self {
             config: RwLock::new(config),
@@ -95,6 +96,7 @@ impl AppState {
 
     pub fn save_config(&self, config: Config) -> std::io::Result<()> {
         config.save(&self.config_path)?;
+        crate::platform::set_trace(config.diagnostic_log);
         *self.config.write().unwrap() = config;
         Ok(())
     }

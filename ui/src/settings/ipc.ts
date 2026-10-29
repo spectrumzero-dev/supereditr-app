@@ -26,6 +26,7 @@ let demoConfig: Config = {
   offered_exclusions: ["com.1password.1password", "com.apple.Terminal"],
   offered_presets: ["proofread", "polish", "shorter", "friendly", "professional", "simplify", "english"],
   show_timing: true,
+  diagnostic_log: false,
   onboarded: false,
 };
 

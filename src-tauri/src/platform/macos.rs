@@ -916,7 +916,12 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
     let mut attempts = 0;
     let mut landed = false;
     for (i, wait) in windows.iter().enumerate() {
-        if i > 0 && (element.string("AXValue") != before || !selection_unchanged(capture)) {
+        // Retry only while the field, the selection and the clipboard (still our text) are as left.
+        if i > 0
+            && (element.string("AXValue") != before
+                || !selection_unchanged(capture)
+                || pasteboard::change_count() != ours)
+        {
             break;
         }
         how = press();

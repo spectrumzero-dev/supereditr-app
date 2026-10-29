@@ -7,6 +7,7 @@ pub mod detect;
 pub mod diff;
 pub mod engine;
 pub mod guard;
+pub mod install;
 pub mod lang;
 pub mod local;
 pub mod prompts;

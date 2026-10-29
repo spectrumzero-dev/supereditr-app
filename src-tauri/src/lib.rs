@@ -15,6 +15,7 @@ mod updater;
 
 use state::AppState;
 use std::sync::atomic::Ordering;
+use supereditr_core::install::Install;
 use supereditr_core::provider::{ProviderKind, ProviderProfile};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -164,7 +165,12 @@ pub fn run() {
                 app.handle().plugin(tauri_nspanel::init())?;
             }
             let config_dir = app.path().app_config_dir()?;
-            app.manage(AppState::new(config_dir.join("settings.json")));
+            let settings = config_dir.join("settings.json");
+            let install = config_dir.join("install.json");
+            if let Err(e) = Install::record(&install, env!("CARGO_PKG_VERSION"), settings.exists()) {
+                eprintln!("SuperEditr: couldn't record the first run in {}: {e}", install.display());
+            }
+            app.manage(AppState::new(settings));
             app.manage(hotkeys::Registry::default());
             write_status_file(config_dir.join("status.json"));
 

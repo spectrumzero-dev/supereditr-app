@@ -94,6 +94,8 @@ Requirements: macOS 13+, Xcode command-line tools, Rust (stable, via `rustup`), 
 
 `scripts/ui-smoke.sh` runs the live UI tests in `tests/ui/smoke.swift` against `build/SuperEditr.app` and saves screenshots to `build/ui-smoke`. It needs an unlocked display and Accessibility access, and it types into real apps such as TextEdit, so don't use the Mac while it runs. Where it can't run, it warns and skips.
 
+`scripts/count-lines.sh` counts the app's own lines of code, leaving out blank lines, comments, tests, build scripts, config files and dependencies.
+
 For UI work, `npm --prefix ui run dev` serves the overlay and settings pages with sample data in a normal browser.
 
 The `supereditr` CLI runs the same engine from a terminal, which is useful for measuring latency:

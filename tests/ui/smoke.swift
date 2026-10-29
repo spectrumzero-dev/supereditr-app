@@ -35,7 +35,7 @@ func skipEnvironment(_ reason: String) -> Never {
 
 let replayMark: Int64 = 0x5345_4454  // SuperEditr's marker on keys it replays ("SEDT")
 let keyE: CGKeyCode = 14, keyA: CGKeyCode = 0, keyEscape: CGKeyCode = 53, keyTab: CGKeyCode = 48, keySpace: CGKeyCode = 49
-let keyShift: CGKeyCode = 56, keyCommand: CGKeyCode = 55, keyRight: CGKeyCode = 124, keyUp: CGKeyCode = 126, keyReturn: CGKeyCode = 36, keyV: CGKeyCode = 9, keyDown: CGKeyCode = 125
+let keyShift: CGKeyCode = 56, keyCommand: CGKeyCode = 55, keyRight: CGKeyCode = 124, keyUp: CGKeyCode = 126, keyReturn: CGKeyCode = 36, keyV: CGKeyCode = 9, keyR: CGKeyCode = 15, keyDown: CGKeyCode = 125
 
 /// Holds Shift down (true) or lets it go (false), as a separate key, the way a person does.
 func shift(_ down: Bool) {
@@ -693,8 +693,8 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         // The editable div is applied six times in a row, the first straight after the text box
         // and the last three with every CPU core busy, as on a loaded Mac. Back-to-back pastes were
         // dropped by Chrome (spectrumzero-dev/supereditr-app#10). Before each repeat the test puts
-        // the typo back by typing it, so each of SuperEditr's pastes follows its own last restore,
-        // the case Chrome drops.
+        // the typo back by reloading the page, so each of SuperEditr's pastes follows its own last
+        // restore, the case Chrome drops.
         let runs: [(field: String, attempt: Int)] = [("text box", 1)] + (1...6).map { ("editable div", $0) }
         var load: [Process] = []
         defer { load.forEach { $0.terminate() } }
@@ -713,23 +713,15 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             if run.attempt == 1 {
                 press(keyTab)  // from the control field to the text box, then to the editable div
                 pump(0.5)
-            } else if launchedSinceStart(chrome).last != nil {
-                // Typed, not pasted, so SuperEditr's next paste is the first since its last restore.
-                _ = selectAll()
-                let units = Array(typo.utf16)
-                for start in stride(from: 0, to: units.count, by: 10) {
-                    var chunk = Array(units[start..<min(start + 10, units.count)])
-                    for down in [true, false] {
-                        let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down)
-                        event?.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: &chunk)
-                        event?.post(tap: .cghidEventTap)  // Chrome ignores typing posted to its process
-                        usleep(15_000)
-                    }
-                }
-                pump(1)
-                if !(focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? "").contains(typo) {
-                    log("NOTE typing the typo back into the \(field) didn't land")
-                }
+            } else {
+                // Reloading puts the typo back without touching the clipboard, so SuperEditr's next
+                // paste is the first since its last restore. Focus starts in the control field.
+                press(keyR, .maskCommand)
+                pump(2.5)
+                press(keyTab)
+                pump(0.3)
+                press(keyTab)
+                pump(0.5)
             }
             check(selectAll() || selectAll(), "the \(field)'s text is selected")
             let start = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""

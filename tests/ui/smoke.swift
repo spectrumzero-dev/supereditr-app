@@ -635,7 +635,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
     <textarea id="control" autofocus rows="2" cols="60">Control field.</textarea>
     <textarea id="plain" rows="3" cols="60">\(typo)</textarea>
     <div id="rich" contenteditable="true" style="border:1px solid; width:30em; min-height:3em">\(typo)</div>
-    <div id="paragraphs" contenteditable="true" style="border:1px solid; width:30em"><p>Their going home.</p><p><br></p><p>Its late.</p></div>
+    <div id="paragraphs" contenteditable="true" style="border:1px solid; width:30em"><p>\(typo)</p><p><br></p><p>See you soon.</p></div>
     """.write(toFile: page, atomically: true, encoding: .utf8)
     let chromeOpened = openFront(chromeApp, bundleID: chrome, file: page, newInstance: true,
                                  launchArguments: ["--user-data-dir=\(work)/chrome", "--no-first-run", "--no-default-browser-check"])
@@ -766,7 +766,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             guard depth < 40, let children = attribute(element, kAXChildrenAttribute) as? [AXUIElement] else { return nil }
             return children.lazy.compactMap { byDOMIdentifier($0, id, depth: depth + 1) }.first
         }
-        let paragraphText = "Their going home.\n\nIts late."
+        let paragraphText = "\(typo)\n\nSee you soon."  // the typo, so the rule-based checker has a fix
         if let ours = launchedSinceStart(chrome).last,
            let field = byDOMIdentifier(AXUIElementCreateApplication(ours.processIdentifier), "paragraphs") {
             AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
@@ -791,7 +791,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 let texts = groups.map { allText($0, levels: 4).trimmingCharacters(in: .whitespaces) }
                 let value = attribute(field, kAXValueAttribute) as? String ?? ""
                 let emptyLine = (texts.count == 3 && texts[1].isEmpty) || value.contains("\n\n")
-                check(emptyLine && !value.contains("Their going"), "the fix keeps the empty line",
+                check(emptyLine && !value.contains(typo), "the fix keeps the empty line",
                       "the field reads \(String(reflecting: value)), paragraphs \(texts)")
                 screenshot(window: nil, rect: windows(bundleID: chrome).first?.frame, to: outDir + "/web-paragraphs-applied.png")
             }

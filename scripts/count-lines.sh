@@ -11,14 +11,18 @@ count() {
   local label="$1"
   shift
   awk '
-    FNR == 1 { skip = 0 }
+    FNR == 1 { skip = 0; endc = "" }
     # A Rust test module starts at column 0 and ends at the next closing brace in column 0.
     /^#\[cfg\(test\)\]/ { pending = 1; next }
     pending && /^mod tests \{/ { skip = 1; pending = 0; next }
     pending { pending = 0 }
     skip { if (/^\}/) skip = 0; next }
+    # Inside a block comment, skip lines until the one that closes it.
+    endc != "" { if (index($0, endc)) endc = ""; next }
     /^[[:space:]]*$/ { next }
-    /^[[:space:]]*(\/\/|\/\*|\*|<!--)/ { next }
+    /^[[:space:]]*\/\// { next }
+    /^[[:space:]]*\/\*/ { if (!index($0, "*/")) endc = "*/"; next }
+    /^[[:space:]]*<!--/ { if (!index($0, "-->")) endc = "-->"; next }
     { n++ }
     END { print n + 0 }
   ' "$@" | { read -r n; printf '%-8s %6d\n' "$label" "$n"; echo "$n" >> "$TOTALS"; }

@@ -713,7 +713,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             if run.attempt == 1 {
                 press(keyTab)  // from the control field to the text box, then to the editable div
                 pump(0.5)
-            } else if let ours = launchedSinceStart(chrome).last {
+            } else if launchedSinceStart(chrome).last != nil {
                 // Typed, not pasted, so SuperEditr's next paste is the first since its last restore.
                 _ = selectAll()
                 let units = Array(typo.utf16)
@@ -722,11 +722,14 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                     for down in [true, false] {
                         let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down)
                         event?.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: &chunk)
-                        event?.postToPid(ours.processIdentifier)
+                        event?.post(tap: .cghidEventTap)  // Chrome ignores typing posted to its process
                         usleep(15_000)
                     }
                 }
                 pump(1)
+                if !(focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? "").contains(typo) {
+                    log("NOTE typing the typo back into the \(field) didn't land")
+                }
             }
             check(selectAll() || selectAll(), "the \(field)'s text is selected")
             let start = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""

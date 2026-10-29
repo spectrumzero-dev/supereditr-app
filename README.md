@@ -108,7 +108,8 @@ This is a first working version.
 
 - **Verified:**
   - Every automated check above passes.
-  - The release app builds (13.5 MB, DMG 6.7 MB), launches, and stays running.
+  - The release app builds (16.2 MB), launches, and stays running.
+  - The app's own code is about 10,500 lines, counted by `scripts/count-lines.sh` without blank lines, comments, tests, build scripts or config files.
   - The offline checker fixes errors in about 20 ms.
   - The Claude Code subscription bridge proofreads end to end.
   - Apple Intelligence proofreads end to end on a Mac Studio: median 416 ms to first words and 708 ms total over four warm runs, with every error in the test sentence fixed.

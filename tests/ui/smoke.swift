@@ -522,6 +522,7 @@ if let settings {
             return scanButton == nil ? nil : true
         }
         check(scanned != nil, "Find my AI accounts opens Models and scans", "Models didn't show a scan")
+        check(panelText().contains("Early access"), "Models labels the cloud AIs Early access")
         screenshot(window: nil, rect: frame(of: settings), to: outDir + "/find-accounts.png")
     }
     if general == nil || recorder == nil {

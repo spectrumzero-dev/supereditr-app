@@ -18,3 +18,17 @@ export function profileFor(
 export function setupAction(shown: ProviderProfile, active: string | null): "check" | "use" {
   return shown.id === active ? "check" : "use";
 }
+
+/** Whether a row shows the Early access label: an AI reached with the user's own key or account,
+ * or an OpenAI-compatible server that isn't on this Mac (OpenRouter, Groq). A server on this Mac,
+ * such as LM Studio, and an address that isn't complete yet, show none. */
+export function earlyAccess(kind: ProviderKind, shown: ProviderProfile | null): boolean {
+  if (kind !== "open_ai_compatible") return kind === "anthropic" || kind === "open_ai" || kind === "gemini" || kind === "claude_cli";
+  if (!shown) return false;
+  try {
+    const host = new URL(shown.base_url).hostname;
+    return !(host === "localhost" || host === "[::1]" || host.startsWith("127."));
+  } catch {
+    return false;
+  }
+}

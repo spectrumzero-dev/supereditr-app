@@ -5,7 +5,7 @@
   import type { BuiltinAi, Candidate, Config, ProviderCheck, ProviderKind, ProviderProfile } from "../lib/types";
   import { watchBuiltinAi } from "./builtin";
   import { api } from "./ipc";
-  import { profileFor as pickProfile, setupAction } from "./profiles";
+  import { earlyAccess, profileFor as pickProfile, setupAction } from "./profiles";
 
   interface Props {
     config: Config;
@@ -312,6 +312,7 @@
           <input type="radio" name="ai" checked={activeChoice === k.kind} onclick={pick(k.kind)} />
           <span>
             <span class="label">{k.name}</span>
+            {#if earlyAccess(k.kind, p)}<span class="pill early" title="Included in early access">Early access</span>{/if}
             {#if st}<span class="pill {st.tone}">{st.label}</span>{/if}
             <span class="hint">{k.blurb}</span>
           </span>

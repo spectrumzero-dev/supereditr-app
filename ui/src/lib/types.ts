@@ -97,6 +97,8 @@ export interface Config {
   /** Built-in styles already offered, so a deleted one stays deleted. */
   offered_presets: string[];
   show_timing: boolean;
+  /** Keep capture.log for diagnosing a problem in a particular app; see crates/core/src/config.rs. */
+  diagnostic_log: boolean;
   onboarded: boolean;
 }
 

@@ -376,10 +376,11 @@ let support = home + "/Library/Application Support/com.sghael.supereditr"
 let status = support + "/status.json"
 let draft = work + "/draft.txt"
 try! "Their going to love this, it work good and its realy fast.".write(toFile: draft, atomically: true, encoding: .utf8)
-// Onboarded, so Settings doesn't open over the test, and Terminal allowed, so check 4 exercises
-// the read-only text rule rather than the excluded-apps list.
+// Onboarded, so Settings doesn't open over the test; Terminal allowed, so check 4 exercises the
+// read-only text rule rather than the excluded-apps list; and the diagnostic log on, for the Chrome
+// check and the run's artifacts.
 try! FileManager.default.createDirectory(atPath: support, withIntermediateDirectories: true)
-try! #"{"onboarded": true, "excluded_apps": ["com.1password.1password"]}"#.write(toFile: support + "/settings.json", atomically: true, encoding: .utf8)
+try! #"{"onboarded": true, "excluded_apps": ["com.1password.1password"], "diagnostic_log": true}"#.write(toFile: support + "/settings.json", atomically: true, encoding: .utf8)
 
 FileManager.default.createFile(atPath: outDir + "/supereditr.log", contents: nil)
 appLog = FileHandle(forWritingAtPath: outDir + "/supereditr.log") ?? FileHandle.nullDevice

@@ -240,19 +240,27 @@ impl Element {
         let real = |s: &String| !s.trim().is_empty();
         self.string("AXSelectedText")
             .filter(real)
-            .map(|text| self.line_breaks_restored(&text).unwrap_or(text))
+            .map(|text| self.web_text().and_then(|full| span_of(&full, &text)).unwrap_or(text))
             .or_else(|| self.marker_selection().map(|(text, _)| text).filter(real))
     }
 
-    /// Chromium's `AXSelectedText` can leave out the line breaks between paragraphs (seen after ⌘A
-    /// in Claude), while its selected range and `AXValue` keep them. Reads the value only when the
-    /// range is longer than the text.
-    fn line_breaks_restored(&self, text: &str) -> Option<String> {
-        let range = self.range("AXSelectedTextRange")?;
-        if range.length.max(0) as usize <= text.encode_utf16().count() {
+    /// The text of a Chromium rich field (a text area whose children are paragraph groups) with
+    /// every line break. Chromium's own text drops some: an empty paragraph adds nothing to
+    /// `AXValue`, and `AXSelectedText` can leave out the break between two paragraphs. Each
+    /// paragraph is still a child group, an empty one included, so the empty ones are put back.
+    /// None for any other element, before its value is read.
+    fn web_text(&self) -> Option<String> {
+        let paragraphs = self.children();
+        if paragraphs.is_empty()
+            || paragraphs.len() > 500
+            || self.string("AXRole").as_deref() != Some("AXTextArea")
+            || !paragraphs.iter().all(|p| p.string("AXRole").as_deref() == Some("AXGroup"))
+        {
             return None;
         }
-        restore_line_breaks(&self.string("AXValue")?, range, text)
+        let lengths: Vec<usize> = paragraphs.iter().map(|p| visible_length(p, 0)).collect();
+        let value = self.string("AXValue")?;
+        Some(with_empty_paragraphs(&value, &lengths).unwrap_or(value))
     }
 
     fn frame(&self) -> Option<CGRect> {
@@ -290,13 +298,73 @@ impl std::fmt::Debug for Element {
     }
 }
 
-/// The text `range` covers in `value`, when it is `text` with only whitespace added.
-fn restore_line_breaks(value: &str, range: CFRange, text: &str) -> Option<String> {
-    let units: Vec<u16> = value.encode_utf16().collect();
-    let start = range.location.max(0) as usize;
-    let covered = String::from_utf16(units.get(start..start.checked_add(range.length.max(0) as usize)?)?).ok()?;
-    let visible = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
-    (visible(&covered) == visible(text)).then_some(covered)
+fn is_line_break(c: char) -> bool {
+    c == '\n' || c == '\r'
+}
+
+/// Characters other than line breaks in an element's static text, a few levels down (links and
+/// bold text nest it).
+fn visible_length(element: &Element, depth: usize) -> usize {
+    if element.string("AXRole").as_deref() == Some("AXStaticText") {
+        return element.string("AXValue").map_or(0, |v| v.chars().filter(|c| !is_line_break(*c)).count());
+    }
+    if depth >= 4 {
+        return 0;
+    }
+    element.children().iter().map(|child| visible_length(child, depth + 1)).sum()
+}
+
+/// `value` with its empty paragraphs put back. Chromium joins a rich field's non-empty paragraphs
+/// with one line break each; `paragraphs` gives every paragraph's count of characters other than
+/// line breaks, 0 for an empty one. None when `value` doesn't fit them.
+fn with_empty_paragraphs(value: &str, paragraphs: &[usize]) -> Option<String> {
+    let mut rest = value;
+    let mut texts: Vec<&str> = Vec::with_capacity(paragraphs.len());
+    let mut first = true;
+    for &length in paragraphs {
+        if length == 0 {
+            texts.push("");
+            continue;
+        }
+        if !first {
+            rest = rest.strip_prefix('\n')?;
+        }
+        first = false;
+        let mut seen = 0;
+        let end = rest
+            .char_indices()
+            .find(|&(_, c)| {
+                seen += usize::from(!is_line_break(c));
+                seen == length
+            })
+            .map(|(i, c)| i + c.len_utf8())?;
+        texts.push(&rest[..end]);
+        rest = &rest[end..];
+    }
+    rest.is_empty().then(|| texts.join("\n"))
+}
+
+/// The span of `full` with the same characters as `selected`, line breaks aside, from its first
+/// such character to its last. None when there isn't exactly one.
+fn span_of(full: &str, selected: &str) -> Option<String> {
+    let target: String = selected.chars().filter(|c| !is_line_break(*c)).collect();
+    if target.is_empty() {
+        return None;
+    }
+    let (mut visible, mut starts) = (String::new(), Vec::new());
+    for (i, c) in full.char_indices().filter(|&(_, c)| !is_line_break(c)) {
+        visible.push(c);
+        starts.push(i);
+    }
+    let mut found = visible.match_indices(target.as_str()).map(|(at, _)| at);
+    let at = found.next()?;
+    if found.next().is_some() {
+        return None;
+    }
+    let first = visible[..at].chars().count();
+    let last = first + target.chars().count() - 1;
+    let end = starts[last] + full[starts[last]..].chars().next()?.len_utf8();
+    Some(full[starts[first]..end].to_string())
 }
 
 fn ax_value<T: Default>(raw: CFTypeRef, kind: u32) -> Option<T> {
@@ -921,7 +989,8 @@ fn verify_replacement(element: &Element, capture: &Capture, before: Option<&str>
                 }
                 None => value.contains(text),
             };
-            if landed {
+            // Chromium's value drops empty paragraphs; its rebuilt text keeps them.
+            if landed || element.web_text().is_some_and(|full| full.contains(text)) {
                 return true;
             }
         }
@@ -1708,21 +1777,37 @@ mod tests {
         assert_eq!(pick("|"), None);
     }
 
+    // What Chrome reported for ProseMirror fields of two paragraphs around an empty one, of two
+    // paragraphs, and of one paragraph with two hard breaks.
     #[test]
-    fn restores_line_breaks_the_selected_text_left_out() {
-        let value = "Their going home now.\n\nIts late. 🚀";
-        let all = CFRange { location: 0, length: value.encode_utf16().count() as isize };
-        assert_eq!(restore_line_breaks(value, all, "Their going home now.Its late. 🚀").as_deref(), Some(value));
-        let tail = CFRange { location: 21, length: 11 };
-        assert_eq!(restore_line_breaks(value, tail, "Its late.").as_deref(), Some("\n\nIts late."));
+    fn puts_back_the_empty_paragraphs_chromium_leaves_out() {
+        assert_eq!(with_empty_paragraphs("One.\nTwo.", &[4, 0, 4]).as_deref(), Some("One.\n\nTwo."));
+        assert_eq!(with_empty_paragraphs("One.\nTwo.", &[4, 4]).as_deref(), Some("One.\nTwo."));
+        assert_eq!(with_empty_paragraphs("One.\n\nTwo.", &[8]).as_deref(), Some("One.\n\nTwo."));
+        assert_eq!(with_empty_paragraphs("Hi 🚀\nBye", &[0, 4, 0, 0, 3, 0]).as_deref(), Some("\nHi 🚀\n\n\nBye\n"));
     }
 
     #[test]
-    fn keeps_the_selected_text_when_the_value_says_something_else() {
-        let value = "Their going home now.\nIts late.";
-        let all = CFRange { location: 0, length: 31 };
-        assert_eq!(restore_line_breaks(value, all, "Their going home now.Its early."), None);
-        assert_eq!(restore_line_breaks(value, CFRange { location: 20, length: 40 }, "Its late."), None);
+    fn leaves_a_value_that_does_not_fit_the_paragraphs() {
+        assert_eq!(with_empty_paragraphs("One.\nTwo.", &[4, 0, 5]), None);
+        assert_eq!(with_empty_paragraphs("One.\nTwo.", &[4]), None);
+        assert_eq!(with_empty_paragraphs("One.Two.", &[4, 4]), None);
+    }
+
+    #[test]
+    fn maps_a_selection_onto_the_full_text() {
+        let full = "this is a first sentence.\n\nIs this a newlie?";
+        assert_eq!(span_of(full, "this is a first sentence.\nIs this a newlie?").as_deref(), Some(full));
+        assert_eq!(span_of("One.\nTwo.", "One.Two.").as_deref(), Some("One.\nTwo."));
+        assert_eq!(span_of(full, "sentence.Is this").as_deref(), Some("sentence.\n\nIs this"));
+        assert_eq!(span_of(full, "first").as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn keeps_a_selection_that_matches_nowhere_or_twice() {
+        assert_eq!(span_of("One.\nTwo.", "Three."), None);
+        assert_eq!(span_of("Go.\nGo.", "Go."), None);
+        assert_eq!(span_of("One.", "\n"), None);
     }
 
     #[test]

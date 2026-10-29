@@ -635,6 +635,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
     <textarea id="control" autofocus rows="2" cols="60">Control field.</textarea>
     <textarea id="plain" rows="3" cols="60">\(typo)</textarea>
     <div id="rich" contenteditable="true" style="border:1px solid; width:30em; min-height:3em">\(typo)</div>
+    <div id="paragraphs" contenteditable="true" style="border:1px solid; width:30em"><p>Their going home.</p><p><br></p><p>Its late.</p></div>
     """.write(toFile: page, atomically: true, encoding: .utf8)
     let chromeOpened = openFront(chromeApp, bundleID: chrome, file: page, newInstance: true,
                                  launchArguments: ["--user-data-dir=\(work)/chrome", "--no-first-run", "--no-default-browser-check"])
@@ -755,6 +756,47 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 press(keyEscape)
                 _ = waitFor(3) { overlay() == nil ? true : nil }
             }
+        }
+        // Paragraphs around an empty one, as in Claude's message box (ProseMirror): Chrome's own text
+        // for the field leaves the empty paragraph out, and ⌘A's selected text can drop the break
+        // between paragraphs. SuperEditr reads the field from its paragraphs, so the empty line
+        // reaches the review and survives the fix.
+        func byDOMIdentifier(_ element: AXUIElement, _ id: String, depth: Int = 0) -> AXUIElement? {
+            if (attribute(element, "AXDOMIdentifier") as? String) == id { return element }
+            guard depth < 40, let children = attribute(element, kAXChildrenAttribute) as? [AXUIElement] else { return nil }
+            return children.lazy.compactMap { byDOMIdentifier($0, id, depth: depth + 1) }.first
+        }
+        let paragraphText = "Their going home.\n\nIts late."
+        if let ours = launchedSinceStart(chrome).last,
+           let field = byDOMIdentifier(AXUIElementCreateApplication(ours.processIdentifier), "paragraphs") {
+            AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            pump(0.5)
+            check(selectAll(), "the paragraphs' text is selected")
+            press(keyE, .maskCommand)
+            pump(0.1)
+            press(keyE, .maskCommand)
+            let panel = waitFor(5) { overlay() }
+            check(panel != nil, "⌘E E reviews the paragraphs", "no overlay within 5 s")
+            if panel != nil {
+                pump(1.5)  // the rule-based checker's result
+                let read = lastChromeRead()
+                check(read.contains("read \(paragraphText.count) characters"), "the empty paragraph is read",
+                      "expected \(paragraphText.count) characters; last read: \(read)")
+                screenshot(window: overlay(), to: outDir + "/web-paragraphs-review.png")
+                press(keyReturn)
+                _ = waitFor(3) { overlay() == nil ? true : nil }
+                pump(1)
+                // Chrome's own paste may keep the empty line as an empty paragraph or as two line breaks.
+                let groups = (attribute(field, kAXChildrenAttribute) as? [AXUIElement]) ?? []
+                let texts = groups.map { allText($0, levels: 4).trimmingCharacters(in: .whitespaces) }
+                let value = attribute(field, kAXValueAttribute) as? String ?? ""
+                let emptyLine = (texts.count == 3 && texts[1].isEmpty) || value.contains("\n\n")
+                check(emptyLine && !value.contains("Their going"), "the fix keeps the empty line",
+                      "the field reads \(String(reflecting: value)), paragraphs \(texts)")
+                screenshot(window: nil, rect: windows(bundleID: chrome).first?.frame, to: outDir + "/web-paragraphs-applied.png")
+            }
+        } else {
+            check(false, "the paragraphs field is found", "no element with DOM id \"paragraphs\"")
         }
         // How many tries each paste needed, from SuperEditr's log, to show how often the retry helps.
         let pastes = ((try? String(contentsOfFile: captureLog, encoding: .utf8)) ?? "").split(separator: "\n")

@@ -240,7 +240,27 @@ impl Element {
         let real = |s: &String| !s.trim().is_empty();
         self.string("AXSelectedText")
             .filter(real)
+            .map(|text| self.web_text().and_then(|full| span_of(&full, &text)).unwrap_or(text))
             .or_else(|| self.marker_selection().map(|(text, _)| text).filter(real))
+    }
+
+    /// The text of a Chromium rich field (a text area whose children are paragraph groups) with
+    /// every line break. Chromium's own text drops some: an empty paragraph adds nothing to
+    /// `AXValue`, and `AXSelectedText` can leave out the break between two paragraphs. Each
+    /// paragraph is still a child group, an empty one included, so the empty ones are put back.
+    /// None for any other element, before its value is read.
+    fn web_text(&self) -> Option<String> {
+        let paragraphs = self.children();
+        if paragraphs.is_empty()
+            || paragraphs.len() > 500
+            || self.string("AXRole").as_deref() != Some("AXTextArea")
+            || !paragraphs.iter().all(|p| p.string("AXRole").as_deref() == Some("AXGroup"))
+        {
+            return None;
+        }
+        let lengths: Vec<usize> = paragraphs.iter().map(|p| visible_length(p, 0)).collect();
+        let value = self.string("AXValue")?;
+        Some(with_empty_paragraphs(&value, &lengths).unwrap_or(value))
     }
 
     fn frame(&self) -> Option<CGRect> {
@@ -276,6 +296,87 @@ impl std::fmt::Debug for Element {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("AXUIElement")
     }
+}
+
+fn is_line_break(c: char) -> bool {
+    c == '\n' || c == '\r'
+}
+
+/// Characters other than line breaks in an element's static text, a few levels down (links and
+/// bold text nest it).
+fn visible_length(element: &Element, depth: usize) -> usize {
+    if element.string("AXRole").as_deref() == Some("AXStaticText") {
+        return element.string("AXValue").map_or(0, |v| v.chars().filter(|c| !is_line_break(*c)).count());
+    }
+    if depth >= 4 {
+        return 0;
+    }
+    element.children().iter().map(|child| visible_length(child, depth + 1)).sum()
+}
+
+/// `value` with its empty paragraphs put back. Chromium separates a rich field's non-empty
+/// paragraphs with fewer line breaks than there are paragraph breaks between them (one, for one
+/// empty paragraph between two), and may end with a line break for an empty last paragraph.
+/// `paragraphs` gives every paragraph's count of characters other than line breaks, 0 for an empty
+/// one. None when `value` doesn't fit them.
+fn with_empty_paragraphs(value: &str, paragraphs: &[usize]) -> Option<String> {
+    let mut rest = value;
+    let mut texts: Vec<&str> = Vec::with_capacity(paragraphs.len());
+    let (mut first, mut empty_run) = (true, 0);
+    for &length in paragraphs {
+        if length == 0 {
+            texts.push("");
+            empty_run += 1;
+            continue;
+        }
+        if !first {
+            // At least one line break, and at most one per paragraph break.
+            rest = rest.strip_prefix('\n')?;
+            for _ in 0..empty_run {
+                rest = rest.strip_prefix('\n').unwrap_or(rest);
+            }
+        }
+        first = false;
+        empty_run = 0;
+        let mut seen = 0;
+        let end = rest
+            .char_indices()
+            .find(|&(_, c)| {
+                seen += usize::from(!is_line_break(c));
+                seen == length
+            })
+            .map(|(i, c)| i + c.len_utf8())?;
+        texts.push(&rest[..end]);
+        rest = &rest[end..];
+    }
+    let trailing_breaks = rest.chars().count();
+    (rest.chars().all(|c| c == '\n') && trailing_breaks <= empty_run).then(|| texts.join("\n"))
+}
+
+/// The span of `full` with the same characters as `selected`, line breaks aside, from its first
+/// such character to its last, with `selected`'s own leading and trailing line breaks kept. None
+/// when there isn't exactly one.
+fn span_of(full: &str, selected: &str) -> Option<String> {
+    let target: String = selected.chars().filter(|c| !is_line_break(*c)).collect();
+    if target.is_empty() {
+        return None;
+    }
+    let (mut visible, mut starts) = (String::new(), Vec::new());
+    for (i, c) in full.char_indices().filter(|&(_, c)| !is_line_break(c)) {
+        visible.push(c);
+        starts.push(i);
+    }
+    let mut found = visible.match_indices(target.as_str()).map(|(at, _)| at);
+    let at = found.next()?;
+    if found.next().is_some() {
+        return None;
+    }
+    let first = visible[..at].chars().count();
+    let last = first + target.chars().count() - 1;
+    let end = starts[last] + full[starts[last]..].chars().next()?.len_utf8();
+    let inner = selected.trim_matches(is_line_break);
+    let (leading, trailing) = (&selected[..selected.find(inner)?], &selected[selected.rfind(inner)? + inner.len()..]);
+    Some(format!("{leading}{}{trailing}", &full[starts[first]..end]))
 }
 
 fn ax_value<T: Default>(raw: CFTypeRef, kind: u32) -> Option<T> {
@@ -900,7 +1001,8 @@ fn verify_replacement(element: &Element, capture: &Capture, before: Option<&str>
                 }
                 None => value.contains(text),
             };
-            if landed {
+            // Chromium's value drops empty paragraphs; its rebuilt text keeps them.
+            if landed || element.web_text().is_some_and(|full| full.contains(text)) {
                 return true;
             }
         }
@@ -1685,6 +1787,52 @@ mod tests {
         assert_eq!(pick("|First one."), None);
         assert_eq!(pick("   |"), None);
         assert_eq!(pick("|"), None);
+    }
+
+    // What Chrome reported for ProseMirror fields of two paragraphs around an empty one, of two
+    // paragraphs, and of one paragraph with two hard breaks.
+    #[test]
+    fn puts_back_the_empty_paragraphs_chromium_leaves_out() {
+        assert_eq!(with_empty_paragraphs("One.\nTwo.", &[4, 0, 4]).as_deref(), Some("One.\n\nTwo."));
+        assert_eq!(with_empty_paragraphs("One.\nTwo.", &[4, 4]).as_deref(), Some("One.\nTwo."));
+        assert_eq!(with_empty_paragraphs("One.\n\nTwo.", &[8]).as_deref(), Some("One.\n\nTwo."));
+        assert_eq!(with_empty_paragraphs("Hi 🚀\nBye", &[0, 4, 0, 0, 3, 0]).as_deref(), Some("\nHi 🚀\n\n\nBye\n"));
+    }
+
+    // Grammarly's Chromium newline fix suggests a run of empty paragraphs can lose only one line
+    // break, and an empty last paragraph can add one at the end; either way the result is the same.
+    #[test]
+    fn takes_any_number_of_line_breaks_chromium_keeps_for_empty_paragraphs() {
+        let want = Some("One.\n\n\nTwo.\n");
+        assert_eq!(with_empty_paragraphs("One.\nTwo.", &[4, 0, 0, 4, 0]).as_deref(), want);
+        assert_eq!(with_empty_paragraphs("One.\n\nTwo.\n", &[4, 0, 0, 4, 0]).as_deref(), want);
+        assert_eq!(with_empty_paragraphs("One.\n\n\nTwo.", &[4, 0, 0, 4, 0]).as_deref(), want);
+    }
+
+    #[test]
+    fn leaves_a_value_that_does_not_fit_the_paragraphs() {
+        assert_eq!(with_empty_paragraphs("One.\nTwo.", &[4, 0, 5]), None);
+        assert_eq!(with_empty_paragraphs("One.\nTwo.", &[4]), None);
+        assert_eq!(with_empty_paragraphs("One.Two.", &[4, 4]), None);
+        assert_eq!(with_empty_paragraphs("One.\n\n", &[4, 0]), None);
+    }
+
+    #[test]
+    fn maps_a_selection_onto_the_full_text() {
+        let full = "this is a first sentence.\n\nIs this a newlie?";
+        assert_eq!(span_of(full, "this is a first sentence.\nIs this a newlie?").as_deref(), Some(full));
+        assert_eq!(span_of("One.\nTwo.", "One.Two.").as_deref(), Some("One.\nTwo."));
+        assert_eq!(span_of(full, "sentence.Is this").as_deref(), Some("sentence.\n\nIs this"));
+        assert_eq!(span_of(full, "first").as_deref(), Some("first"));
+        assert_eq!(span_of("One\nTwo", "One\n").as_deref(), Some("One\n"));
+        assert_eq!(span_of(full, "\nIs this").as_deref(), Some("\nIs this"));
+    }
+
+    #[test]
+    fn keeps_a_selection_that_matches_nowhere_or_twice() {
+        assert_eq!(span_of("One.\nTwo.", "Three."), None);
+        assert_eq!(span_of("Go.\nGo.", "Go."), None);
+        assert_eq!(span_of("One.", "\n"), None);
     }
 
     #[test]

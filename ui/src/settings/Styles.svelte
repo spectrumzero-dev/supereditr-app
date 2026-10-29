@@ -104,7 +104,7 @@
           </button>
         </li>
       {/each}
-      <li><button class="add" onclick={addPreset}>+ New style</button></li>
+      <li><button class="add" onclick={addPreset}>+ New style <span class="pill early" title="Included in early access">Early access</span></button></li>
     </ul>
     {#if preset}
       <div class="detail">
@@ -204,6 +204,8 @@
   }
   .list .add {
     color: var(--accent);
+    flex-wrap: wrap;
+    align-items: center;
   }
   .detail {
     display: flex;

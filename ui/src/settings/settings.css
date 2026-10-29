@@ -170,6 +170,12 @@ textarea {
   color: var(--accent);
   box-shadow: inset 0 0 0 1px var(--accent);
 }
+/* Early access: on cloud AIs and New style. */
+.pill.early {
+  background: transparent;
+  color: var(--text-3);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
 .muted {
   color: var(--text-3);
 }

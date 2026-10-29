@@ -314,22 +314,30 @@ fn visible_length(element: &Element, depth: usize) -> usize {
     element.children().iter().map(|child| visible_length(child, depth + 1)).sum()
 }
 
-/// `value` with its empty paragraphs put back. Chromium joins a rich field's non-empty paragraphs
-/// with one line break each; `paragraphs` gives every paragraph's count of characters other than
-/// line breaks, 0 for an empty one. None when `value` doesn't fit them.
+/// `value` with its empty paragraphs put back. Chromium separates a rich field's non-empty
+/// paragraphs with fewer line breaks than there are paragraph breaks between them (one, for one
+/// empty paragraph between two), and may end with a line break for an empty last paragraph.
+/// `paragraphs` gives every paragraph's count of characters other than line breaks, 0 for an empty
+/// one. None when `value` doesn't fit them.
 fn with_empty_paragraphs(value: &str, paragraphs: &[usize]) -> Option<String> {
     let mut rest = value;
     let mut texts: Vec<&str> = Vec::with_capacity(paragraphs.len());
-    let mut first = true;
+    let (mut first, mut empty_run) = (true, 0);
     for &length in paragraphs {
         if length == 0 {
             texts.push("");
+            empty_run += 1;
             continue;
         }
         if !first {
+            // At least one line break, and at most one per paragraph break.
             rest = rest.strip_prefix('\n')?;
+            for _ in 0..empty_run {
+                rest = rest.strip_prefix('\n').unwrap_or(rest);
+            }
         }
         first = false;
+        empty_run = 0;
         let mut seen = 0;
         let end = rest
             .char_indices()
@@ -341,7 +349,8 @@ fn with_empty_paragraphs(value: &str, paragraphs: &[usize]) -> Option<String> {
         texts.push(&rest[..end]);
         rest = &rest[end..];
     }
-    rest.is_empty().then(|| texts.join("\n"))
+    let trailing_breaks = rest.chars().count();
+    (rest.chars().all(|c| c == '\n') && trailing_breaks <= empty_run).then(|| texts.join("\n"))
 }
 
 /// The span of `full` with the same characters as `selected`, line breaks aside, from its first
@@ -1787,11 +1796,22 @@ mod tests {
         assert_eq!(with_empty_paragraphs("Hi 🚀\nBye", &[0, 4, 0, 0, 3, 0]).as_deref(), Some("\nHi 🚀\n\n\nBye\n"));
     }
 
+    // Grammarly's Chromium newline fix suggests a run of empty paragraphs can lose only one line
+    // break, and an empty last paragraph can add one at the end; either way the result is the same.
+    #[test]
+    fn takes_any_number_of_line_breaks_chromium_keeps_for_empty_paragraphs() {
+        let want = Some("One.\n\n\nTwo.\n");
+        assert_eq!(with_empty_paragraphs("One.\nTwo.", &[4, 0, 0, 4, 0]).as_deref(), want);
+        assert_eq!(with_empty_paragraphs("One.\n\nTwo.\n", &[4, 0, 0, 4, 0]).as_deref(), want);
+        assert_eq!(with_empty_paragraphs("One.\n\n\nTwo.", &[4, 0, 0, 4, 0]).as_deref(), want);
+    }
+
     #[test]
     fn leaves_a_value_that_does_not_fit_the_paragraphs() {
         assert_eq!(with_empty_paragraphs("One.\nTwo.", &[4, 0, 5]), None);
         assert_eq!(with_empty_paragraphs("One.\nTwo.", &[4]), None);
         assert_eq!(with_empty_paragraphs("One.Two.", &[4, 4]), None);
+        assert_eq!(with_empty_paragraphs("One.\n\n", &[4, 0]), None);
     }
 
     #[test]

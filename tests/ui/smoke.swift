@@ -695,12 +695,12 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         // dropped by Chrome (spectrumzero-dev/supereditr-app#10). Before each repeat the test puts
         // the typo back by reloading the page, so each of SuperEditr's pastes follows its own last
         // restore, the case Chrome drops.
-        let runs: [(field: String, attempt: Int)] = [("text box", 1)] + (1...6).map { ("editable div", $0) }
+        let runs: [(field: String, attempt: Int)] = [("text box", 1)] + (1...15).map { ("editable div", $0) }  // TEMPORARY 15, back to 6
         var load: [Process] = []
         defer { load.forEach { $0.terminate() } }
         for (index, run) in runs.enumerated() {
-            let field = run.field == "editable div" ? "editable div (apply \(run.attempt)\(run.attempt > 3 ? ", busy CPU" : ""))" : run.field
-            if run.field == "editable div" && run.attempt == 4 {
+            let field = run.field == "editable div" ? "editable div (apply \(run.attempt)\(run.attempt > 8 ? ", busy CPU" : ""))" : run.field
+            if run.field == "editable div" && run.attempt == 9 {
                 for _ in 0..<ProcessInfo.processInfo.activeProcessorCount {
                     let spin = Process()
                     spin.executableURL = URL(fileURLWithPath: "/usr/bin/yes")

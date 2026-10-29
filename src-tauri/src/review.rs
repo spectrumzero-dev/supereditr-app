@@ -546,6 +546,8 @@ enum AutoOutcome {
         min: usize,
     },
     NoLetter,
+    /// The selection is one link, e-mail address, domain or file path, such as a browser's address bar.
+    Address,
     AlreadyShowing,
     /// The selection holds something that looks like a secret (`sensitive::find`).
     Secret,
@@ -568,6 +570,7 @@ impl std::fmt::Display for AutoOutcome {
             Self::NotEditable => write!(f, "skipped: the field isn't editable"),
             Self::TooShort { chars, min } => write!(f, "skipped: {chars} characters, under the minimum of {min}"),
             Self::NoLetter => write!(f, "skipped: the selection has no letter"),
+            Self::Address => write!(f, "skipped: the selection is a single link or address"),
             Self::AlreadyShowing => write!(f, "skipped: the same text is already showing"),
             Self::Secret => write!(f, "skipped: the selection looks like it holds a secret"),
         }
@@ -584,9 +587,30 @@ fn check_selection(text: &str, editable: bool, min_chars: usize) -> Option<AutoO
         Some(AutoOutcome::TooShort { chars, min: min_chars })
     } else if !trimmed.chars().any(char::is_alphabetic) {
         Some(AutoOutcome::NoLetter)
+    } else if is_address(trimmed) {
+        Some(AutoOutcome::Address)
     } else {
         None
     }
+}
+
+/// True when `text` is one word that names a place rather than saying something: a link
+/// (`https://quillpoint.example/a`, `www.quillpoint.example`), an e-mail address, a domain
+/// (`quillpoint.example`) or a file path (`~/notes/draft.md`). Writing that merely contains
+/// one of these has spaces and is still reviewed.
+fn is_address(text: &str) -> bool {
+    if text.chars().any(char::is_whitespace) {
+        return false;
+    }
+    let lower = text.to_lowercase();
+    let is_link = lower.contains("://") || lower.starts_with("www.") || lower.starts_with("mailto:");
+    let is_email = text.find('@').is_some_and(|at| at > 0 && text[at + 1..].contains('.'));
+    let is_path = ["/", "~/", "./", "../"].iter().any(|start| text.starts_with(start))
+        || (text.contains('/') && text.contains('.'));
+    // A dot between two letters or digits, as in a domain; a word that ends a sentence has none.
+    let chars: Vec<char> = text.chars().collect();
+    let is_domain = chars.windows(3).any(|w| w[1] == '.' && w[0].is_alphanumeric() && w[2].is_alphanumeric());
+    is_link || is_email || is_path || is_domain
 }
 
 fn trace_auto(gesture: SelectionGesture, app_id: Option<&str>, outcome: &AutoOutcome) {
@@ -614,6 +638,40 @@ mod tests {
         assert_eq!(reason("Rhyan sent the KPI report.", false, 12).unwrap(), "skipped: the field isn't editable");
         assert_eq!(reason("  Glenmoor  ", true, 12).unwrap(), "skipped: 8 characters, under the minimum of 12");
         assert_eq!(reason("1234 5678 9012", true, 12).unwrap(), "skipped: the selection has no letter");
+        assert_eq!(
+            reason("https://quillpoint.example/", true, 12).unwrap(),
+            "skipped: the selection is a single link or address"
+        );
+    }
+
+    #[test]
+    fn a_single_link_address_or_path_is_skipped() {
+        for text in [
+            "https://quillpoint.example/",
+            "  http://quillpoint.example/reports?q=kpi  ",
+            "www.quillpoint.example",
+            "quillpoint.example",
+            "mailto:kyndal@quillpoint.example",
+            "kyndal@quillpoint.example",
+            "~/Documents/draft.md",
+            "/Users/rhyan/notes",
+            "docs/quarterly-okr.md",
+        ] {
+            assert!(matches!(check_selection(text, true, 12), Some(AutoOutcome::Address)), "{text}");
+        }
+    }
+
+    #[test]
+    fn writing_that_mentions_a_link_is_still_reviewed() {
+        for text in [
+            "See https://quillpoint.example for the KPI report.",
+            "Email kyndal@quillpoint.example about the OKRs.",
+            "Recieveables",
+            "Done. Thanks!",
+            "The input/output split looks rihgt.",
+        ] {
+            assert!(check_selection(text, true, 12).is_none(), "{text}");
+        }
     }
 
     #[test]

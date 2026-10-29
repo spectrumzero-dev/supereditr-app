@@ -812,10 +812,7 @@ pub fn replace(capture: &Capture, text: &str) -> Result<ReplaceMethod, PlatformE
     };
     {
         // Never write into a different field or over a changed selection.
-        let still_focused = focused_app()
-            .filter(|(_, pid)| *pid == capture.pid)
-            .and_then(|(app, _)| app.element("AXFocusedUIElement"))
-            .is_some_and(|focus| is_same_or_descendant(&focus, element));
+        let still_focused = field_focused(capture, element);
         if !still_focused || !selection_unchanged(capture) {
             trace(format_args!(
                 "{}: not written: focus moved ({}) or selection changed",
@@ -843,6 +840,14 @@ pub fn replace(capture: &Capture, text: &str) -> Result<ReplaceMethod, PlatformE
         }
     }
     paste(capture, element, text)
+}
+
+/// True while the captured app is in front with focus in `element` or inside it.
+fn field_focused(capture: &Capture, element: &Element) -> bool {
+    focused_app()
+        .filter(|(_, pid)| *pid == capture.pid)
+        .and_then(|(app, _)| app.element("AXFocusedUIElement"))
+        .is_some_and(|focus| is_same_or_descendant(&focus, element))
 }
 
 fn is_same_or_descendant(candidate: &Element, ancestor: &Element) -> bool {
@@ -916,9 +921,11 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
     let mut attempts = 0;
     let mut landed = false;
     for (i, wait) in windows.iter().enumerate() {
-        // Retry only while the field, the selection and the clipboard (still our text) are as left.
+        // Retry only while focus is still in the field, and the field, the selection and the
+        // clipboard (still our text) are as left.
         if i > 0
-            && (element.string("AXValue") != before
+            && (!field_focused(capture, element)
+                || element.string("AXValue") != before
                 || !selection_unchanged(capture)
                 || pasteboard::change_count() != ours)
         {

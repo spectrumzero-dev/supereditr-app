@@ -1,8 +1,9 @@
 name: CodeQL
 
 # Scans the source for security problems and uploads the results to the repository's code scanning
-# alerts. GitHub's default setup can't analyze Rust, so this workflow replaces it. Every language
-# is analyzed from source without building it, so the job runs on a GitHub-hosted Linux runner.
+# alerts. Every language is analyzed from source without building it, so the job runs on a
+# GitHub-hosted Linux runner. Rust is left out: its scan took about ten minutes, analyzed the
+# macOS-only code only partly on Linux, and raised no real alerts.
 # Changes to only documentation or images skip it; the weekly run still scans everything.
 
 on:
@@ -33,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [actions, javascript-typescript, rust]
+        language: [actions, javascript-typescript]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

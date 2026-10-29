@@ -713,16 +713,23 @@ fn in_prosemirror(element: &Element) -> bool {
 /// `text` as HTML that ProseMirror pastes line for line: a paragraph per line, empty lines kept.
 /// The `data-pm-slice` marker is what ProseMirror writes when it copies. With it, spaces are kept
 /// exactly, and the first and last lines join the text around the selection, as a plain-text
-/// paste does.
-fn prosemirror_html(text: &str) -> String {
+/// paste does. None when the text has no empty line, which a plain-text paste keeps anyway.
+fn prosemirror_html(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text.split('\n').map(|line| line.strip_suffix('\r').unwrap_or(line)).collect();
+    if !lines.windows(3).any(|w| w[1].is_empty()) {
+        return None;
+    }
     let escape = |line: &str| line.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
-    text.split('\n')
-        .enumerate()
-        .map(|(i, line)| {
-            let marker = if i == 0 { r#" data-pm-slice="1 1 []""# } else { "" };
-            format!("<p{marker}>{}</p>", escape(line.strip_suffix('\r').unwrap_or(line)))
-        })
-        .collect()
+    Some(
+        lines
+            .iter()
+            .enumerate()
+            .map(|(i, line)| {
+                let marker = if i == 0 { r#" data-pm-slice="1 1 []""# } else { "" };
+                format!("<p{marker}>{}</p>", escape(line))
+            })
+            .collect(),
+    )
 }
 
 fn to_rect(r: CGRect) -> Rect {
@@ -940,7 +947,7 @@ fn verify_replacement(element: &Element, capture: &Capture, before: Option<&str>
 fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMethod, PlatformError> {
     let before = element.string("AXValue");
     let snapshot = pasteboard::Snapshot::take();
-    let html = (capture.web && text.contains("\n\n") && in_prosemirror(element)).then(|| prosemirror_html(text));
+    let html = prosemirror_html(text).filter(|_| capture.web && in_prosemirror(element));
     let ours = pasteboard::write_transient_string(text, html.as_deref());
     let window = key_window_state(capture.pid);
     let started = Instant::now();
@@ -1723,13 +1730,20 @@ mod tests {
     #[test]
     fn prosemirror_html_keeps_empty_lines_and_spaces() {
         assert_eq!(
-            prosemirror_html("Ask Rhyan?  \n\nThen <ship> & rest."),
-            r#"<p data-pm-slice="1 1 []">Ask Rhyan?  </p><p></p><p>Then &lt;ship&gt; &amp; rest.</p>"#
+            prosemirror_html("Ask Rhyan?  \n\nThen <ship> & rest.").as_deref(),
+            Some(r#"<p data-pm-slice="1 1 []">Ask Rhyan?  </p><p></p><p>Then &lt;ship&gt; &amp; rest.</p>"#)
         );
         assert_eq!(
-            prosemirror_html("One\r\n\r\nTwo\n"),
-            r#"<p data-pm-slice="1 1 []">One</p><p></p><p>Two</p><p></p>"#
+            prosemirror_html("One\r\n\r\nTwo\n").as_deref(),
+            Some(r#"<p data-pm-slice="1 1 []">One</p><p></p><p>Two</p><p></p>"#)
         );
+    }
+
+    #[test]
+    fn prosemirror_html_only_for_an_empty_line() {
+        assert_eq!(prosemirror_html("One line"), None);
+        assert_eq!(prosemirror_html("One\nTwo\n"), None);
+        assert_eq!(prosemirror_html("One\r\nTwo"), None);
     }
 
     #[test]

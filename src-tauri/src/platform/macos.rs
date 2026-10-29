@@ -173,17 +173,6 @@ impl Element {
             .collect()
     }
 
-    /// String items of an array attribute, such as Chromium's `AXDOMClassList`.
-    fn strings(&self, name: &str) -> Vec<String> {
-        let Some(value) = self.attr(name) else { return Vec::new() };
-        let Some(array) = value.downcast::<core_foundation::array::CFArray>() else { return Vec::new() };
-        array
-            .iter()
-            .filter(|raw| unsafe { CFGetTypeID(**raw) } == CFString::type_id())
-            .map(|raw| unsafe { CFString::wrap_under_get_rule(*raw as _) }.to_string())
-            .collect()
-    }
-
     fn number(&self, name: &str) -> Option<i64> {
         self.attr(name)?.downcast::<core_foundation::number::CFNumber>()?.to_i64()
     }
@@ -251,7 +240,19 @@ impl Element {
         let real = |s: &String| !s.trim().is_empty();
         self.string("AXSelectedText")
             .filter(real)
+            .map(|text| self.line_breaks_restored(&text).unwrap_or(text))
             .or_else(|| self.marker_selection().map(|(text, _)| text).filter(real))
+    }
+
+    /// Chromium's `AXSelectedText` can leave out the line breaks between paragraphs (seen after ⌘A
+    /// in Claude), while its selected range and `AXValue` keep them. Reads the value only when the
+    /// range is longer than the text.
+    fn line_breaks_restored(&self, text: &str) -> Option<String> {
+        let range = self.range("AXSelectedTextRange")?;
+        if range.length.max(0) as usize <= text.encode_utf16().count() {
+            return None;
+        }
+        restore_line_breaks(&self.string("AXValue")?, range, text)
     }
 
     fn frame(&self) -> Option<CGRect> {
@@ -287,6 +288,15 @@ impl std::fmt::Debug for Element {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("AXUIElement")
     }
+}
+
+/// The text `range` covers in `value`, when it is `text` with only whitespace added.
+fn restore_line_breaks(value: &str, range: CFRange, text: &str) -> Option<String> {
+    let units: Vec<u16> = value.encode_utf16().collect();
+    let start = range.location.max(0) as usize;
+    let covered = String::from_utf16(units.get(start..start.checked_add(range.length.max(0) as usize)?)?).ok()?;
+    let visible = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    (visible(&covered) == visible(text)).then_some(covered)
 }
 
 fn ax_value<T: Default>(raw: CFTypeRef, kind: u32) -> Option<T> {
@@ -506,12 +516,31 @@ pub fn capture(allow_clipboard: bool, select_sentence: bool) -> Result<Capture, 
     result
 }
 
-/// Appends one line about a selection read or write to ~/Library/Logs/SuperEditr/capture.log, so a
-/// failure in a particular app can be diagnosed. It records app IDs, timings and lengths, never text.
+static TRACE_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn log_dir() -> Option<std::path::PathBuf> {
+    Some(std::path::Path::new(&std::env::var_os("HOME")?).join("Library/Logs/SuperEditr"))
+}
+
+/// Turns capture.log on or off (Settings → Behavior → Keep a diagnostic log). Turning it off
+/// deletes the log, so nothing is left behind once a problem has been diagnosed.
+pub fn set_trace(on: bool) {
+    TRACE_ON.store(on, Ordering::Relaxed);
+    if !on && let Some(dir) = log_dir() {
+        let _ = std::fs::remove_file(dir.join("capture.log"));
+        let _ = std::fs::remove_file(dir.join("capture.old.log"));
+    }
+}
+
+/// When the diagnostic log is on, appends one line about a selection read or write to
+/// ~/Library/Logs/SuperEditr/capture.log, so a failure in a particular app can be diagnosed. It
+/// records app IDs, timings and lengths, never text.
 pub fn trace(message: std::fmt::Arguments) {
     use std::io::Write;
-    let Some(home) = std::env::var_os("HOME") else { return };
-    let dir = std::path::Path::new(&home).join("Library/Logs/SuperEditr");
+    if !TRACE_ON.load(Ordering::Relaxed) {
+        return;
+    }
+    let Some(dir) = log_dir() else { return };
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("capture.log");
     if std::fs::metadata(&path).is_ok_and(|m| m.len() > 256 * 1024) {
@@ -689,47 +718,6 @@ fn in_web_area(element: &Element) -> bool {
         }
     }
     false
-}
-
-/// Whether `element` is inside a ProseMirror editor (the one in Claude, and in many web apps). Its
-/// plain-text paste splits lines on `\n+`, so an empty line between paragraphs would be lost.
-fn in_prosemirror(element: &Element) -> bool {
-    let mut current = element.clone();
-    for _ in 0..12 {
-        if current.strings("AXDOMClassList").iter().any(|class| class == "ProseMirror") {
-            return true;
-        }
-        if current.string("AXRole").as_deref() == Some("AXWebArea") {
-            return false;
-        }
-        match current.element("AXParent") {
-            Some(parent) => current = parent,
-            None => return false,
-        }
-    }
-    false
-}
-
-/// `text` as HTML that ProseMirror pastes line for line: a paragraph per line, empty lines kept.
-/// The `data-pm-slice` marker is what ProseMirror writes when it copies. With it, spaces are kept
-/// exactly, and the first and last lines join the text around the selection, as a plain-text
-/// paste does. None when the text has no empty line, which a plain-text paste keeps anyway.
-fn prosemirror_html(text: &str) -> Option<String> {
-    let lines: Vec<&str> = text.split('\n').map(|line| line.strip_suffix('\r').unwrap_or(line)).collect();
-    if !lines.windows(3).any(|w| w[1].is_empty()) {
-        return None;
-    }
-    let escape = |line: &str| line.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
-    Some(
-        lines
-            .iter()
-            .enumerate()
-            .map(|(i, line)| {
-                let marker = if i == 0 { r#" data-pm-slice="1 1 []""# } else { "" };
-                format!("<p{marker}>{}</p>", escape(line))
-            })
-            .collect(),
-    )
 }
 
 fn to_rect(r: CGRect) -> Rect {
@@ -947,17 +935,7 @@ fn verify_replacement(element: &Element, capture: &Capture, before: Option<&str>
 fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMethod, PlatformError> {
     let before = element.string("AXValue");
     let snapshot = pasteboard::Snapshot::take();
-    let html = prosemirror_html(text).filter(|_| capture.web && in_prosemirror(element));
-    // ProseMirror reads the HTML's paragraphs back with plain line breaks, so the plain form and the
-    // check after the paste use them too.
-    let normalized;
-    let text = if html.is_some() {
-        normalized = text.replace("\r\n", "\n");
-        normalized.as_str()
-    } else {
-        text
-    };
-    let ours = pasteboard::write_transient_string(text, html.as_deref());
+    let ours = pasteboard::write_transient_string(text);
     let window = key_window_state(capture.pid);
     let started = Instant::now();
     // The app's own Paste menu item first. The app can be left without a key window (after the
@@ -1576,9 +1554,7 @@ pub fn start_double_press_tap(
 mod pasteboard {
     use objc2::rc::Retained;
     use objc2::runtime::ProtocolObject;
-    use objc2_app_kit::{
-        NSPasteboard, NSPasteboardItem, NSPasteboardTypeHTML, NSPasteboardTypeString, NSPasteboardWriting,
-    };
+    use objc2_app_kit::{NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSPasteboardWriting};
     use objc2_foundation::{NSArray, NSData, NSString};
 
     fn general() -> Retained<NSPasteboard> {
@@ -1600,16 +1576,12 @@ mod pasteboard {
         pb.changeCount()
     }
 
-    /// Writes text marked transient so clipboard managers skip it (nspasteboard.org convention),
-    /// with an HTML form alongside when one is given.
-    pub fn write_transient_string(text: &str, html: Option<&str>) -> isize {
+    /// Writes text marked transient so clipboard managers skip it (nspasteboard.org convention).
+    pub fn write_transient_string(text: &str) -> isize {
         let pb = general();
         pb.clearContents();
         let item = NSPasteboardItem::new();
         item.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString });
-        if let Some(html) = html {
-            item.setString_forType(&NSString::from_str(html), unsafe { NSPasteboardTypeHTML });
-        }
         for marker in ["org.nspasteboard.TransientType", "org.nspasteboard.AutoGeneratedType"] {
             item.setData_forType(&NSData::new(), &NSString::from_str(marker));
         }
@@ -1737,22 +1709,20 @@ mod tests {
     }
 
     #[test]
-    fn prosemirror_html_keeps_empty_lines_and_spaces() {
-        assert_eq!(
-            prosemirror_html("Ask Rhyan?  \n\nThen <ship> & rest.").as_deref(),
-            Some(r#"<p data-pm-slice="1 1 []">Ask Rhyan?  </p><p></p><p>Then &lt;ship&gt; &amp; rest.</p>"#)
-        );
-        assert_eq!(
-            prosemirror_html("One\r\n\r\nTwo\n").as_deref(),
-            Some(r#"<p data-pm-slice="1 1 []">One</p><p></p><p>Two</p><p></p>"#)
-        );
+    fn restores_line_breaks_the_selected_text_left_out() {
+        let value = "Their going home now.\n\nIts late. 🚀";
+        let all = CFRange { location: 0, length: value.encode_utf16().count() as isize };
+        assert_eq!(restore_line_breaks(value, all, "Their going home now.Its late. 🚀").as_deref(), Some(value));
+        let tail = CFRange { location: 21, length: 11 };
+        assert_eq!(restore_line_breaks(value, tail, "Its late.").as_deref(), Some("\n\nIts late."));
     }
 
     #[test]
-    fn prosemirror_html_only_for_an_empty_line() {
-        assert_eq!(prosemirror_html("One line"), None);
-        assert_eq!(prosemirror_html("One\nTwo\n"), None);
-        assert_eq!(prosemirror_html("One\r\nTwo"), None);
+    fn keeps_the_selected_text_when_the_value_says_something_else() {
+        let value = "Their going home now.\nIts late.";
+        let all = CFRange { location: 0, length: 31 };
+        assert_eq!(restore_line_breaks(value, all, "Their going home now.Its early."), None);
+        assert_eq!(restore_line_breaks(value, CFRange { location: 20, length: 40 }, "Its late."), None);
     }
 
     #[test]

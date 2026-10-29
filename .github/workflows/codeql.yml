@@ -3,11 +3,14 @@ name: CodeQL
 # Scans the source for security problems and uploads the results to the repository's code scanning
 # alerts. GitHub's default setup can't analyze Rust, so this workflow replaces it. Every language
 # is analyzed from source without building it, so the job runs on a GitHub-hosted Linux runner.
+# Changes to only documentation or images skip it; the weekly run still scans everything.
 
 on:
   pull_request:
+    paths-ignore: ["**.md", "LICENSE", "**.png", "**.svg", ".gitignore"]
   push:
     branches: [main]
+    paths-ignore: ["**.md", "LICENSE", "**.png", "**.svg", ".gitignore"]
   schedule:
     - cron: "17 6 * * 1"
 

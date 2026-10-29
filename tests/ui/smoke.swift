@@ -35,7 +35,7 @@ func skipEnvironment(_ reason: String) -> Never {
 
 let replayMark: Int64 = 0x5345_4454  // SuperEditr's marker on keys it replays ("SEDT")
 let keyE: CGKeyCode = 14, keyA: CGKeyCode = 0, keyEscape: CGKeyCode = 53, keyTab: CGKeyCode = 48, keySpace: CGKeyCode = 49
-let keyShift: CGKeyCode = 56, keyCommand: CGKeyCode = 55, keyRight: CGKeyCode = 124, keyUp: CGKeyCode = 126, keyReturn: CGKeyCode = 36, keyV: CGKeyCode = 9, keyDown: CGKeyCode = 125
+let keyShift: CGKeyCode = 56, keyCommand: CGKeyCode = 55, keyRight: CGKeyCode = 124, keyUp: CGKeyCode = 126, keyReturn: CGKeyCode = 36, keyV: CGKeyCode = 9, keyR: CGKeyCode = 15, keyDown: CGKeyCode = 125
 
 /// Holds Shift down (true) or lets it go (false), as a separate key, the way a person does.
 func shift(_ down: Bool) {
@@ -690,30 +690,38 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             let value = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
             log("NOTE control: \(how) \(value.contains(marker) ? "landed" : "did not land"); window \(chromeWindowFocused())")
         }
-        // A paste straight after one of SuperEditr's in the same Chrome window can be ignored
-        // (spectrumzero-dev/supereditr-app#10), so before the editable div's review the test puts
-        // its text back with its own ⌘V, posted to Chrome's process, which the control above shows
-        // lands. The div's review then follows a test-made paste, not SuperEditr's text box paste.
-        for (index, field) in ["text box", "editable div"].enumerated() {
-            press(keyTab)  // from the control field to the text box, then to the div
-            pump(0.5)
-            if field == "editable div", let ours = launchedSinceStart(chrome).last {
-                // A paste straight after one of SuperEditr's can be dropped, so retry the reset.
-                for _ in 0..<3 {
-                    _ = selectAll()
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(typo, forType: .string)
-                    for down in [true, false] {
-                        let event = CGEvent(keyboardEventSource: nil, virtualKey: keyV, keyDown: down)
-                        event?.flags = .maskCommand
-                        event?.postToPid(ours.processIdentifier)
-                        usleep(25_000)
-                    }
-                    pump(1)
-                    let reset = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
-                    if reset.contains(typo) { break }
-                    log("NOTE the test's reset paste into the \(field) was ignored; retrying")
+        // The editable div is applied six times in a row, the first straight after the text box
+        // and the last three with every CPU core busy, as on a loaded Mac. Back-to-back pastes were
+        // dropped by Chrome (spectrumzero-dev/supereditr-app#10). Before each repeat the test puts
+        // the typo back by reloading the page, so each of SuperEditr's pastes follows its own last
+        // restore, the case Chrome drops.
+        let runs: [(field: String, attempt: Int)] = [("text box", 1)] + (1...6).map { ("editable div", $0) }
+        var load: [Process] = []
+        defer { load.forEach { $0.terminate() } }
+        for (index, run) in runs.enumerated() {
+            let field = run.field == "editable div" ? "editable div (apply \(run.attempt)\(run.attempt > 3 ? ", busy CPU" : ""))" : run.field
+            if run.field == "editable div" && run.attempt == 4 {
+                for _ in 0..<ProcessInfo.processInfo.activeProcessorCount {
+                    let spin = Process()
+                    spin.executableURL = URL(fileURLWithPath: "/usr/bin/yes")
+                    spin.standardOutput = FileHandle.nullDevice
+                    try? spin.run()
+                    load.append(spin)
                 }
+                log("     loading \(load.count) CPU cores")
+            }
+            if run.attempt == 1 {
+                press(keyTab)  // from the control field to the text box, then to the editable div
+                pump(0.5)
+            } else {
+                // Reloading puts the typo back without touching the clipboard, so SuperEditr's next
+                // paste is the first since its last restore. Focus starts in the control field.
+                press(keyR, .maskCommand)
+                pump(2.5)
+                press(keyTab)
+                pump(0.3)
+                press(keyTab)
+                pump(0.5)
             }
             check(selectAll() || selectAll(), "the \(field)'s text is selected")
             let start = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
@@ -745,6 +753,11 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 _ = waitFor(3) { overlay() == nil ? true : nil }
             }
         }
+        // How many tries each paste needed, from SuperEditr's log, to show how often the retry helps.
+        let pastes = ((try? String(contentsOfFile: captureLog, encoding: .utf8)) ?? "").split(separator: "\n")
+            .filter { $0.contains("com.google.Chrome: pasted") }
+        let tries = pastes.compactMap { line in line.range(of: #"\((\d) attempts?\)"#, options: .regularExpression).map { String(line[$0]) } }
+        log("NOTE Chrome pastes by attempts: \(Dictionary(grouping: tries, by: { $0 }).mapValues(\.count).sorted { $0.key < $1.key })")
     }
     quitOpened(chrome)
 }

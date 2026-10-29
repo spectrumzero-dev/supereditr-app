@@ -374,12 +374,15 @@ fn is_chromium_browser(bundle_id: &str) -> bool {
 }
 
 fn is_browser_or_electron(bundle_id: &str, pid: i32) -> bool {
-    if is_chromium_browser(bundle_id) || bundle_id == "com.apple.Safari" || bundle_id.starts_with("org.mozilla.") {
-        return true;
-    }
-    app_bundle_path(pid).is_some_and(|path| {
-        std::path::Path::new(&path).join("Contents/Frameworks/Electron Framework.framework").exists()
-    })
+    bundle_id == "com.apple.Safari" || bundle_id.starts_with("org.mozilla.") || is_chromium_based(bundle_id, pid)
+}
+
+/// Chrome-family browsers and Electron apps, which share Chromium's clipboard code.
+fn is_chromium_based(bundle_id: &str, pid: i32) -> bool {
+    is_chromium_browser(bundle_id)
+        || app_bundle_path(pid).is_some_and(|path| {
+            std::path::Path::new(&path).join("Contents/Frameworks/Electron Framework.framework").exists()
+        })
 }
 
 fn running_app(pid: i32) -> Option<objc2::rc::Retained<objc2_app_kit::NSRunningApplication>> {
@@ -809,10 +812,7 @@ pub fn replace(capture: &Capture, text: &str) -> Result<ReplaceMethod, PlatformE
     };
     {
         // Never write into a different field or over a changed selection.
-        let still_focused = focused_app()
-            .filter(|(_, pid)| *pid == capture.pid)
-            .and_then(|(app, _)| app.element("AXFocusedUIElement"))
-            .is_some_and(|focus| is_same_or_descendant(&focus, element));
+        let still_focused = field_focused(capture, element);
         if !still_focused || !selection_unchanged(capture) {
             trace(format_args!(
                 "{}: not written: focus moved ({}) or selection changed",
@@ -840,6 +840,14 @@ pub fn replace(capture: &Capture, text: &str) -> Result<ReplaceMethod, PlatformE
         }
     }
     paste(capture, element, text)
+}
+
+/// True while the captured app is in front with focus in `element` or inside it.
+fn field_focused(capture: &Capture, element: &Element) -> bool {
+    focused_app()
+        .filter(|(_, pid)| *pid == capture.pid)
+        .and_then(|(app, _)| app.element("AXFocusedUIElement"))
+        .is_some_and(|focus| is_same_or_descendant(&focus, element))
 }
 
 fn is_same_or_descendant(candidate: &Element, ancestor: &Element) -> bool {
@@ -894,17 +902,47 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
     // panel had focus for an instruction, or the user clicked it); browsers and Electron apps then
     // drop a posted ⌘V, but a menu item acts on the app's main window.
     let app = Element::from_create(unsafe { AXUIElementCreateApplication(capture.pid) });
-    let how = if app.as_ref().and_then(|app| press_menu_item(app, "v")) == Some(true) {
-        "the app's Paste menu item"
-    } else {
-        post_command_key(capture.pid, Key::V);
-        "⌘V to the app's process"
+    let press = || {
+        if app.as_ref().and_then(|app| press_menu_item(app, "v")) == Some(true) {
+            "the app's Paste menu item"
+        } else {
+            post_command_key(capture.pid, Key::V);
+            "⌘V to the app's process"
+        }
     };
-    let landed = verify_replacement(element, capture, before.as_deref(), text, Duration::from_millis(600));
+    // Chrome 156 drops a paste when its asynchronous clipboard-change notice arrives after the
+    // paste started (crbug.com/568453825); the restore after a previous paste makes that likely,
+    // and waiting before the paste didn't help in testing. A dropped paste never lands late, and
+    // the paste after one always landed, so paste again, but only while the field and the
+    // selection are untouched: a slow paste that did land replaces the selection, so it is never
+    // pasted twice. Other apps get one paste and the full wait.
+    let windows: &[u64] = if is_chromium_based(&capture.bundle_id, capture.pid) { &[250, 500, 600] } else { &[600] };
+    let mut how = "";
+    let mut attempts = 0;
+    let mut landed = false;
+    for (i, wait) in windows.iter().enumerate() {
+        // Retry only while focus is still in the field, and the field, the selection and the
+        // clipboard (still our text) are as left.
+        if i > 0
+            && (!field_focused(capture, element)
+                || element.string("AXValue") != before
+                || !selection_unchanged(capture)
+                || pasteboard::change_count() != ours)
+        {
+            break;
+        }
+        how = press();
+        attempts += 1;
+        landed = verify_replacement(element, capture, before.as_deref(), text, Duration::from_millis(*wait));
+        if landed {
+            break;
+        }
+    }
     trace(format_args!(
-        "{}: pasted {} characters with {how}, {window}; {} after {:?}, field value {}",
+        "{}: pasted {} characters with {how} ({attempts} {}), {window}; {} after {:?}, field value {}",
         capture.bundle_id,
         text.chars().count(),
+        if attempts == 1 { "attempt" } else { "attempts" },
         if landed { "verified" } else { "not verified" },
         started.elapsed(),
         if element.string("AXValue") == before { "unchanged" } else { "changed" },

@@ -84,6 +84,9 @@ pub struct Config {
     #[serde(default = "first_default_exclusions")]
     pub offered_exclusions: Vec<String>,
     pub show_timing: bool,
+    /// Keep capture.log, a local record of each selection read and write (app IDs, timings and
+    /// lengths, never text), for diagnosing a problem in a particular app. Off unless turned on.
+    pub diagnostic_log: bool,
     pub onboarded: bool,
 }
 
@@ -105,6 +108,7 @@ impl Default for Config {
             excluded_apps: DEFAULT_EXCLUSIONS.iter().map(|s| s.to_string()).collect(),
             offered_exclusions: DEFAULT_EXCLUSIONS.iter().map(|s| s.to_string()).collect(),
             show_timing: true,
+            diagnostic_log: false,
             onboarded: false,
         }
     }
@@ -219,6 +223,19 @@ mod tests {
         assert_eq!(loaded.presets[0].instruction, "custom");
         assert!(loaded.preset("english").is_some(), "new built-ins are merged back in");
         assert_eq!(loaded.providers[0].kind, ProviderKind::Anthropic);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn diagnostic_log_is_off_unless_turned_on() {
+        assert!(!Config::default().diagnostic_log);
+        let dir = std::env::temp_dir().join(format!("supereditr-log-{}", std::process::id()));
+        let path = dir.join("config.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, r#"{"onboarded": true}"#).unwrap();
+        assert!(!Config::load(&path).diagnostic_log, "settings saved before the option existed keep no log");
+        std::fs::write(&path, r#"{"diagnostic_log": true}"#).unwrap();
+        assert!(Config::load(&path).diagnostic_log);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

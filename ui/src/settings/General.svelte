@@ -99,6 +99,17 @@
       </div>
     {/each}
   </div>
+
+  <div class="group-title">Troubleshooting</div>
+  <div class="group">
+    <div class="row">
+      <div>
+        <div class="label">Keep a diagnostic log</div>
+        <div class="hint">Records which app each selection came from, with timings and lengths but never your text, in ~/Library/Logs/SuperEditr/capture.log. Turn on to diagnose a problem in a particular app. Turning it off deletes the log.</div>
+      </div>
+      <input type="checkbox" class="switch" bind:checked={config.diagnostic_log} onchange={onchange} />
+    </div>
+  </div>
 </div>
 
 <style>

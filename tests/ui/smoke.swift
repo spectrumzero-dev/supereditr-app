@@ -536,10 +536,11 @@ stop(app)
 // 6. Always keep: rejecting the rule-based checker's guess at a name ("Rhyan" → "Ryan") offers to add it
 // to the word list, and A adds it. No Apple Intelligence (its helper path doesn't exist), so the
 // rule-based checker answers on every Mac. Automatic suggestions are off: one would open without focus
-// and race ⌘E E, and the keys below must reach the panel.
+// and race ⌘E E, and the keys below must reach the panel. The diagnostic log stays on for the
+// Chrome check.
 let named = work + "/named.txt"
 try! "Rhyan has tennis lessons today.".write(toFile: named, atomically: true, encoding: .utf8)
-try! #"{"onboarded": true, "excluded_apps": ["com.1password.1password"], "auto_popup": false}"#
+try! #"{"onboarded": true, "excluded_apps": ["com.1password.1password"], "auto_popup": false, "diagnostic_log": true}"#
     .write(toFile: support + "/settings.json", atomically: true, encoding: .utf8)
 app = launch(appPath, home: home, environment: ["SUPEREDITR_FM_HELPER": work + "/no-helper"])
 pump(3)

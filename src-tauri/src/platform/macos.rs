@@ -354,7 +354,8 @@ fn with_empty_paragraphs(value: &str, paragraphs: &[usize]) -> Option<String> {
 }
 
 /// The span of `full` with the same characters as `selected`, line breaks aside, from its first
-/// such character to its last. None when there isn't exactly one.
+/// such character to its last, with `selected`'s own leading and trailing line breaks kept. None
+/// when there isn't exactly one.
 fn span_of(full: &str, selected: &str) -> Option<String> {
     let target: String = selected.chars().filter(|c| !is_line_break(*c)).collect();
     if target.is_empty() {
@@ -373,7 +374,9 @@ fn span_of(full: &str, selected: &str) -> Option<String> {
     let first = visible[..at].chars().count();
     let last = first + target.chars().count() - 1;
     let end = starts[last] + full[starts[last]..].chars().next()?.len_utf8();
-    Some(full[starts[first]..end].to_string())
+    let inner = selected.trim_matches(is_line_break);
+    let (leading, trailing) = (&selected[..selected.find(inner)?], &selected[selected.rfind(inner)? + inner.len()..]);
+    Some(format!("{leading}{}{trailing}", &full[starts[first]..end]))
 }
 
 fn ax_value<T: Default>(raw: CFTypeRef, kind: u32) -> Option<T> {
@@ -1821,6 +1824,8 @@ mod tests {
         assert_eq!(span_of("One.\nTwo.", "One.Two.").as_deref(), Some("One.\nTwo."));
         assert_eq!(span_of(full, "sentence.Is this").as_deref(), Some("sentence.\n\nIs this"));
         assert_eq!(span_of(full, "first").as_deref(), Some("first"));
+        assert_eq!(span_of("One\nTwo", "One\n").as_deref(), Some("One\n"));
+        assert_eq!(span_of(full, "\nIs this").as_deref(), Some("\nIs this"));
     }
 
     #[test]

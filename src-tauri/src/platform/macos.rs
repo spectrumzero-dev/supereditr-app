@@ -948,6 +948,15 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
     let before = element.string("AXValue");
     let snapshot = pasteboard::Snapshot::take();
     let html = prosemirror_html(text).filter(|_| capture.web && in_prosemirror(element));
+    // ProseMirror reads the HTML's paragraphs back with plain line breaks, so the plain form and the
+    // check after the paste use them too.
+    let normalized;
+    let text = if html.is_some() {
+        normalized = text.replace("\r\n", "\n");
+        normalized.as_str()
+    } else {
+        text
+    };
     let ours = pasteboard::write_transient_string(text, html.as_deref());
     let window = key_window_state(capture.pid);
     let started = Instant::now();

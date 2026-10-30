@@ -16,11 +16,9 @@ const dirs = [...new Set(inputs.map((i) => i.match(/^(.*node_modules\/(?:@[^/]+\
 const out = ["Packages bundled into composers.bundle.js, with their licences.", ""];
 for (const dir of dirs) {
   const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json")));
-  // The Slate packages ship without a licence file; slate-License.md is the one in their repository.
   const file = fs.readdirSync(dir).find((f) => /^(licen[cs]e|copying)/i.test(f));
-  const licence = file ? path.join(dir, file) : pkg.name.startsWith("slate") ? "slate-License.md" : null;
-  if (!licence) throw new Error(`${pkg.name} has no licence file`);
-  out.push(`${"=".repeat(72)}`, `${pkg.name} ${pkg.version} (${pkg.license})`, "", fs.readFileSync(licence, "utf8").trim(), "");
+  if (!file) throw new Error(`${pkg.name} has no licence file`);
+  out.push(`${"=".repeat(72)}`, `${pkg.name} ${pkg.version} (${pkg.license})`, "", fs.readFileSync(path.join(dir, file), "utf8").trim(), "");
 }
 fs.writeFileSync("LICENSES.txt", out.join("\n"));
 console.log(`${dirs.length} packages: ${dirs.map((d) => d.replace(/.*node_modules\//, "")).join(", ")}`);

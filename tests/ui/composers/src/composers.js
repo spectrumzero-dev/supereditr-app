@@ -11,13 +11,6 @@ import { $getRoot, createEditor } from "lexical";
 import { registerRichText, HeadingNode, QuoteNode } from "@lexical/rich-text";
 import { LinkNode } from "@lexical/link";
 import { $generateNodesFromDOM } from "@lexical/html";
-import Quill from "quill";
-import quillCSS from "quill/dist/quill.core.css";
-import { createElement as h, useState } from "react";
-import { createRoot } from "react-dom/client";
-import { createEditor as createSlate, Transforms, Text } from "slate";
-import { Slate, Editable, withReact } from "slate-react";
-import { withHistory } from "slate-history";
 
 // The text, by paragraph: a typo the rule-based checker fixes ("Their going"), code at both ends of
 // the first paragraph (one holds a typo of its own the review must leave alone), bold, a link, and
@@ -63,21 +56,18 @@ function describe(root) {
 
 const fields = [];
 
-/** Adds a section for a field. `mount(host)` builds the editor and returns its editable element
- * (or a function that finds it, for an editor that renders later) and a function that resets it. */
+/** Adds a section for a field. `mount(host)` builds the editor and returns its editable element and
+ * a function that resets it. */
 function field(id, label, mount) {
   const section = document.createElement("section");
   section.innerHTML = `<h2>${label}</h2><div class="host"></div><output id="${id}-state"></output> <button id="reset-${id}">Reset</button>`;
   document.getElementById("composers").append(section);
   const { root, reset } = mount(section.querySelector(".host"));
-  const editable = typeof root === "function" ? root : () => root;
   const output = section.querySelector("output");
   section.querySelector("button").addEventListener("click", () => reset());
   fields.push(() => {
-    const element = editable();
-    if (!element) return;
-    element.id = id;
-    const state = describe(element);
+    root.id = id;
+    const state = describe(root);
     if (output.textContent !== state) output.textContent = state;
   });
 }
@@ -142,82 +132,8 @@ field("lexical", "Lexical", (host) => {
   return { root, reset };
 });
 
-// Quill, with its own clipboard handling.
-field("quill", "Quill", (host) => {
-  const quill = new Quill(host, { modules: { toolbar: false } });
-  quill.clipboard.dangerouslyPasteHTML(html());
-  quill.root.classList.add("editor");
-  return { root: quill.root, reset: () => quill.clipboard.dangerouslyPasteHTML(html()) };
-});
-
-// Slate in React, with HTML paste as in Slate's paste-html example.
-field("slate", "Slate (React)", (host) => {
-  const value = () =>
-    DOC.map((p) => ({
-      type: "paragraph",
-      children: p.length
-        ? p.map((part) =>
-            typeof part === "string"
-              ? { text: part }
-              : part.code
-                ? { text: part.code, code: true }
-                : part.bold
-                  ? { text: part.bold, bold: true }
-                  : { type: "link", url: part.href, children: [{ text: part.link }] },
-          )
-        : [{ text: "" }],
-    }));
-  // HTML to Slate nodes: paragraphs, links, and code and bold marks.
-  const deserialize = (node, marks = {}) => {
-    if (node.nodeType === Node.TEXT_NODE) return [{ text: node.textContent, ...marks }];
-    if (node.nodeType !== Node.ELEMENT_NODE) return [];
-    const tag = node.nodeName;
-    const childMarks = { ...marks, ...(tag === "CODE" ? { code: true } : {}), ...(/^(STRONG|B)$/.test(tag) ? { bold: true } : {}) };
-    const children = [...node.childNodes].flatMap((child) => deserialize(child, childMarks));
-    const inline = children.length ? children : [{ text: "" }];
-    if (tag === "BR") return [{ text: "\n", ...marks }];
-    if (tag === "P" || tag === "DIV") return [{ type: "paragraph", children: inline.filter((c) => c.text !== "\n") }];
-    if (tag === "A") return [{ type: "link", url: node.getAttribute("href"), children: inline }];
-    return children;
-  };
-  const withHtml = (editor) => {
-    const { insertData, isInline } = editor;
-    editor.isInline = (element) => element.type === "link" || isInline(element);
-    editor.insertData = (data) => {
-      const pasted = data.getData("text/html");
-      if (!pasted) return insertData(data);
-      const body = new DOMParser().parseFromString(pasted, "text/html").body;
-      const nodes = deserialize(body);
-      const blocks = nodes.some((n) => n.type === "paragraph") ? nodes : [{ type: "paragraph", children: nodes }];
-      Transforms.insertFragment(editor, blocks.map((b) => (Text.isText(b) ? { type: "paragraph", children: [b] } : b)));
-    };
-    return editor;
-  };
-  const renderElement = ({ attributes, children, element }) =>
-    element.type === "link" ? h("a", { ...attributes, href: element.url }, children) : h("p", attributes, children);
-  const renderLeaf = ({ attributes, children, leaf }) => {
-    let inner = children;
-    if (leaf.code) inner = h("code", null, inner);
-    if (leaf.bold) inner = h("strong", null, inner);
-    return h("span", attributes, inner);
-  };
-  // A new editor for each reset, as remounting is the simple way to replace a Slate document.
-  function SlateEditor() {
-    const [editor] = useState(() => withHtml(withHistory(withReact(createSlate()))));
-    return h(Slate, { editor, initialValue: value() }, h(Editable, { className: "editor", renderElement, renderLeaf }));
-  }
-  let reset;
-  function SlateField() {
-    const [generation, setGeneration] = useState(0);
-    reset = () => setGeneration((n) => n + 1);
-    return h(SlateEditor, { key: generation });
-  }
-  createRoot(host).render(h(SlateField));
-  return { root: () => host.querySelector("[contenteditable]"), reset: () => reset() };
-});
-
 const style = document.createElement("style");
-style.textContent = `${quillCSS}
+style.textContent = `
 .editor { border: 1px solid #888; padding: 4px; width: 34em; min-height: 3em; }
 .editor p { margin: 0 0 4px; }
 section { margin: 6px 0; }

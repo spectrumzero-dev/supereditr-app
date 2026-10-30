@@ -1,0 +1,22 @@
+{
+  "name": "supereditr-smoke-composers",
+  "private": true,
+  "description": "Rich-text editors for the UI smoke tests' composer matrix, bundled into composers.bundle.js by build.sh.",
+  "license": "MIT",
+  "devDependencies": {
+    "@lexical/html": "0.53.0",
+    "@lexical/link": "0.53.0",
+    "@lexical/rich-text": "0.53.0",
+    "@tiptap/core": "3.32.2",
+    "@tiptap/pm": "3.32.2",
+    "@tiptap/starter-kit": "3.32.2",
+    "esbuild": "0.28.2",
+    "lexical": "0.53.0",
+    "quill": "2.0.3",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "slate": "0.147.4",
+    "slate-history": "0.144.0",
+    "slate-react": "0.147.5"
+  }
+}

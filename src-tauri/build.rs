@@ -5,7 +5,58 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         build_foundation_models_helper();
     }
+    set_version_label();
     tauri_build::build()
+}
+
+/// Sets `SUPEREDITR_VERSION_LABEL`, the version Settings shows. A release build shows the plain
+/// version; any other build adds the commit it was built from, such as "0.1.0 (abc1234)", so a
+/// tester's report names the exact source. The commit comes from `SUPEREDITR_SOURCE_SHA` when a
+/// build sets it, otherwise from git; with neither, the label is the plain version.
+fn set_version_label() {
+    println!("cargo:rerun-if-env-changed=SUPEREDITR_RELEASE_BUILD");
+    println!("cargo:rerun-if-env-changed=SUPEREDITR_SOURCE_SHA");
+    let version = std::env::var("CARGO_PKG_VERSION").unwrap();
+    let commit = if std::env::var_os("SUPEREDITR_RELEASE_BUILD").is_some() { None } else { source_commit() };
+    let label = match commit {
+        Some(commit) => format!("{version} ({commit})"),
+        None => version,
+    };
+    println!("cargo:rustc-env=SUPEREDITR_VERSION_LABEL={label}");
+}
+
+/// The short hash of the commit being built, if it can be found.
+fn source_commit() -> Option<String> {
+    if let Ok(sha) = std::env::var("SUPEREDITR_SOURCE_SHA") {
+        let sha = sha.trim();
+        if sha.len() >= 7 && sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Some(sha[..7].to_ascii_lowercase());
+        }
+        println!("cargo:warning=Ignoring SUPEREDITR_SOURCE_SHA, which isn't a commit hash.");
+    }
+    // Rebuild the label when the checkout moves to another commit. A branch whose ref is only in
+    // packed-refs has no file yet, so watch the nearest folder above it, where the next commit
+    // writes one. (Watching a missing path would rerun this script on every build.)
+    let git_path = |path: &str| git(&["rev-parse", "--path-format=absolute", "--git-path", path]).map(PathBuf::from);
+    for file in ["HEAD", "packed-refs"].into_iter().filter_map(git_path) {
+        if file.exists() {
+            println!("cargo:rerun-if-changed={}", file.display());
+        }
+    }
+    if let (Some(branch), Some(refs)) =
+        (git(&["symbolic-ref", "-q", "HEAD"]).and_then(|r| git_path(&r)), git_path("refs"))
+        && let Some(existing) = branch.ancestors().take_while(|p| p.starts_with(&refs)).find(|p| p.exists())
+    {
+        println!("cargo:rerun-if-changed={}", existing.display());
+    }
+    git(&["rev-parse", "--short=7", "HEAD"])
+}
+
+/// Runs git in this crate's directory and returns its trimmed output, if it succeeded.
+fn git(args: &[&str]) -> Option<String> {
+    let output = Command::new("git").args(args).current_dir(std::env::var("CARGO_MANIFEST_DIR").ok()?).output().ok()?;
+    let text = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    (output.status.success() && !text.is_empty()).then_some(text)
 }
 
 /// Compiles the Apple Intelligence helper (helpers/foundation-models) into

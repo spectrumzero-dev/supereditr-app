@@ -342,6 +342,48 @@ mod tests {
         assert_eq!(without_changes_in(view, &[(5, 8)]).change_count, 1);
     }
 
+    /// Whatever a model does to a revision, every code span comes through as written and can be
+    /// found in the result. Prose fixes apply except where a change also covers code.
+    #[test]
+    fn code_survives_any_revision() {
+        let cases = [
+            // Capitalized, as Apple Intelligence did.
+            (
+                "should i run `wrangler deploy` now",
+                "Should I run `Wrangler deploy` now?",
+                "Should I run `wrangler deploy` now?",
+            ),
+            // Backticks dropped.
+            (
+                "should i run `wrangler deploy` now",
+                "Should I run wrangler deploy now?",
+                "Should I run `wrangler deploy` now?",
+            ),
+            // Code removed, and code reworded inside: "So" joins the removal, so it is left out too.
+            ("so `npm i` then `npm  test` ok", "So then `npm run test`, OK.", "so `npm i` then `npm  test`, OK."),
+            // Code at the start and the end, touching punctuation.
+            ("`teh` is fine, run `teh`.", "`The` is fine, run `the`.", "`teh` is fine, run `teh`."),
+            // A word merged across the edge, and a fenced block rewritten.
+            (
+                "use `ls`ing here\n```\nteh\n```\nok",
+                "Use lsing here.\n```\nthe\n```\nOK",
+                "Use `ls`ing here.\n```\nteh\n```\nOK",
+            ),
+        ];
+        for (original, revised, expected) in cases {
+            let spans = crate::guard::code_spans(original);
+            let result = apply(&without_changes_in(diff(original, revised), &spans), &HashSet::new());
+            assert_eq!(result, expected);
+            // The paste marks code by where it is in the result.
+            let (old, new): (Vec<char>, Vec<char>) = (original.chars().collect(), result.chars().collect());
+            let carried = carry_ranges(original, &result, &spans);
+            assert_eq!(carried.len(), spans.len(), "{result:?}");
+            for (&(s, e), &(ns, ne)) in spans.iter().zip(&carried) {
+                assert_eq!(new[ns..ne], old[s..e], "{result:?}");
+            }
+        }
+    }
+
     #[test]
     fn ranges_follow_the_revision() {
         let original = "does this code block work nw";

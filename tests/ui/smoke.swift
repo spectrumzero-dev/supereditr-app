@@ -636,7 +636,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
     <textarea id="plain" rows="3" cols="60">\(typo)</textarea>
     <div id="rich" contenteditable="true" style="border:1px solid; width:30em; min-height:3em">\(typo)</div>
     <div id="paragraphs" contenteditable="true" style="border:1px solid; width:30em"><p>\(typo)</p><p><br></p><p>See you soon.</p></div>
-    <div id="code" contenteditable="true" style="border:1px solid; width:30em"><p>\(typo) Then run <code>their going to work</code>.</p></div>
+    <div id="code" contenteditable="true" style="border:1px solid; width:30em"><p><code>teh fix</code> first. \(typo) Then run <code>their going to work</code></p></div>
     """.write(toFile: page, atomically: true, encoding: .utf8)
     let chromeOpened = openFront(chromeApp, bundleID: chrome, file: page, newInstance: true,
                                  launchArguments: ["--user-data-dir=\(work)/chrome", "--no-first-run", "--no-default-browser-check"])
@@ -799,10 +799,11 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         } else {
             check(false, "the paragraphs field is found", "no element with DOM id \"paragraphs\"")
         }
-        // A code span, as a chat composer shows text typed in backticks: Chrome's text has no
-        // backticks left, so SuperEditr finds the span in the field and leaves it as written while
-        // the sentence before it is fixed.
-        let code = "their going to work"
+        // Code spans, as a chat composer shows text typed in backticks: Chrome's text has no
+        // backticks left, so SuperEditr finds the spans in the field and leaves them as written
+        // while the sentence between them is fixed. One starts the field and one ends it, and the
+        // first holds a typo the rule-based checker would otherwise fix.
+        let codes = ["teh fix", "their going to work"]
         if let ours = launchedSinceStart(chrome).last,
            let field = byDOMIdentifier(AXUIElementCreateApplication(ours.processIdentifier), "code") {
             AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
@@ -817,24 +818,24 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 pump(1.5)  // the rule-based checker's result
                 let lines = ((try? String(contentsOfFile: captureLog, encoding: .utf8)) ?? "").split(separator: "\n")
                 let found = lines.last { $0.contains("code in the field") }.map(String.init) ?? "none"
-                check(found.contains("1 pieces"), "the code span is found", "last code line: \(found)")
+                check(found.contains("2 pieces"), "both code spans are found", "last code line: \(found)")
                 log("NOTE \(lines.last { $0.contains("code placed") }.map(String.init) ?? "no code placed")")
                 screenshot(window: overlay(), to: outDir + "/web-code-review.png")
                 press(keyReturn)
                 _ = waitFor(3) { overlay() == nil ? true : nil }
                 pump(1)
                 let value = attribute(field, kAXValueAttribute) as? String ?? ""
-                check(value.contains(code) && !value.contains(typo), "the fix leaves the code span as written",
+                check(codes.allSatisfy(value.contains) && !value.contains(typo), "the fix leaves the code spans as written",
                       "the field reads \(String(reflecting: value))")
-                // The fix is pasted with the span marked as code, so it stays formatted as code.
-                func codeText(_ element: AXUIElement, depth: Int = 0) -> String? {
-                    if (attribute(element, "AXSubrole") as? String) == "AXCodeStyleGroup" { return allText(element, levels: 4) }
-                    guard depth < 8, let children = attribute(element, kAXChildrenAttribute) as? [AXUIElement] else { return nil }
-                    return children.lazy.compactMap { codeText($0, depth: depth + 1) }.first
+                // The fix is pasted with the spans marked as code, so they stay formatted as code.
+                func codeTexts(_ element: AXUIElement, depth: Int = 0) -> [String] {
+                    if (attribute(element, "AXSubrole") as? String) == "AXCodeStyleGroup" { return [allText(element, levels: 4)] }
+                    guard depth < 8, let children = attribute(element, kAXChildrenAttribute) as? [AXUIElement] else { return [] }
+                    return children.flatMap { codeTexts($0, depth: depth + 1) }
                 }
-                let formatted = codeText(field)
-                check(formatted?.contains(code) == true, "the code span is still formatted as code after the fix",
-                      "code in the field: \(formatted.map { String(reflecting: $0) } ?? "none")")
+                let formatted = codeTexts(field)
+                check(codes.allSatisfy { code in formatted.contains { $0.contains(code) } },
+                      "the code spans are still formatted as code after the fix", "code in the field: \(formatted)")
                 screenshot(window: nil, rect: windows(bundleID: chrome).first?.frame, to: outDir + "/web-code-applied.png")
             }
         } else {

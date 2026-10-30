@@ -1937,6 +1937,10 @@ mod tests {
         assert_eq!(code_ranges("one\ntwo teh", Some(0), &[piece("teh", 7)]), vec![(8, 11)]);
         // Code that runs past the selection is protected where it overlaps.
         assert_eq!(code_ranges("run wrangler", Some(0), &[piece("wrangler deploy", 4)]), vec![(4, 12)]);
+        // Code at the very start and end of the selection.
+        let text = "teh fix and run their going";
+        let pieces = [piece("teh fix", 0), piece("their going", 16)];
+        assert_eq!(code_ranges(text, Some(0), &pieces), vec![(0, 7), (16, 27)]);
         // Code outside the selection protects nothing.
         assert!(code_ranges("Fix teh bug", Some(0), &[piece("teh", 15)]).is_empty());
     }

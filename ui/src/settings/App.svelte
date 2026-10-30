@@ -126,7 +126,7 @@
           <h1>About SuperEditr</h1>
           <p class="lede">Version {payload.version}. Fast, private, keyboard-first proofreading that works in any app, with the AI you choose.</p>
           <div class="group">
-            <div class="row"><span>Your text goes only to the provider you pick, directly from this Mac. SuperEditr has no servers and collects no analytics.</span></div>
+            <div class="row"><span>Your text goes only to the provider you pick, directly from this Mac. SuperEditr collects no analytics, and its only server counts update checks.</span></div>
             <div class="row"><span>The rule-based checker is <button class="linklike" onclick={() => api.openUrl("https://writewithharper.com")}>Harper</button> (Apache-2.0).</span></div>
           </div>
         </div>

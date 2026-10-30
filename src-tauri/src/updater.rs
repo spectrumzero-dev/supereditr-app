@@ -1,6 +1,10 @@
-//! Updates for official release builds. The app reads `latest.json` from the public repository's
-//! newest GitHub Release, checks the download against SuperEditr's own updater key (the public half
-//! is in tauri.conf.json), and installs it in place; the new version runs after a restart.
+//! Updates for official release builds. The app asks SuperEditr's update server for `latest.json`
+//! at `https://updates.supereditr.app/{{target}}/{{arch}}/{{current_version}}`, for example
+//! `/darwin/aarch64/0.1.0`. Release builds set that endpoint at build time, in place of the GitHub
+//! URL in tauri.conf.json. The server counts the check by those three values, stores no IP address,
+//! and redirects to `latest.json` on the public repository's newest GitHub Release; the app sends no
+//! identifier. The app checks the download against SuperEditr's own updater key (the public half is
+//! in tauri.conf.json) and installs it in place; the new version runs after a restart.
 //!
 //! Only official release builds check for updates: they are compiled with
 //! `SUPEREDITR_RELEASE_BUILD` set. Source builds and test builds never replace themselves, because an

@@ -435,16 +435,29 @@ fn is_invisible(c: char) -> bool {
 }
 
 /// `text` as Markdown for pasting, with `code` (character ranges) in backticks: editors that build
-/// what is pasted from the plain text, as Claude's composer does, turn it back into code. Invisible
-/// characters are left out, since editors pad code with their own.
+/// what is pasted from the plain text, as Claude's composer does, turn it back into code. The
+/// zero-width spaces an editor pads code with are left out where they touch it, since the editor
+/// adds its own; every other character is kept, a zero-width joiner in an emoji included.
 fn markdown_with_code(text: &str, code: &[(usize, usize)]) -> String {
     let chars: Vec<char> = text.chars().collect();
     let in_code = |i: usize| code.iter().any(|&(s, e)| s <= i && i < e);
+    let padding = |c: char| matches!(c, '\u{200B}' | '\u{2060}' | '\u{FEFF}');
+    // A run of padding right before or after a span.
+    let touches_code = |i: usize| {
+        let (mut a, mut b) = (i, i);
+        while a > 0 && padding(chars[a - 1]) && !in_code(a - 1) {
+            a -= 1;
+        }
+        while b + 1 < chars.len() && padding(chars[b + 1]) && !in_code(b + 1) {
+            b += 1;
+        }
+        (a > 0 && in_code(a - 1)) || (b + 1 < chars.len() && in_code(b + 1))
+    };
     let mut out = String::new();
     let mut i = 0;
     while i < chars.len() {
         if !in_code(i) || chars[i] == '\n' {
-            if !is_invisible(chars[i]) {
+            if !(padding(chars[i]) && touches_code(i)) {
                 out.push(chars[i]);
             }
             i += 1;
@@ -455,7 +468,7 @@ fn markdown_with_code(text: &str, code: &[(usize, usize)]) -> String {
         while i < chars.len() && in_code(i) && chars[i] != '\n' {
             i += 1;
         }
-        let piece: String = chars[start..i].iter().filter(|c| !is_invisible(**c)).collect();
+        let piece: String = chars[start..i].iter().collect::<String>().trim_matches(padding).to_string();
         if piece.is_empty() {
             continue;
         }
@@ -2018,6 +2031,12 @@ mod tests {
         // Code across a line break is closed and reopened on each line.
         assert_eq!(markdown_with_code("one\ntwo", &[(0, 7)]), "`one`\n`two`");
         assert_eq!(markdown_with_code("no code", &[]), "no code");
+        // A zero-width joiner holds an emoji together, in prose and in code; a zero-width space
+        // away from code is the author's.
+        let coder = "👩\u{200D}💻";
+        assert_eq!(markdown_with_code(&format!("{coder} a b"), &[(4, 5)]), format!("{coder} `a` b"));
+        assert_eq!(markdown_with_code(&format!("x {coder} y"), &[(2, 5)]), format!("x `{coder}` y"));
+        assert_eq!(markdown_with_code("a\u{200B}b c", &[(4, 5)]), "a\u{200B}b `c`");
     }
 
     #[test]

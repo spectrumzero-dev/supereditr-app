@@ -26,6 +26,14 @@ func check(_ ok: Bool, _ name: String, _ detail: @autoclosure () -> String = "")
     log("\(ok ? "PASS" : "FAIL") \(name)\(ok ? "" : ": \(detail())")")
     if !ok { failures.append(name) }
 }
+/// SuperEditr's last line about how it applied a fix in the app: in place, partly in place, or the
+/// whole selection and why. "none" before the first.
+var captureLogPath = ""
+func appliedPath(_ bundleID: String) -> String {
+    let lines = (try? String(contentsOfFile: captureLogPath, encoding: .utf8))?.split(separator: "\n") ?? []
+    let path = lines.last { $0.contains("\(bundleID): appl") }.map(String.init) ?? "none"
+    return path.split(separator: " ", maxSplits: 1).last.map(String.init) ?? path  // without the timestamp
+}
 func skipEnvironment(_ reason: String) -> Never {
     log("SKIP \(reason)")
     finish(78)
@@ -372,6 +380,7 @@ let work = NSTemporaryDirectory() + "supereditr-smoke-\(getpid())"
 let home = work + "/home"
 try? FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
 cleanups.append { try? FileManager.default.removeItem(atPath: work) }
+captureLogPath = home + "/Library/Logs/SuperEditr/capture.log"
 let support = home + "/Library/Application Support/com.sghael.supereditr"
 let status = support + "/status.json"
 let draft = work + "/draft.txt"
@@ -810,11 +819,13 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         // The composer matrix: the same text in an editable div that pastes HTML, a Markdown composer
         // like Claude's desktop app (it pastes from the plain text alone, reads it as Markdown, and pads
         // code with zero-width spaces), and two open-source editors chat and issue-tracker composers are
-        // built on (tests/ui/composers). Each field holds a typo to fix, code at both ends of its first
-        // paragraph (one with a typo of its own), bold, a link and an empty paragraph, and is reviewed
-        // once. Bold and links don't survive the fix yet: those log a NOTE rather than fail.
+        // built on (tests/ui/composers). Each field holds two typos to fix, code at both ends of its
+        // first paragraph (one with a typo of its own), bold, a link and an empty paragraph, and is
+        // reviewed once. The proofread must be applied in place, one edit per change, and keep the
+        // code, bold and link as they were.
         let composerFields = [("code", "editable div"), ("markdown", "Markdown composer"), ("tiptap", "TipTap"), ("lexical", "Lexical")]
         let codes = ["teh fix", "their going to work"], composerTypo = "Their going to love"
+        let composerFixes = ["They're going to love", "really run"]
         let visible = { (text: String) in String(text.unicodeScalars.filter { !["\u{200B}", "\u{2060}", "\u{FEFF}"].contains($0) }) }
         func chromeElement(_ id: String) -> AXUIElement? {
             guard let ours = launchedSinceStart(chrome).last else { return nil }
@@ -844,7 +855,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             pump(0.1)
             press(keyE, .maskCommand)
             guard waitFor(5, { overlay() }) != nil else { return false }
-            return waitFor(4) { panelText().range(of: #"\breplace\b"#, options: .regularExpression) != nil ? true : nil } != nil
+            return waitFor(4) { panelText().range(of: #"\b\d+ changes?\b"#, options: .regularExpression) != nil ? true : nil } != nil
         }
         var matrix: [String] = []
         for (id, editor) in composerFields {
@@ -858,11 +869,6 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             func expect(_ ok: Bool, _ short: String, _ what: String, _ detail: @autoclosure () -> String) {
                 check(ok, "\(name): \(what)", detail())
                 row.append("\(short) \(ok ? "ok" : "FAIL")")
-            }
-            // Behaviour SuperEditr doesn't have yet: shown in the log and the summary, never a failure.
-            func gap(_ ok: Bool, _ short: String, _ what: String, _ detail: String) {
-                log("NOTE \(name): \(what) \(ok ? "survives the fix" : "is lost in the fix (\(detail))")")
-                row.append("\(short) \(ok ? "ok" : "gap")")
             }
             let opened = reviewField(field)
             expect(opened, "review", "⌘E E opens a review of the whole field with a fix",
@@ -888,14 +894,18 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                     return state["typo"] == "0" ? state : nil
                 } ?? composerState(id)
                 expect(value != nil, "fixed", "↩ writes the fix", "the field reads \(String(reflecting: attribute(field, kAXValueAttribute) as? String ?? ""))")
+                expect(composerFixes.allSatisfy(visible(value ?? "").contains), "both fixes", "both changes are applied",
+                       "the field reads \(String(reflecting: value ?? ""))")
+                let path = appliedPath("com.google.Chrome")
+                expect(path.contains("applied in place: 2 edits"), "in place", "the proofread is applied in place", "the log says: \(path)")
                 expect(codes.allSatisfy(visible(value ?? "").contains), "code kept", "the code is left as written",
                        "the field reads \(String(reflecting: value ?? ""))")
                 expect(state["code"] == codes.joined(separator: "|"), "code format", "the code is still formatted as code",
                        "the page reports \(state)")
                 expect(state["paragraphs"] == "3" && state["empty"] == "1", "empty paragraph", "the empty paragraph survives",
                        "the page reports \(state)")
-                gap(state["bold"] == "today", "bold", "bold", "the page reports bold=\(state["bold"] ?? "?")")
-                gap(state["links"] == "the notes", "link", "the link", "the page reports links=\(state["links"] ?? "?")")
+                expect(state["bold"] == "today", "bold", "bold survives the fix", "the page reports \(state)")
+                expect(state["links"] == "the notes", "link", "the link survives the fix", "the page reports \(state)")
                 screenshot(window: nil, rect: windows(bundleID: chrome).first?.frame, to: outDir + "/composer-\(id)-applied.png")
                 if overlay() != nil {
                     press(keyEscape)
@@ -906,6 +916,102 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         }
         log("     composer matrix:")
         matrix.forEach { log("       \($0)") }
+        // The formats matrix: a document with every common structure (a heading, bold, italic, a link and
+        // code in a paragraph, a bulleted list with a nested item, a numbered list, a quote, a code block, a
+        // line break inside a paragraph) in each editor, with typos in the prose and in the code. Each
+        // field must get its fixes and keep every structure and its code exactly. The text SuperEditr
+        // reviewed (the panel) and the field's Accessibility tree go to the artifacts, to show how Chrome
+        // exposes each structure.
+        let formatFields = [("formats-div", "editable div"), ("formats-markdown", "Markdown composer"),
+                            ("formats-tiptap", "TipTap"), ("formats-lexical", "Lexical")]
+        func axDump(_ element: AXUIElement, depth: Int = 0) -> String {
+            let role = attribute(element, kAXRoleAttribute) as? String ?? "?"
+            let subrole = attribute(element, kAXSubroleAttribute) as? String ?? ""
+            let value = (attribute(element, kAXValueAttribute) as? String).map { " " + String(reflecting: $0) } ?? ""
+            let line = String(repeating: "  ", count: depth) + role + (subrole.isEmpty ? "" : "/" + subrole) + value
+            guard depth < 30, let children = attribute(element, kAXChildrenAttribute) as? [AXUIElement] else { return line }
+            return ([line] + children.map { axDump($0, depth: depth + 1) }).joined(separator: "\n")
+        }
+        // "headings=1 items=3 …; text=…" → the structure, and the text.
+        func formatsState(_ id: String) -> (structure: String, text: String) {
+            let raw = chromeElement("\(id)-state").map { allText($0, levels: 4) } ?? ""
+            let parts = raw.components(separatedBy: "; text=")
+            return (parts.first ?? "", parts.count > 1 ? parts[1] : "")
+        }
+        var formatsRows: [String] = []
+        for (id, editor) in formatFields {
+            let name = "the \(editor) formats field"
+            guard let field = chromeElement(id) else {
+                check(false, "\(name) is found", "no element with DOM id \"\(id)\"")
+                continue
+            }
+            let before = formatsState(id)
+            try? axDump(field).write(toFile: outDir + "/formats-\(id)-accessibility.txt", atomically: true, encoding: .utf8)
+            // How Chrome's selection offsets line up with its text: select each word where it is in
+            // the field's value and record what Chrome selects. SuperEditr places edits this way.
+            AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            let fieldValue = (attribute(field, kAXValueAttribute) as? String ?? "") as NSString
+            var probes: [String] = []
+            for word in ["Weekly", "teh", "Apples", "Ripe", "Plums", "First", "Secend", "realy", "let", "two", "See"] {
+                let at = fieldValue.range(of: word)
+                guard at.location != NSNotFound else { probes.append("\(word): not in the value"); continue }
+                var range = CFRange(location: at.location, length: at.length)
+                if let value = AXValueCreate(.cfRange, &range) {
+                    AXUIElementSetAttributeValue(field, kAXSelectedTextRangeAttribute as CFString, value)
+                }
+                pump(0.1)
+                let got = attribute(field, kAXSelectedTextAttribute) as? String ?? "nil"
+                probes.append("\(word)@\(at.location): \(got == word ? "ok" : "got \(String(reflecting: got))")")
+            }
+            log("NOTE \(name) selection offsets: \(probes.joined(separator: ", "))")
+            AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            _ = selectAll() || selectAll()
+            let selected = visible(focusedElement().flatMap { attribute($0, kAXSelectedTextAttribute) as? String } ?? "")
+            guard selected.contains("Weekly notes") && selected.contains("you soon.") else {
+                check(false, "\(name): the whole field is selected", "selected \(String(reflecting: selected))")
+                formatsRows.append("\(editor): not selected")
+                continue
+            }
+            press(keyE, .maskCommand)
+            pump(0.1)
+            press(keyE, .maskCommand)
+            let opened = waitFor(5, { overlay() }) != nil
+                && waitFor(4) { panelText().range(of: #"\b\d+ changes?\b"#, options: .regularExpression) != nil ? true : nil } != nil
+            check(opened, "\(name): ⌘E E opens a review with a fix", "panel text: \(panelText())")
+            guard opened else {
+                formatsRows.append("\(editor): no review")
+                press(keyEscape)
+                continue
+            }
+            let read = lastChromeRead()
+            try? "\(read)\n\n\(panelText())".write(toFile: outDir + "/formats-\(id)-review.txt", atomically: true, encoding: .utf8)
+            // Every line break read: the whole field, plus the empty paragraph Chrome's own text leaves out.
+            let counts = read.range(of: #"read (\d+) characters of (\d+)"#, options: .regularExpression)
+                .map { String(read[$0]).split(separator: " ").compactMap { Int($0) } }
+            check(counts.map { $0[0] == $0[1] + 1 } ?? false, "\(name): it is read with every line break, the empty one included",
+                  "last read: \(read)")
+            screenshot(window: overlay(), to: outDir + "/formats-\(id)-review.png")
+            press(keyReturn)
+            _ = waitFor(3) { overlay() == nil ? true : nil }
+            let after = waitFor(3) { () -> (structure: String, text: String)? in
+                let state = formatsState(id)
+                return ["Secend", "realy", "you you"].contains(where: state.text.contains) ? nil : state
+            } ?? formatsState(id)
+            let fixed = !["Secend", "realy", "you you"].contains(where: after.text.contains)
+            check(fixed, "\(name): the fixes land", "the field holds \(String(reflecting: after.text))")
+            check(after.structure == before.structure, "\(name): every structure and the code survive the fix",
+                  "before \(before.structure); after \(after.structure)")
+            let path = appliedPath("com.google.Chrome")
+            log("NOTE \(name): \(path)")
+            formatsRows.append("\(editor): \(fixed ? "fixed" : "NOT fixed"), \(after.structure == before.structure ? "structure kept" : "STRUCTURE LOST"), \(path.contains("applied in place:") ? "in place" : "whole")")
+            screenshot(window: nil, rect: windows(bundleID: chrome).first?.frame, to: outDir + "/formats-\(id)-applied.png")
+            if overlay() != nil {
+                press(keyEscape)
+                _ = waitFor(3) { overlay() == nil ? true : nil }
+            }
+        }
+        log("     formats matrix:")
+        formatsRows.forEach { log("       \($0)") }
         // ⌥↩ pressed again while the first one applies used to hang SuperEditr: applying turns the
         // panel's shortcuts off while the main thread handles the next press. With the typo put back in
         // the last field, press it three times in a row, then check that ⌘E E still opens a review.
@@ -977,7 +1083,33 @@ for (index, how) in ["directly", "after closing the instruction box"].enumerated
     quitOpened("com.apple.TextEdit")
 }
 
-// 6e. With nothing selected, ⌘E E selects the sentence before the caret, visibly, and reviews it.
+// 6e. A proofread with two changes is applied in place in TextEdit: two Accessibility writes, each
+// replacing only the word it fixes, and the text around them as it was.
+let twoTypos = work + "/two-typos.txt"
+try! "Their going to love this, it is realy fast.".write(toFile: twoTypos, atomically: true, encoding: .utf8)
+check(openFront("TextEdit", bundleID: "com.apple.TextEdit", file: twoTypos), "TextEdit opens the draft with two typos")
+check(selectAll(), "the draft with two typos is selected")
+press(keyE, .maskCommand)
+pump(0.1)
+press(keyE, .maskCommand)
+let twoPanel = waitFor(5) { overlay() }
+check(twoPanel != nil, "⌘E E reviews the draft with two typos", "no overlay within 5 s")
+if twoPanel != nil {
+    _ = waitFor(4) { panelText().range(of: #"\b\d+ changes?\b"#, options: .regularExpression) != nil ? true : nil }
+    press(keyReturn)
+    _ = waitFor(3) { overlay() == nil ? true : nil }
+    let fixed = "They're going to love this, it is really fast."
+    let value = waitFor(3) { () -> String? in
+        let value = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
+        return value == fixed ? value : nil
+    }
+    check(value != nil, "both fixes land in TextEdit", "TextEdit reads \(String(reflecting: focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""))")
+    let path = appliedPath("com.apple.TextEdit")
+    check(path.contains("applied in place: 2 edits"), "TextEdit applies the proofread in place", "the log says: \(path)")
+}
+quitOpened("com.apple.TextEdit")
+
+// 6f. With nothing selected, ⌘E E selects the sentence before the caret, visibly, and reviews it.
 let caretDraft = work + "/caret.txt"
 try! "We met at noon. Their going to love this, it work good.".write(toFile: caretDraft, atomically: true, encoding: .utf8)
 check(openFront("TextEdit", bundleID: "com.apple.TextEdit", file: caretDraft), "TextEdit opens the caret draft")

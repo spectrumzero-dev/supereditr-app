@@ -5,6 +5,7 @@
 pub mod config;
 pub mod detect;
 pub mod diff;
+pub mod edits;
 pub mod engine;
 pub mod guard;
 pub mod install;

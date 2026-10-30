@@ -42,6 +42,8 @@ Add names, places, and terms under Settings → Your words, as a word ("Rhyan") 
 
 With nothing selected, ⌘E E and ⌃⌥⇧E select the sentence before the cursor and review that. In an app that hides its text from Accessibility, select the text yourself. Turn this off in Settings → Behavior.
 
+Applying a proofread changes only the words it fixes, so code, bold and links in the rest of the text stay as they are. Undo takes one step per fix. A different style, or an app that doesn't allow it, replaces the whole selection instead. Turn this off in Settings → Behavior → Keep formatting when applying fixes.
+
 Typing or clicking elsewhere hides an automatic suggestion. Turn automatic suggestions off in Settings → Behavior to use the shortcut only. All shortcuts can be changed, and any style can have its own global shortcut.
 
 ## Install

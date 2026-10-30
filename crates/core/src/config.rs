@@ -73,6 +73,9 @@ pub struct Config {
     /// With nothing selected, the review shortcut and quick fix select the sentence before the
     /// caret and review that. Automatic suggestions never do.
     pub select_sentence: bool,
+    /// Apply a proofread by changing only the words it fixes, where the app allows it, so the
+    /// formatting around them is kept. Off, every fix replaces the whole selection.
+    pub keep_formatting: bool,
     /// Names, places, and terms to keep exactly as written: a word ("Rhyan") or a phrase
     /// ("1234 Glenmoor Ct"). See `words.rs`.
     pub words: Vec<String>,
@@ -104,6 +107,7 @@ impl Default for Config {
             auto_popup: true,
             auto_min_chars: 12,
             select_sentence: true,
+            keep_formatting: true,
             words: Vec::new(),
             excluded_apps: DEFAULT_EXCLUSIONS.iter().map(|s| s.to_string()).collect(),
             offered_exclusions: DEFAULT_EXCLUSIONS.iter().map(|s| s.to_string()).collect(),
@@ -313,5 +317,11 @@ mod tests {
         assert!(old.select_sentence);
         let off: Config = serde_json::from_str(r#"{"select_sentence": false}"#).unwrap();
         assert!(!off.select_sentence);
+    }
+
+    #[test]
+    fn settings_saved_before_keep_formatting_turn_it_on() {
+        let old: Config = serde_json::from_str(r#"{"auto_popup": false}"#).unwrap();
+        assert!(old.keep_formatting);
     }
 }

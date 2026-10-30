@@ -244,18 +244,14 @@ impl Element {
             .or_else(|| self.marker_selection().map(|(text, _)| text).filter(real))
     }
 
-    /// The text of a Chromium rich field (a text area whose children are paragraph groups) with
-    /// every line break. Chromium's own text drops some: an empty paragraph adds nothing to
-    /// `AXValue`, and `AXSelectedText` can leave out the break between two paragraphs. Each
-    /// paragraph is still a child group, an empty one included, so the empty ones are put back.
-    /// None for any other element, before its value is read.
+    /// The text of a Chromium rich field (a text area whose children are its blocks: paragraphs,
+    /// headings, lists) with every line break. Chromium's own text drops some: an empty paragraph
+    /// adds nothing to `AXValue`, and `AXSelectedText` can leave out the break between two blocks or
+    /// list items. Each block is still a child, an empty paragraph included, so the empty ones are
+    /// put back. None for any other element, before its value is read.
     fn web_text(&self) -> Option<String> {
         let paragraphs = self.children();
-        if paragraphs.is_empty()
-            || paragraphs.len() > 500
-            || self.string("AXRole").as_deref() != Some("AXTextArea")
-            || !paragraphs.iter().all(|p| p.string("AXRole").as_deref() == Some("AXGroup"))
-        {
+        if paragraphs.is_empty() || paragraphs.len() > 500 || self.string("AXRole").as_deref() != Some("AXTextArea") {
             return None;
         }
         let lengths: Vec<usize> = paragraphs.iter().map(|p| visible_length(p, 0)).collect();
@@ -302,13 +298,13 @@ fn is_line_break(c: char) -> bool {
     c == '\n' || c == '\r'
 }
 
-/// Characters other than line breaks in an element's static text, a few levels down (links and
-/// bold text nest it).
+/// Characters other than line breaks in an element's text and list markers, a few levels down
+/// (links, bold text and list items nest it).
 fn visible_length(element: &Element, depth: usize) -> usize {
-    if element.string("AXRole").as_deref() == Some("AXStaticText") {
+    if matches!(element.string("AXRole").as_deref(), Some("AXStaticText" | "AXListMarker")) {
         return element.string("AXValue").map_or(0, |v| v.chars().filter(|c| !is_line_break(*c)).count());
     }
-    if depth >= 4 {
+    if depth >= 8 {
         return 0;
     }
     element.children().iter().map(|child| visible_length(child, depth + 1)).sum()
@@ -326,16 +322,28 @@ fn visible_count(text: &str) -> usize {
     text.chars().filter(|c| !is_line_break(*c)).count()
 }
 
+/// What [`code_in`] found in a web field.
+struct Formatting {
+    code: Vec<CodePiece>,
+    /// List markers ("• ", "1. "): part of the field's text, but not text the user wrote.
+    markers: Vec<CodePiece>,
+    /// The field has formatting a plain-text replace would lose: code, a link, a list or a heading.
+    any: bool,
+}
+
 /// The elements in a web field marked as code (`<code>`, which WebKit and Chromium give the
-/// subrole `AXCodeStyleGroup`), in order. The log gets the count and the subroles seen, never the
-/// text, so a field whose code goes unnoticed can be diagnosed.
-fn code_in(field: &Element) -> Vec<CodePiece> {
+/// subrole `AXCodeStyleGroup`), in order, and whether it has other formatting. The log gets the
+/// count and the subroles seen, never the text, so a field whose code goes unnoticed can be
+/// diagnosed.
+fn code_in(field: &Element) -> Formatting {
     struct Walk {
         started: Instant,
         budget: usize,
         seen: usize,
         subroles: BTreeSet<String>,
         code: Vec<CodePiece>,
+        markers: Vec<CodePiece>,
+        formatted: bool,
     }
     fn walk(element: &Element, depth: usize, state: &mut Walk) {
         for child in element.children() {
@@ -345,6 +353,9 @@ fn code_in(field: &Element) -> Vec<CodePiece> {
             }
             state.budget -= 1;
             let subrole = child.string("AXSubrole");
+            let role = child.string("AXRole");
+            state.formatted |= matches!(role.as_deref(), Some("AXLink" | "AXList" | "AXHeading"))
+                || subrole.as_deref().is_some_and(|s| s.ends_with("StyleGroup"));
             if subrole.as_deref() == Some("AXCodeStyleGroup") {
                 let text = static_text(&child, 0);
                 let length = visible_count(&text);
@@ -352,8 +363,14 @@ fn code_in(field: &Element) -> Vec<CodePiece> {
                     state.code.push(CodePiece { text, start: state.seen });
                 }
                 state.seen += length;
-            } else if child.string("AXRole").as_deref() == Some("AXStaticText") {
+            } else if role.as_deref() == Some("AXStaticText") {
                 state.seen += child.string("AXValue").map_or(0, |v| visible_count(&v));
+            } else if role.as_deref() == Some("AXListMarker") {
+                let text = child.string("AXValue").unwrap_or_default();
+                if !text.trim().is_empty() {
+                    state.markers.push(CodePiece { text: text.clone(), start: state.seen });
+                }
+                state.seen += visible_count(&text);
             } else if depth < 8 {
                 walk(&child, depth + 1, state);
             }
@@ -363,7 +380,15 @@ fn code_in(field: &Element) -> Vec<CodePiece> {
     // A composer has a few dozen elements. A bigger field stops after 1,500 or 150 ms: each is a
     // call to the app, which can be slow while it is busy.
     let started = Instant::now();
-    let mut state = Walk { started, budget: 1500, seen: 0, subroles: BTreeSet::new(), code: Vec::new() };
+    let mut state = Walk {
+        started,
+        budget: 1500,
+        seen: 0,
+        subroles: BTreeSet::new(),
+        code: Vec::new(),
+        markers: Vec::new(),
+        formatted: false,
+    };
     walk(field, 0, &mut state);
     trace(format_args!(
         "code in the field: {} pieces in {:?}{}; subroles {}",
@@ -372,7 +397,7 @@ fn code_in(field: &Element) -> Vec<CodePiece> {
         if state.budget == 0 { " (stopped early)" } else { "" },
         state.subroles.into_iter().collect::<Vec<_>>().join(", ")
     ));
-    state.code
+    Formatting { code: state.code, markers: state.markers, any: state.formatted }
 }
 
 /// Character ranges of `text`, the selection, that the app formats as code. `selection_start` is
@@ -626,6 +651,21 @@ pub struct Capture {
     /// Character ranges of `text` the app formats as code, whose backticks are gone from `text`:
     /// reviews leave them as written.
     pub code: Vec<(usize, usize)>,
+    /// Character ranges of `text` that are list markers ("• ", "1. "): reviews leave them alone.
+    markers: Vec<(usize, usize)>,
+    /// A web field with formatting (code, a link, a list or a heading) that replacing the whole
+    /// selection could lose, so a proofread there is worth applying in place.
+    formatted: bool,
+}
+
+impl Capture {
+    /// Ranges of `text` a review leaves as written: code, and list markers.
+    pub fn protected(&self) -> Vec<(usize, usize)> {
+        let mut ranges = self.code.clone();
+        ranges.extend(&self.markers);
+        ranges.sort_unstable();
+        ranges
+    }
 }
 
 /// A capture of text in Settings' "Try it now" box, anchored at `bounds` (screen points).
@@ -642,6 +682,8 @@ pub fn playground_capture(text: String, bounds: Rect) -> Capture {
         range: None,
         playground: true,
         code: Vec::new(),
+        markers: Vec::new(),
+        formatted: false,
     }
 }
 
@@ -895,12 +937,14 @@ fn capture_ax(app: &Element, pid: i32, bundle_id: &str, app_name: &str) -> Resul
     // Only a text field is searched for code: when the selection is read from a whole page, the
     // page can have thousands of elements.
     let field = matches!(element.string("AXRole").as_deref(), Some("AXTextArea" | "AXTextField"));
-    let code = if web && field {
+    let (code, markers, formatted) = if web && field {
         let selection_start =
             range.and_then(|r| element.string("AXValue").and_then(|value| visible_before(&value, r.location)));
-        code_ranges(&text, selection_start, &code_in(&element))
+        let found = code_in(&element);
+        let markers = code_ranges(&text, selection_start, &found.markers);
+        (code_ranges(&text, selection_start, &found.code), markers, found.any)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new(), false)
     };
     let plausible = |r: &CGRect| r.size.width > 0.5 && r.size.height > 0.5 && r.size.height < 2000.0;
     let bounds = range
@@ -921,6 +965,8 @@ fn capture_ax(app: &Element, pid: i32, bundle_id: &str, app_name: &str) -> Resul
         range: range.map(|r| (r.location, r.length)),
         playground: false,
         code,
+        markers,
+        formatted,
     })
 }
 
@@ -962,12 +1008,7 @@ fn select_before_caret(app: &Element) -> CaretSelection {
 
 /// Sets the field's selection to `range` and waits briefly for the app to report it.
 fn select_range(element: &Element, range: CFRange) -> bool {
-    let value = unsafe { AXValueCreate(kAXValueCFRangeType, &range as *const CFRange as *const c_void) };
-    if value.is_null() {
-        return false;
-    }
-    let value = unsafe { CFType::wrap_under_create_rule(value) };
-    if !element.set("AXSelectedTextRange", value.as_CFTypeRef()) {
+    if !set_selection(element, range.location.max(0) as usize, range.length.max(0) as usize) {
         return false;
     }
     let deadline = Instant::now() + Duration::from_millis(150);
@@ -1148,6 +1189,8 @@ fn capture_clipboard(app: &Element, pid: i32, bundle_id: String, app_name: Strin
         range: None,
         playground: false,
         code: Vec::new(),
+        markers: Vec::new(),
+        formatted: false,
     })
 }
 
@@ -1159,8 +1202,11 @@ pub fn selection_unchanged(capture: &Capture) -> bool {
     }
 }
 
-/// Replaces the captured selection with `text`, verifying the result where the app allows it.
-pub fn replace(capture: &Capture, text: &str) -> Result<ReplaceMethod, PlatformError> {
+/// Replaces the captured selection with `text`, verifying the result where the app allows it. A
+/// `proofread` with a few local changes is applied in place, one edit per change, so formatting
+/// around them is never touched; anything else, or an app that doesn't let SuperEditr move the
+/// selection, replaces the whole selection.
+pub fn replace(capture: &Capture, text: &str, proofread: bool) -> Result<ReplaceMethod, PlatformError> {
     if !accessibility_trusted(false) {
         return Err(PlatformError::NotTrusted);
     }
@@ -1177,6 +1223,27 @@ pub fn replace(capture: &Capture, text: &str) -> Result<ReplaceMethod, PlatformE
                 capture.bundle_id, !still_focused
             ));
             return Err(PlatformError::Stale);
+        }
+        // In a web field each edit visibly moves the selection, so plain text is replaced in one go,
+        // which is quicker; an Accessibility write in a native field takes milliseconds.
+        let plan = if capture.web && proofread && !capture.formatted {
+            trace(format_args!(
+                "{}: applying the whole selection: the field has no formatting to keep",
+                capture.bundle_id
+            ));
+            None
+        } else {
+            Some(supereditr_core::edits::plan(&capture.text, text, proofread, &capture.protected()))
+        };
+        match plan {
+            None => {}
+            Some(Ok(edits)) if !edits.is_empty() => {
+                if let Some(method) = replace_in_place(capture, element, text, &edits)? {
+                    return Ok(method);
+                }
+            }
+            Some(Ok(_)) => {}
+            Some(Err(reason)) => trace(format_args!("{}: applying the whole selection: {reason}", capture.bundle_id)),
         }
         if !capture.web && element.settable("AXSelectedText") {
             let before = element.string("AXValue");
@@ -1347,6 +1414,250 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
         snapshot.restore_if_unchanged_since(ours);
     });
     Ok(ReplaceMethod::Paste)
+}
+
+// --- Applying in place ------------------------------------------------------------------------
+
+/// Where the edit at character `start` of `captured` (the selection as SuperEditr read it) starts in
+/// `selected` (the selection as the app counts positions in it), in UTF-16 units. The two can differ
+/// in line breaks (Chromium counts none between blocks) and in the zero-width characters editors pad
+/// formatting with, so both are skipped when counting. None when `start` is past the text or sits on
+/// a skipped character.
+fn field_offset(captured: &str, selected: &str, start: usize) -> Option<usize> {
+    let skipped = |c: char| is_line_break(c) || is_invisible(c);
+    let before = captured.chars().take(start).filter(|c| !skipped(*c)).count();
+    if captured.chars().nth(start).is_none_or(skipped) {
+        return None;
+    }
+    let mut seen = 0;
+    let mut offset = 0;
+    for c in selected.chars() {
+        if !skipped(c) {
+            if seen == before {
+                return Some(offset);
+            }
+            seen += 1;
+        }
+        offset += c.len_utf16();
+    }
+    None
+}
+
+/// Where an edit goes in the field: UTF-16 units `start..end` to replace (equal for an insertion),
+/// and `text`, at `check`, to read back first: the words replaced, or an insertion's anchor.
+struct Place {
+    check: usize,
+    text: String,
+    start: usize,
+    end: usize,
+}
+
+/// Finds `edit` in the selection, `selected` as the app reports it, starting at `location`, and
+/// confirms the selection holds what the edit expects there. Positions count as the app counts its
+/// selection, which isn't always its `AXValue`: Chromium's leave out the line breaks between blocks.
+/// An insertion goes on the same side of any invisible padding beside its anchor as in the text
+/// that was read.
+fn place(edit: &supereditr_core::edits::Edit, captured: &str, selected: &str, location: usize) -> Option<Place> {
+    let units: Vec<u16> = selected.encode_utf16().collect();
+    let (check_from, text) = match &edit.anchor {
+        Some(anchor) => (anchor.start, &anchor.text),
+        None => (edit.start, &edit.old),
+    };
+    let offset = field_offset(captured, selected, check_from)?;
+    let len = text.encode_utf16().count();
+    if units.get(offset..offset + len)? != text.encode_utf16().collect::<Vec<_>>().as_slice() {
+        return None;
+    }
+    let check = location + offset;
+    let invisible = |u: u16| char::from_u32(u32::from(u)).is_some_and(is_invisible);
+    let start = match &edit.anchor {
+        None => return Some(Place { check, text: text.clone(), start: check, end: check + len }),
+        Some(anchor) if !anchor.after => {
+            let mut at = offset + len;
+            while anchor.padded && units.get(at).is_some_and(|&u| invisible(u)) {
+                at += 1;
+            }
+            location + at
+        }
+        Some(anchor) => {
+            let mut at = offset;
+            while anchor.padded && at > 0 && invisible(units[at - 1]) {
+                at -= 1;
+            }
+            location + at
+        }
+    };
+    Some(Place { check, text: text.clone(), start, end: start })
+}
+
+/// Sets the field's selection to UTF-16 units `start..start + length`, without waiting.
+fn set_selection(element: &Element, start: usize, length: usize) -> bool {
+    let range = CFRange { location: start as isize, length: length as isize };
+    let value = unsafe { AXValueCreate(kAXValueCFRangeType, &range as *const CFRange as *const c_void) };
+    if value.is_null() {
+        return false;
+    }
+    let value = unsafe { CFType::wrap_under_create_rule(value) };
+    element.set("AXSelectedTextRange", value.as_CFTypeRef())
+}
+
+/// Types `text` into the app `pid`, replacing its selection: key events carrying the text, 20 UTF-16
+/// units at a time (the most one event holds), with no clipboard round trip. Empty text deletes the
+/// selection with the Delete key.
+fn type_text(pid: i32, text: &str) -> bool {
+    const DELETE: u16 = 51;
+    if text.is_empty() {
+        post_key(pid, DELETE, CGEventFlags::empty());
+        return true;
+    }
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let Ok(source) = CGEventSource::new(CGEventSourceStateID::CombinedSessionState) else { return false };
+    for chunk in units.chunks(20) {
+        for down in [true, false] {
+            let Ok(event) = CGEvent::new_keyboard_event(source.clone(), 0, down) else { return false };
+            event.set_flags(CGEventFlags::empty());
+            event.set_string_from_utf16_unchecked(chunk);
+            event.post_to_pid(pid);
+        }
+    }
+    true
+}
+
+/// Polls `done` until it holds or `wait` runs out.
+fn wait_until(wait: Duration, done: impl Fn() -> bool) -> bool {
+    let deadline = Instant::now() + wait;
+    loop {
+        if done() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Applies a proofread as `edits` (last first), each writing only one change: an Accessibility
+/// write in a native field, typing in a web one. Before each write the text there is selected and
+/// read back; after each, what was written is selected and read back; after the last, the field
+/// must hold `text`.
+///
+/// `Ok(None)` when nothing was written and the selection is back as captured (the app doesn't let
+/// SuperEditr move its selection, or the field doesn't line up with the edits): the caller then
+/// replaces the whole selection. Once an edit is written there is no going back: a later failure
+/// stops and reports a partial fix.
+fn replace_in_place(
+    capture: &Capture,
+    element: &Element,
+    text: &str,
+    edits: &[supereditr_core::edits::Edit],
+) -> Result<Option<ReplaceMethod>, PlatformError> {
+    let started = Instant::now();
+    let fallback = |reason: &str| {
+        trace(format_args!("{}: applying the whole selection: {reason}", capture.bundle_id));
+        Ok(None)
+    };
+    let stopped = |applied: usize, reason: &str| {
+        trace(format_args!(
+            "{}: applied in place partly: {applied} of {} edits, then {reason}",
+            capture.bundle_id,
+            edits.len()
+        ));
+        // With nothing applied, the first edit may still have landed unseen.
+        Err(if applied == 0 {
+            PlatformError::Unverified
+        } else {
+            PlatformError::Partial { applied, total: edits.len() }
+        })
+    };
+    // The selection as the app counts positions in it, still as captured (`replace` checked).
+    let (Some(range), Some(selected), Some(before)) =
+        (element.range("AXSelectedTextRange"), element.string("AXSelectedText"), element.string("AXValue"))
+    else {
+        return fallback("the field doesn't report its text or selection");
+    };
+    let (location, length) = (range.location.max(0) as usize, range.length.max(0) as usize);
+    // Where each edit is, checked against the selection before anything moves.
+    let Some(places) =
+        edits.iter().map(|edit| place(edit, &capture.text, &selected, location)).collect::<Option<Vec<_>>>()
+    else {
+        return fallback("the field's text doesn't line up with the changes");
+    };
+    // Selects `text` at `start` and confirms it by reading the selection back.
+    let select_text = |start: usize, text: &str| {
+        set_selection(element, start, text.encode_utf16().count())
+            && wait_until(Duration::from_millis(200), || element.string("AXSelectedText").as_deref() == Some(text))
+    };
+    // Selects the text an edit checks; for an insertion, then puts the caret in place.
+    let select = |place: &Place| {
+        select_text(place.check, &place.text) && (place.start != place.end || set_selection(element, place.start, 0))
+    };
+    let restore = || {
+        set_selection(element, location, length)
+            && wait_until(Duration::from_millis(200), || selection_unchanged(capture))
+    };
+    if !select(&places[0]) {
+        if !restore() {
+            trace(format_args!("{}: in place: the selection couldn't be put back", capture.bundle_id));
+            return Err(PlatformError::Stale);
+        }
+        return fallback("the app doesn't let SuperEditr move the selection");
+    }
+    let native = !capture.web && element.settable("AXSelectedText");
+    for (i, (edit, place)) in edits.iter().zip(&places).enumerate() {
+        if i > 0 && !(field_focused(capture, element) && select(place)) {
+            return stopped(i, "the text to fix no longer matched");
+        }
+        let value = element.string("AXValue");
+        let wrote = if native {
+            element.set("AXSelectedText", CFString::new(&edit.new).as_CFTypeRef())
+        } else {
+            type_text(capture.pid, &edit.new)
+        };
+        // Landed once the field changes and what was written reads back where it should be.
+        let landed = wrote
+            && wait_until(Duration::from_millis(250), || element.string("AXValue") != value)
+            && (edit.new.is_empty() || select_text(place.start, &edit.new));
+        if !landed {
+            // Nothing written yet: the whole replace can still go ahead, once the selection is back.
+            if i == 0 && element.string("AXValue").as_deref() == Some(before.as_str()) && restore() {
+                return fallback("the first change didn't land");
+            }
+            return stopped(i, "a change didn't land");
+        }
+    }
+    // The caret after the fixed text, where replacing the whole selection leaves it.
+    let grown: isize =
+        edits.iter().map(|e| e.new.encode_utf16().count() as isize - e.old.encode_utf16().count() as isize).sum();
+    set_selection(element, (location + length).saturating_add_signed(grown), 0);
+    let verified = verify_replacement(element, capture, Some(&before), text, None, Duration::from_millis(150));
+    let code = if capture.code.is_empty() {
+        String::new()
+    } else {
+        let visible = |s: &str| s.chars().filter(|c| !is_invisible(*c)).collect::<String>();
+        let pieces: Vec<String> = code_in(element).code.iter().map(|p| visible(&p.text)).collect();
+        let kept = capture
+            .code
+            .iter()
+            .filter(|&&(s, e)| {
+                let code = visible(&capture.text.chars().skip(s).take(e - s).collect::<String>());
+                pieces.iter().any(|p| p.contains(code.trim()))
+            })
+            .count();
+        format!("; {kept} of {} code spans still code", capture.code.len())
+    };
+    trace(format_args!(
+        "{}: applied in place: {} edits in {} ms by {}; {}{code}",
+        capture.bundle_id,
+        edits.len(),
+        started.elapsed().as_millis(),
+        if native { "Accessibility writes" } else { "typing" },
+        if verified { "verified" } else { "not verified" },
+    ));
+    if !verified {
+        return Err(PlatformError::Unverified);
+    }
+    Ok(Some(if native { ReplaceMethod::Accessibility } else { ReplaceMethod::Typing }))
 }
 
 /// Whether `pid` is the front app, whether SuperEditr's panel still has focus, and whether the
@@ -2000,6 +2311,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn finds_an_edit_in_the_field_text() {
+        // The same text: the edit is where it was read.
+        assert_eq!(field_offset("Their going, realy", "Their going, realy", 13), Some(13));
+        // Chromium's text for a rich field leaves an empty paragraph out.
+        assert_eq!(field_offset("One.\n\nteh end", "One.\nteh end", 6), Some(5));
+        // An editor pads code with zero-width spaces that the read text may not have.
+        assert_eq!(field_offset("run make realy", "run \u{200B}make\u{200B} realy", 9), Some(11));
+        // Offsets are UTF-16 units: an emoji takes two.
+        assert_eq!(field_offset("😀 teh", "😀 teh", 2), Some(3));
+        // Past the end, or on a line break, is nowhere.
+        assert_eq!(field_offset("ab", "ab", 2), None);
+        assert_eq!(field_offset("a\nb", "a\nb", 1), None);
+    }
+
+    #[test]
+    fn places_edits_as_chromium_counts_its_selection() {
+        use supereditr_core::edits::plan;
+        // Read with its line breaks; Chromium's selection has none between blocks, and its code chip
+        // is padded with zero-width spaces.
+        let read = "Hi\n\nthis is \u{200B}code\u{200B}";
+        let selected = "Hithis is \u{200B}code\u{200B}";
+        let edits = plan(read, "Hi\n\nThis is \u{200B}code\u{200B}.", true, &[(13, 17)]).unwrap();
+        let insertion = place(&edits[0], read, selected, 5).unwrap();
+        assert_eq!((insertion.check, insertion.text.as_str(), insertion.start, insertion.end), (16, "code", 21, 21));
+        let replacement = place(&edits[1], read, selected, 5).unwrap();
+        assert_eq!((replacement.check, replacement.start, replacement.end), (7, 7, 11));
+        // A selection that doesn't hold what was read gives no place.
+        assert!(place(&edits[1], read, "Hithat is code", 5).is_none());
+    }
+
+    #[test]
     fn places_code_by_position() {
         let piece = |text: &str, start| CodePiece { text: text.into(), start };
         // The field reads "Fix teh bug in teh parser"; only the second "teh" is code.
@@ -2144,6 +2486,11 @@ mod tests {
     #[test]
     fn leaves_a_value_that_does_not_fit_the_paragraphs() {
         assert_eq!(with_empty_paragraphs("One.\nTwo.", &[4, 0, 5]), None);
+        // A list is one block: its items' line breaks don't count, its markers do.
+        let list = "• This\n• is\n• a\n• list.";
+        let value = format!("This is code.\n{list}");
+        let blocks = [13, 0, list.chars().filter(|c| *c != '\n').count()];
+        assert_eq!(with_empty_paragraphs(&value, &blocks), Some(format!("This is code.\n\n{list}")));
         assert_eq!(with_empty_paragraphs("One.\nTwo.", &[4]), None);
         assert_eq!(with_empty_paragraphs("One.Two.", &[4, 4]), None);
         assert_eq!(with_empty_paragraphs("One.\n\n", &[4, 0]), None);

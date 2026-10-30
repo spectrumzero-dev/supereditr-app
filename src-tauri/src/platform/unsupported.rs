@@ -16,6 +16,12 @@ pub struct Capture {
     pub code: Vec<(usize, usize)>,
 }
 
+impl Capture {
+    pub fn protected(&self) -> Vec<(usize, usize)> {
+        self.code.clone()
+    }
+}
+
 pub fn playground_capture(text: String, bounds: Rect) -> Capture {
     Capture {
         pid: own_pid(),
@@ -87,7 +93,7 @@ pub fn selection_unchanged(_capture: &Capture) -> bool {
     false
 }
 
-pub fn replace(_capture: &Capture, _text: &str) -> Result<ReplaceMethod, PlatformError> {
+pub fn replace(_capture: &Capture, _text: &str, _proofread: bool) -> Result<ReplaceMethod, PlatformError> {
     Err(PlatformError::ReplaceFailed)
 }
 

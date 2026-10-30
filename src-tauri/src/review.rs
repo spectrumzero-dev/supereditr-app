@@ -219,7 +219,15 @@ fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<Strin
             old.cancel();
         }
         state.notice_visible.store(false, Ordering::Relaxed);
-        *session = Some(Session { id, capture: captured, keyboard: !auto, anchor, height: INITIAL_HEIGHT, task: None });
+        *session = Some(Session {
+            id,
+            capture: captured,
+            keyboard: !auto,
+            anchor,
+            height: INITIAL_HEIGHT,
+            task: None,
+            proofread: false,
+        });
     }
     let _ = app.emit_to("overlay", "overlay:session", payload);
     overlay::position(app, anchor, INITIAL_HEIGHT);
@@ -238,6 +246,7 @@ pub fn run(app: &AppHandle, id: u64, preset_id: String, steer: Option<String>) {
     let mut session = state.session.lock().unwrap();
     let Some(current) = session.as_mut().filter(|s| s.id == id) else { return };
     current.cancel();
+    current.proofread = is_proofread(&preset_id, steer.as_deref());
     let job = Job {
         text: current.capture.text.clone(),
         preset,
@@ -246,7 +255,7 @@ pub fn run(app: &AppHandle, id: u64, preset_id: String, steer: Option<String>) {
         style_notes: config.style_notes.clone(),
         dialect: config.dialect.clone(),
         words: config.words.clone(),
-        code: current.capture.code.clone(),
+        code: current.capture.protected(),
         local_checks: true,
         builtin_ai: true,
     };
@@ -265,14 +274,21 @@ pub fn run(app: &AppHandle, id: u64, preset_id: String, steer: Option<String>) {
     }));
 }
 
+/// Whether a run is a plain proofread: the Proofread style with no instruction. Only a proofread is
+/// applied in place; any other style rewrites, and replaces the whole selection.
+fn is_proofread(preset_id: &str, steer: Option<&str>) -> bool {
+    preset_id == "proofread" && steer.is_none_or(|s| s.trim().is_empty())
+}
+
 /// Writes the accepted text back into the source app.
 pub async fn apply(app: &AppHandle, id: u64, text: String) -> Result<String, String> {
     let state = state(app);
-    let captured = {
+    let keep_formatting = state.config().keep_formatting;
+    let (captured, proofread) = {
         let mut session = state.session.lock().unwrap();
         let current = session.as_mut().filter(|s| s.id == id).ok_or("This review has ended.")?;
         current.cancel();
-        current.capture.clone()
+        (current.capture.clone(), current.proofread && keep_formatting)
     };
     overlay::hide(app);
     crate::hotkeys::set_overlay_shortcuts(app, false);
@@ -287,7 +303,7 @@ pub async fn apply(app: &AppHandle, id: u64, text: String) -> Result<String, Str
         if captured.text == text {
             return Ok(None);
         }
-        platform::replace(&captured, &text).map(Some).inspect_err(|_| {
+        platform::replace(&captured, &text, proofread).map(Some).inspect_err(|_| {
             platform::copy_to_clipboard(&text);
         })
     })
@@ -384,7 +400,7 @@ pub async fn quick_fix(app: &AppHandle) {
         style_notes: config.style_notes.clone(),
         dialect: config.dialect.clone(),
         words: config.words.clone(),
-        code: captured.code.clone(),
+        code: captured.protected(),
         local_checks: true,
         builtin_ai: true,
     };
@@ -408,7 +424,8 @@ pub async fn quick_fix(app: &AppHandle) {
     }
     *state.quiet_until.lock().unwrap() = Instant::now() + Duration::from_millis(800);
     let text = revised.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || platform::replace(&captured, &text)).await;
+    let proofread = config.keep_formatting && is_proofread(&config.default_preset().id, None);
+    let result = tauri::async_runtime::spawn_blocking(move || platform::replace(&captured, &text, proofread)).await;
     if let Ok(Err(error)) = result {
         platform::copy_to_clipboard(&revised);
         show_error(app, error.to_string());

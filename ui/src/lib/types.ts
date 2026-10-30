@@ -89,6 +89,8 @@ export interface Config {
   auto_min_chars: number;
   /** With nothing selected, the shortcuts select and review the sentence before the cursor. */
   select_sentence: boolean;
+  /** Apply a proofread by changing only the words it fixes, keeping the formatting around them. */
+  keep_formatting: boolean;
   /** Names and terms to keep exactly as written: a word or a phrase. */
   words: string[];
   excluded_apps: string[];

@@ -34,6 +34,9 @@ pub struct Session {
     pub anchor: Option<Rect>,
     pub height: f64,
     pub task: Option<tauri::async_runtime::JoinHandle<()>>,
+    /// The latest run is a plain proofread (no other style, no instruction), which is applied in
+    /// place where the app allows it.
+    pub proofread: bool,
 }
 
 impl Session {

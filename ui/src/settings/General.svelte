@@ -47,6 +47,13 @@
       </div>
       <input type="checkbox" class="switch" bind:checked={config.select_sentence} onchange={onchange} />
     </div>
+    <div class="row">
+      <div>
+        <div class="label">Keep formatting when applying fixes</div>
+        <div class="hint">Proofread fixes change only the words that need fixing, so code, bold and links stay as they are. Undo takes one step per fix.</div>
+      </div>
+      <input type="checkbox" class="switch" bind:checked={config.keep_formatting} onchange={onchange} />
+    </div>
     <div class="row keys">
       <div class="label">In the suggestion panel</div>
       <div class="cheats">

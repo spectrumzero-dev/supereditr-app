@@ -326,16 +326,25 @@ fn visible_count(text: &str) -> usize {
     text.chars().filter(|c| !is_line_break(*c)).count()
 }
 
+/// What [`code_in`] found in a web field.
+struct Formatting {
+    code: Vec<CodePiece>,
+    /// The field has formatting a plain-text replace would lose: code, a link, a list or a heading.
+    any: bool,
+}
+
 /// The elements in a web field marked as code (`<code>`, which WebKit and Chromium give the
-/// subrole `AXCodeStyleGroup`), in order. The log gets the count and the subroles seen, never the
-/// text, so a field whose code goes unnoticed can be diagnosed.
-fn code_in(field: &Element) -> Vec<CodePiece> {
+/// subrole `AXCodeStyleGroup`), in order, and whether it has other formatting. The log gets the
+/// count and the subroles seen, never the text, so a field whose code goes unnoticed can be
+/// diagnosed.
+fn code_in(field: &Element) -> Formatting {
     struct Walk {
         started: Instant,
         budget: usize,
         seen: usize,
         subroles: BTreeSet<String>,
         code: Vec<CodePiece>,
+        formatted: bool,
     }
     fn walk(element: &Element, depth: usize, state: &mut Walk) {
         for child in element.children() {
@@ -345,6 +354,9 @@ fn code_in(field: &Element) -> Vec<CodePiece> {
             }
             state.budget -= 1;
             let subrole = child.string("AXSubrole");
+            let role = child.string("AXRole");
+            state.formatted |= matches!(role.as_deref(), Some("AXLink" | "AXList" | "AXHeading"))
+                || subrole.as_deref().is_some_and(|s| s.ends_with("StyleGroup"));
             if subrole.as_deref() == Some("AXCodeStyleGroup") {
                 let text = static_text(&child, 0);
                 let length = visible_count(&text);
@@ -352,7 +364,7 @@ fn code_in(field: &Element) -> Vec<CodePiece> {
                     state.code.push(CodePiece { text, start: state.seen });
                 }
                 state.seen += length;
-            } else if child.string("AXRole").as_deref() == Some("AXStaticText") {
+            } else if role.as_deref() == Some("AXStaticText") {
                 state.seen += child.string("AXValue").map_or(0, |v| visible_count(&v));
             } else if depth < 8 {
                 walk(&child, depth + 1, state);
@@ -363,7 +375,8 @@ fn code_in(field: &Element) -> Vec<CodePiece> {
     // A composer has a few dozen elements. A bigger field stops after 1,500 or 150 ms: each is a
     // call to the app, which can be slow while it is busy.
     let started = Instant::now();
-    let mut state = Walk { started, budget: 1500, seen: 0, subroles: BTreeSet::new(), code: Vec::new() };
+    let mut state =
+        Walk { started, budget: 1500, seen: 0, subroles: BTreeSet::new(), code: Vec::new(), formatted: false };
     walk(field, 0, &mut state);
     trace(format_args!(
         "code in the field: {} pieces in {:?}{}; subroles {}",
@@ -372,7 +385,7 @@ fn code_in(field: &Element) -> Vec<CodePiece> {
         if state.budget == 0 { " (stopped early)" } else { "" },
         state.subroles.into_iter().collect::<Vec<_>>().join(", ")
     ));
-    state.code
+    Formatting { code: state.code, any: state.formatted }
 }
 
 /// Character ranges of `text`, the selection, that the app formats as code. `selection_start` is
@@ -626,6 +639,9 @@ pub struct Capture {
     /// Character ranges of `text` the app formats as code, whose backticks are gone from `text`:
     /// reviews leave them as written.
     pub code: Vec<(usize, usize)>,
+    /// A web field with formatting (code, a link, a list or a heading) that replacing the whole
+    /// selection could lose, so a proofread there is worth applying in place.
+    formatted: bool,
 }
 
 /// A capture of text in Settings' "Try it now" box, anchored at `bounds` (screen points).
@@ -642,6 +658,7 @@ pub fn playground_capture(text: String, bounds: Rect) -> Capture {
         range: None,
         playground: true,
         code: Vec::new(),
+        formatted: false,
     }
 }
 
@@ -895,12 +912,13 @@ fn capture_ax(app: &Element, pid: i32, bundle_id: &str, app_name: &str) -> Resul
     // Only a text field is searched for code: when the selection is read from a whole page, the
     // page can have thousands of elements.
     let field = matches!(element.string("AXRole").as_deref(), Some("AXTextArea" | "AXTextField"));
-    let code = if web && field {
+    let (code, formatted) = if web && field {
         let selection_start =
             range.and_then(|r| element.string("AXValue").and_then(|value| visible_before(&value, r.location)));
-        code_ranges(&text, selection_start, &code_in(&element))
+        let found = code_in(&element);
+        (code_ranges(&text, selection_start, &found.code), found.any)
     } else {
-        Vec::new()
+        (Vec::new(), false)
     };
     let plausible = |r: &CGRect| r.size.width > 0.5 && r.size.height > 0.5 && r.size.height < 2000.0;
     let bounds = range
@@ -921,6 +939,7 @@ fn capture_ax(app: &Element, pid: i32, bundle_id: &str, app_name: &str) -> Resul
         range: range.map(|r| (r.location, r.length)),
         playground: false,
         code,
+        formatted,
     })
 }
 
@@ -1148,6 +1167,7 @@ fn capture_clipboard(app: &Element, pid: i32, bundle_id: String, app_name: Strin
         range: None,
         playground: false,
         code: Vec::new(),
+        formatted: false,
     })
 }
 
@@ -1181,14 +1201,26 @@ pub fn replace(capture: &Capture, text: &str, proofread: bool) -> Result<Replace
             ));
             return Err(PlatformError::Stale);
         }
-        match supereditr_core::edits::plan(&capture.text, text, proofread, &capture.code) {
-            Ok(edits) if !edits.is_empty() => {
+        // In a web field each edit visibly moves the selection, so plain text is replaced in one go,
+        // which is quicker; an Accessibility write in a native field takes milliseconds.
+        let plan = if capture.web && proofread && !capture.formatted {
+            trace(format_args!(
+                "{}: applying the whole selection: the field has no formatting to keep",
+                capture.bundle_id
+            ));
+            None
+        } else {
+            Some(supereditr_core::edits::plan(&capture.text, text, proofread, &capture.code))
+        };
+        match plan {
+            None => {}
+            Some(Ok(edits)) if !edits.is_empty() => {
                 if let Some(method) = replace_in_place(capture, element, text, &edits)? {
                     return Ok(method);
                 }
             }
-            Ok(_) => {}
-            Err(reason) => trace(format_args!("{}: applying the whole selection: {reason}", capture.bundle_id)),
+            Some(Ok(_)) => {}
+            Some(Err(reason)) => trace(format_args!("{}: applying the whole selection: {reason}", capture.bundle_id)),
         }
         if !capture.web && element.settable("AXSelectedText") {
             let before = element.string("AXValue");
@@ -1630,7 +1662,7 @@ fn replace_in_place(
     let code = if capture.code.is_empty() {
         String::new()
     } else {
-        let pieces = code_in(element);
+        let pieces = code_in(element).code;
         let kept = capture
             .code
             .iter()

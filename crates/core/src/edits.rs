@@ -12,7 +12,7 @@ use std::fmt;
 use unicode_segmentation::UnicodeSegmentation;
 
 /// The most edits applied in place. More than that replaces the whole selection.
-pub const MAX_EDITS: usize = 8;
+pub const MAX_EDITS: usize = 4;
 /// The longest text, in characters, an edit may replace or write.
 const MAX_EDIT_LENGTH: usize = 40;
 
@@ -213,11 +213,11 @@ mod tests {
 
     #[test]
     fn more_than_the_cap_replaces_the_whole_selection() {
-        let original = "teh a teh b teh c teh d teh e teh f teh g teh h teh i";
+        let original = "teh a teh b teh c teh d teh e";
         let revised = original.replace("teh", "the");
-        assert_eq!(plan(original, &revised, true, &[]), Err(Whole::TooMany(9)));
-        let eight = "teh a teh b teh c teh d teh e teh f teh g teh h";
-        assert_eq!(plan(eight, &eight.replace("teh", "the"), true, &[]).map(|e| e.len()), Ok(MAX_EDITS));
+        assert_eq!(plan(original, &revised, true, &[]), Err(Whole::TooMany(5)));
+        let four = "teh a teh b teh c teh d";
+        assert_eq!(plan(four, &four.replace("teh", "the"), true, &[]).map(|e| e.len()), Ok(MAX_EDITS));
     }
 
     #[test]

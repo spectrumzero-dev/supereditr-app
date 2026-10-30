@@ -87,7 +87,7 @@ pub fn selection_unchanged(_capture: &Capture) -> bool {
     false
 }
 
-pub fn replace(_capture: &Capture, _text: &str) -> Result<ReplaceMethod, PlatformError> {
+pub fn replace(_capture: &Capture, _text: &str, _proofread: bool) -> Result<ReplaceMethod, PlatformError> {
     Err(PlatformError::ReplaceFailed)
 }
 

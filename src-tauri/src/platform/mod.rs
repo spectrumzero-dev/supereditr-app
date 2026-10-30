@@ -49,6 +49,11 @@ pub enum PlatformError {
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     #[error("SuperEditr couldn’t confirm the change. Check the text; the suggestion is on your clipboard.")]
     Unverified,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[error(
+        "SuperEditr applied {applied} of {total} fixes, then stopped because the text no longer matched. Check the text; the full suggestion is on your clipboard."
+    )]
+    Partial { applied: usize, total: usize },
     #[error("{0}")]
     Other(String),
 }

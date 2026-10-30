@@ -6,15 +6,16 @@
 // puts the text back. The smoke test reads the output and presses the button through Accessibility.
 
 import { Editor } from "@tiptap/core";
+import { DOMParser as ProseMirrorParser } from "@tiptap/pm/model";
 import StarterKit from "@tiptap/starter-kit";
 import { $getRoot, createEditor } from "lexical";
 import { registerRichText, HeadingNode, QuoteNode } from "@lexical/rich-text";
 import { LinkNode } from "@lexical/link";
 import { $generateNodesFromDOM } from "@lexical/html";
 
-// The text, by paragraph: a typo the rule-based checker fixes ("Their going"), code at both ends of
-// the first paragraph (one holds a typo of its own the review must leave alone), bold, a link, and
-// an empty paragraph.
+// The text, by paragraph: two typos the rule-based checker fixes ("Their going", "realy"), code at
+// both ends of the first paragraph (one holds a typo of its own the review must leave alone), bold, a
+// link, and an empty paragraph.
 const DOC = [
   [
     { code: "teh fix" },
@@ -22,7 +23,7 @@ const DOC = [
     { bold: "today" },
     ". Read ",
     { link: "the notes", href: "https://example.com/notes" },
-    " and run ",
+    " and realy run ",
     { code: "their going to work" },
   ],
   [],
@@ -86,7 +87,8 @@ field("code", "Editable div (pastes HTML)", (host) => {
 
 // Like Claude's desktop composer, a ProseMirror editor that pastes from the plain text only, reads
 // it as Markdown, and pads inline code with a zero-width space on each side. Each line of the
-// pasted text becomes a paragraph, an empty line an empty one.
+// pasted text becomes a paragraph, an empty line an empty one; as in ProseMirror's own paste, a
+// single line goes into the paragraph at the selection rather than starting a new one.
 field("markdown", "Markdown composer (plain-text paste)", (host) => {
   const markdownLine = (line) =>
     escape(line).replace(/(`+)(.+?)\1(?!`)/g, (_, fence, code) => {
@@ -99,10 +101,12 @@ field("markdown", "Markdown composer (plain-text paste)", (host) => {
     content: html({ pad: true }),
     editorProps: {
       attributes: { class: "editor" },
-      handlePaste: (_view, event) => {
+      handlePaste: (view, event) => {
         const text = event.clipboardData?.getData("text/plain") ?? "";
-        const pasted = text.split(/\r?\n/).map((line) => `<p>${line ? markdownLine(line) : ""}</p>`).join("");
-        editor.commands.insertContent(pasted, { parseOptions: { preserveWhitespace: "full" } });
+        const dom = document.createElement("div");
+        dom.innerHTML = text.split(/\r?\n/).map((line) => `<p>${line ? markdownLine(line) : ""}</p>`).join("");
+        const slice = ProseMirrorParser.fromSchema(view.state.schema).parseSlice(dom, { preserveWhitespace: "full" });
+        view.dispatch(view.state.tr.replaceSelection(slice).scrollIntoView());
         return true;
       },
     },

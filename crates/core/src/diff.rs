@@ -192,8 +192,13 @@ fn borders(start: usize, len: usize, spans: &[(usize, usize)]) -> bool {
 /// Only spaces, line breaks and invisible characters: zero-width spaces and joiners, word joiners,
 /// byte order marks and object replacement characters.
 fn blank(text: &str) -> bool {
-    text.chars()
-        .all(|c| c.is_whitespace() || matches!(c, '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}' | '\u{FFFC}'))
+    text.chars().all(|c| c.is_whitespace() || is_invisible(c))
+}
+
+/// Zero-width spaces and joiners, word joiners, byte order marks and object replacement
+/// characters: editors put them around formatted text.
+pub(crate) fn is_invisible(c: char) -> bool {
+    matches!(c, '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}' | '\u{FFFC}')
 }
 
 /// Where each of `ranges` (character ranges of `original` that a revision left as they were) is in

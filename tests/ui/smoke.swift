@@ -26,6 +26,14 @@ func check(_ ok: Bool, _ name: String, _ detail: @autoclosure () -> String = "")
     log("\(ok ? "PASS" : "FAIL") \(name)\(ok ? "" : ": \(detail())")")
     if !ok { failures.append(name) }
 }
+/// SuperEditr's last line about how it applied a fix in the app: in place, partly in place, or the
+/// whole selection and why. "none" before the first.
+var captureLogPath = ""
+func appliedPath(_ bundleID: String) -> String {
+    let lines = (try? String(contentsOfFile: captureLogPath, encoding: .utf8))?.split(separator: "\n") ?? []
+    let path = lines.last { $0.contains("\(bundleID): appl") }.map(String.init) ?? "none"
+    return path.split(separator: " ", maxSplits: 1).last.map(String.init) ?? path  // without the timestamp
+}
 func skipEnvironment(_ reason: String) -> Never {
     log("SKIP \(reason)")
     finish(78)
@@ -372,6 +380,7 @@ let work = NSTemporaryDirectory() + "supereditr-smoke-\(getpid())"
 let home = work + "/home"
 try? FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
 cleanups.append { try? FileManager.default.removeItem(atPath: work) }
+captureLogPath = home + "/Library/Logs/SuperEditr/capture.log"
 let support = home + "/Library/Application Support/com.sghael.supereditr"
 let status = support + "/status.json"
 let draft = work + "/draft.txt"
@@ -810,11 +819,15 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         // The composer matrix: the same text in an editable div that pastes HTML, a Markdown composer
         // like Claude's desktop app (it pastes from the plain text alone, reads it as Markdown, and pads
         // code with zero-width spaces), and two open-source editors chat and issue-tracker composers are
-        // built on (tests/ui/composers). Each field holds a typo to fix, code at both ends of its first
-        // paragraph (one with a typo of its own), bold, a link and an empty paragraph, and is reviewed
-        // once. Bold and links don't survive the fix yet: those log a NOTE rather than fail.
+        // built on (tests/ui/composers). Each field holds two typos to fix, code at both ends of its
+        // first paragraph (one with a typo of its own), bold, a link and an empty paragraph, and is
+        // reviewed once. A proofread is applied in place, one edit per change, where the field lets
+        // SuperEditr move its selection; the log says which way it went, and a field that took the
+        // whole replace is a NOTE. Bold and links don't survive the whole replace: those log a NOTE
+        // rather than fail.
         let composerFields = [("code", "editable div"), ("markdown", "Markdown composer"), ("tiptap", "TipTap"), ("lexical", "Lexical")]
         let codes = ["teh fix", "their going to work"], composerTypo = "Their going to love"
+        let composerFixes = ["They're going to love", "really run"]
         let visible = { (text: String) in String(text.unicodeScalars.filter { !["\u{200B}", "\u{2060}", "\u{FEFF}"].contains($0) }) }
         func chromeElement(_ id: String) -> AXUIElement? {
             guard let ours = launchedSinceStart(chrome).last else { return nil }
@@ -888,6 +901,11 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                     return state["typo"] == "0" ? state : nil
                 } ?? composerState(id)
                 expect(value != nil, "fixed", "↩ writes the fix", "the field reads \(String(reflecting: attribute(field, kAXValueAttribute) as? String ?? ""))")
+                expect(composerFixes.allSatisfy(visible(value ?? "").contains), "both fixes", "both changes are applied",
+                       "the field reads \(String(reflecting: value ?? ""))")
+                let path = appliedPath("com.google.Chrome")
+                log("NOTE \(name): \(path)")
+                row.append(path.contains("applied in place:") ? "in place" : "whole")
                 expect(codes.allSatisfy(visible(value ?? "").contains), "code kept", "the code is left as written",
                        "the field reads \(String(reflecting: value ?? ""))")
                 expect(state["code"] == codes.joined(separator: "|"), "code format", "the code is still formatted as code",
@@ -977,7 +995,33 @@ for (index, how) in ["directly", "after closing the instruction box"].enumerated
     quitOpened("com.apple.TextEdit")
 }
 
-// 6e. With nothing selected, ⌘E E selects the sentence before the caret, visibly, and reviews it.
+// 6e. A proofread with two changes is applied in place in TextEdit: two Accessibility writes, each
+// replacing only the word it fixes, and the text around them as it was.
+let twoTypos = work + "/two-typos.txt"
+try! "Their going to love this, it is realy fast.".write(toFile: twoTypos, atomically: true, encoding: .utf8)
+check(openFront("TextEdit", bundleID: "com.apple.TextEdit", file: twoTypos), "TextEdit opens the draft with two typos")
+check(selectAll(), "the draft with two typos is selected")
+press(keyE, .maskCommand)
+pump(0.1)
+press(keyE, .maskCommand)
+let twoPanel = waitFor(5) { overlay() }
+check(twoPanel != nil, "⌘E E reviews the draft with two typos", "no overlay within 5 s")
+if twoPanel != nil {
+    _ = waitFor(4) { panelText().range(of: #"\breplace\b"#, options: .regularExpression) != nil ? true : nil }
+    press(keyReturn)
+    _ = waitFor(3) { overlay() == nil ? true : nil }
+    let fixed = "They're going to love this, it is really fast."
+    let value = waitFor(3) { () -> String? in
+        let value = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
+        return value == fixed ? value : nil
+    }
+    check(value != nil, "both fixes land in TextEdit", "TextEdit reads \(String(reflecting: focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""))")
+    let path = appliedPath("com.apple.TextEdit")
+    check(path.contains("applied in place: 2 edits"), "TextEdit applies the proofread in place", "the log says: \(path)")
+}
+quitOpened("com.apple.TextEdit")
+
+// 6f. With nothing selected, ⌘E E selects the sentence before the caret, visibly, and reviews it.
 let caretDraft = work + "/caret.txt"
 try! "We met at noon. Their going to love this, it work good.".write(toFile: caretDraft, atomically: true, encoding: .utf8)
 check(openFront("TextEdit", bundleID: "com.apple.TextEdit", file: caretDraft), "TextEdit opens the caret draft")

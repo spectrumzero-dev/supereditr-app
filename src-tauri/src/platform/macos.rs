@@ -1159,8 +1159,11 @@ pub fn selection_unchanged(capture: &Capture) -> bool {
     }
 }
 
-/// Replaces the captured selection with `text`, verifying the result where the app allows it.
-pub fn replace(capture: &Capture, text: &str) -> Result<ReplaceMethod, PlatformError> {
+/// Replaces the captured selection with `text`, verifying the result where the app allows it. A
+/// `proofread` with a few local changes is applied in place, one edit per change, so formatting
+/// around them is never touched; anything else, or an app that doesn't let SuperEditr move the
+/// selection, replaces the whole selection.
+pub fn replace(capture: &Capture, text: &str, proofread: bool) -> Result<ReplaceMethod, PlatformError> {
     if !accessibility_trusted(false) {
         return Err(PlatformError::NotTrusted);
     }
@@ -1177,6 +1180,15 @@ pub fn replace(capture: &Capture, text: &str) -> Result<ReplaceMethod, PlatformE
                 capture.bundle_id, !still_focused
             ));
             return Err(PlatformError::Stale);
+        }
+        match supereditr_core::edits::plan(&capture.text, text, proofread, &capture.code) {
+            Ok(edits) if !edits.is_empty() => {
+                if let Some(method) = replace_in_place(capture, element, text, &edits)? {
+                    return Ok(method);
+                }
+            }
+            Ok(_) => {}
+            Err(reason) => trace(format_args!("{}: applying the whole selection: {reason}", capture.bundle_id)),
         }
         if !capture.web && element.settable("AXSelectedText") {
             let before = element.string("AXValue");
@@ -1272,9 +1284,67 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
     let code = supereditr_core::diff::carry_ranges(&capture.text, text, &capture.code);
     let html = (!code.is_empty()).then(|| html_with_code(text, &code));
     let plain = if code.is_empty() { text.to_string() } else { markdown_with_code(text, &code) };
-    let ours = pasteboard::write_transient_string(&plain, html.as_deref());
     let window = key_window_state(capture.pid);
     let started = Instant::now();
+    let pasted = paste_and_check(
+        capture,
+        element,
+        &plain,
+        html.as_deref(),
+        || element.string("AXValue") == before && selection_unchanged(capture),
+        |wait| verify_replacement(element, capture, before.as_deref(), text, Some(&plain), wait),
+    );
+    trace(format_args!(
+        "{}: pasted {} characters with {} ({} {}), {window}; {} after {:?}, field value {}",
+        capture.bundle_id,
+        text.chars().count(),
+        pasted.how,
+        pasted.attempts,
+        if pasted.attempts == 1 { "attempt" } else { "attempts" },
+        if pasted.landed { "verified" } else { "not verified" },
+        started.elapsed(),
+        if element.string("AXValue") == before { "unchanged" } else { "changed" },
+    ));
+    if html.is_some() {
+        // Whether the editor kept the code as code: the walk logs what the field now has.
+        trace(format_args!(
+            "{}: pasted {} of {} code spans as HTML",
+            capture.bundle_id,
+            code.len(),
+            capture.code.len()
+        ));
+        code_in(element);
+    }
+    if !pasted.landed {
+        // The paste may still land late. Leave the suggestion on the clipboard rather than
+        // restoring, so a late paste can't insert the user's old clipboard instead.
+        return Err(PlatformError::Unverified);
+    }
+    restore_clipboard(snapshot, pasted.ours);
+    Ok(ReplaceMethod::Paste)
+}
+
+/// What [`paste_and_check`] did.
+struct Pasted {
+    landed: bool,
+    how: &'static str,
+    attempts: usize,
+    /// The clipboard's change count once SuperEditr's text was on it.
+    ours: isize,
+}
+
+/// Puts `plain` (and `html`) on the clipboard and pastes it into the app until `landed` confirms it,
+/// waiting up to the given time. Retries only while `untouched` says the field and selection are as
+/// they were before the paste.
+fn paste_and_check(
+    capture: &Capture,
+    element: &Element,
+    plain: &str,
+    html: Option<&str>,
+    untouched: impl Fn() -> bool,
+    landed: impl Fn(Duration) -> bool,
+) -> Pasted {
+    let ours = pasteboard::write_transient_string(plain, html);
     // The app's own Paste menu item first. The app can be left without a key window (after the
     // panel had focus for an instruction, or the user clicked it); browsers and Electron apps then
     // drop a posted ⌘V, but a menu item acts on the app's main window.
@@ -1294,59 +1364,285 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
     // selection are untouched: a slow paste that did land replaces the selection, so it is never
     // pasted twice. Other apps get one paste and the full wait.
     let windows: &[u64] = if is_chromium_based(&capture.bundle_id, capture.pid) { &[250, 500, 600] } else { &[600] };
-    let mut how = "";
-    let mut attempts = 0;
-    let mut landed = false;
+    let mut pasted = Pasted { landed: false, how: "", attempts: 0, ours };
     for (i, wait) in windows.iter().enumerate() {
         // Retry only while focus is still in the field, and the field, the selection and the
         // clipboard (still our text) are as left.
-        if i > 0
-            && (!field_focused(capture, element)
-                || element.string("AXValue") != before
-                || !selection_unchanged(capture)
-                || pasteboard::change_count() != ours)
-        {
+        if i > 0 && (!field_focused(capture, element) || !untouched() || pasteboard::change_count() != ours) {
             break;
         }
-        how = press();
-        attempts += 1;
-        landed =
-            verify_replacement(element, capture, before.as_deref(), text, Some(&plain), Duration::from_millis(*wait));
-        if landed {
+        pasted.how = press();
+        pasted.attempts += 1;
+        pasted.landed = landed(Duration::from_millis(*wait));
+        if pasted.landed {
             break;
         }
     }
-    trace(format_args!(
-        "{}: pasted {} characters with {how} ({attempts} {}), {window}; {} after {:?}, field value {}",
-        capture.bundle_id,
-        text.chars().count(),
-        if attempts == 1 { "attempt" } else { "attempts" },
-        if landed { "verified" } else { "not verified" },
-        started.elapsed(),
-        if element.string("AXValue") == before { "unchanged" } else { "changed" },
-    ));
-    if html.is_some() {
-        // Whether the editor kept the code as code: the walk logs what the field now has.
-        trace(format_args!(
-            "{}: pasted {} of {} code spans as HTML",
-            capture.bundle_id,
-            code.len(),
-            capture.code.len()
-        ));
-        code_in(element);
-    }
-    if !landed {
-        // The paste may still land late. Leave the suggestion on the clipboard rather than
-        // restoring, so a late paste can't insert the user's old clipboard instead.
-        return Err(PlatformError::Unverified);
-    }
-    // Give the app a moment to finish reading the pasteboard. A newer copy from another app always
-    // wins over the restore.
+    pasted
+}
+
+/// Puts the user's clipboard back once the app has had a moment to finish reading SuperEditr's
+/// text. A newer copy from another app (anything since `ours`) always wins over the restore.
+fn restore_clipboard(snapshot: pasteboard::Snapshot, ours: isize) {
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(120));
         snapshot.restore_if_unchanged_since(ours);
     });
-    Ok(ReplaceMethod::Paste)
+}
+
+// --- Applying in place ------------------------------------------------------------------------
+
+/// How SuperEditr moves the selection in a field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mover {
+    /// `AXSelectedTextRange`: native text views, and Chromium's fields where it accepts it.
+    Range,
+    /// `AXSelectedTextMarkerRange` built from `AXTextMarkerForIndex`: WebKit and Chromium content.
+    Marker,
+}
+
+/// Where the edit at character `start` of `captured` (the selection as SuperEditr read it) starts in
+/// `selected` (the same selection in the field's own text), in UTF-16 units. The two can differ in
+/// line breaks (Chromium leaves empty paragraphs out of a field's text) and in the zero-width
+/// characters editors pad formatting with, so both are skipped when counting. None when `start` is
+/// past the text or sits on a skipped character.
+fn field_offset(captured: &str, selected: &str, start: usize) -> Option<usize> {
+    let skipped = |c: char| is_line_break(c) || is_invisible(c);
+    let before = captured.chars().take(start).filter(|c| !skipped(*c)).count();
+    if captured.chars().nth(start).is_none_or(skipped) {
+        return None;
+    }
+    let mut seen = 0;
+    let mut offset = 0;
+    for c in selected.chars() {
+        if !skipped(c) {
+            if seen == before {
+                return Some(offset);
+            }
+            seen += 1;
+        }
+        offset += c.len_utf16();
+    }
+    None
+}
+
+/// `value` with UTF-16 units `start..end` replaced by `new`.
+fn spliced(value: &str, start: usize, end: usize, new: &str) -> Option<String> {
+    let units: Vec<u16> = value.encode_utf16().collect();
+    let mut out = units.get(..start)?.to_vec();
+    out.extend(new.encode_utf16());
+    out.extend_from_slice(units.get(end..)?);
+    String::from_utf16(&out).ok()
+}
+
+impl Element {
+    /// The selected text exactly as the app reports it, without [`Element::selected_text`]'s repairs.
+    fn raw_selected_text(&self) -> Option<String> {
+        self.string("AXSelectedText").or_else(|| self.marker_selection().map(|(text, _)| text))
+    }
+
+    /// Moves the selection to UTF-16 units `start..end` of the field's text, without waiting.
+    fn move_selection(&self, mover: Mover, start: usize, end: usize) -> bool {
+        match mover {
+            Mover::Range => {
+                let range = CFRange { location: start as isize, length: (end - start) as isize };
+                let value = unsafe { AXValueCreate(kAXValueCFRangeType, &range as *const CFRange as *const c_void) };
+                if value.is_null() {
+                    return false;
+                }
+                let value = unsafe { CFType::wrap_under_create_rule(value) };
+                self.set("AXSelectedTextRange", value.as_CFTypeRef())
+            }
+            Mover::Marker => {
+                let marker = |index: usize| {
+                    let index = core_foundation::number::CFNumber::from(index as i64);
+                    self.parameterized("AXTextMarkerForIndex", index.as_CFTypeRef())
+                };
+                let (Some(from), Some(to)) = (marker(start), marker(end)) else { return false };
+                let pair = core_foundation::array::CFArray::from_CFTypes(&[from, to]);
+                self.parameterized("AXTextMarkerRangeForUnorderedTextMarkers", pair.as_CFTypeRef())
+                    .is_some_and(|range| self.set("AXSelectedTextMarkerRange", range.as_CFTypeRef()))
+            }
+        }
+    }
+
+    /// Selects UTF-16 units `start..start + expected` and confirms, by reading the selection back,
+    /// that it holds `expected`.
+    fn select_text(&self, mover: Mover, start: usize, expected: &str) -> bool {
+        if !self.move_selection(mover, start, start + expected.encode_utf16().count()) {
+            return false;
+        }
+        wait_until(Duration::from_millis(200), || self.raw_selected_text().as_deref() == Some(expected))
+    }
+}
+
+/// Polls `done` until it holds or `wait` runs out.
+fn wait_until(wait: Duration, done: impl Fn() -> bool) -> bool {
+    let deadline = Instant::now() + wait;
+    loop {
+        if done() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Whether the field's text reads `expected`, ignoring the zero-width characters editors add.
+fn value_is(element: &Element, expected: &str) -> bool {
+    let visible = |s: &str| s.chars().filter(|c| !is_invisible(*c)).collect::<String>();
+    element.string("AXValue").is_some_and(|value| visible(&value) == visible(expected))
+}
+
+/// Applies a proofread as `edits` (last first), each replacing only the words it changed: an
+/// Accessibility write in a native field, a paste in a web one. Before each write the selection is
+/// moved to the edit and read back; after the last, the field is checked for `text`.
+///
+/// `Ok(None)` when nothing was written and the selection is back as captured: the app doesn't let
+/// SuperEditr move its selection, or the field's text doesn't line up with the edits. The caller
+/// then replaces the whole selection. Once an edit is written there is no going back to the whole
+/// replace: a later failure stops and reports a partial fix.
+fn replace_in_place(
+    capture: &Capture,
+    element: &Element,
+    text: &str,
+    edits: &[supereditr_core::edits::Edit],
+) -> Result<Option<ReplaceMethod>, PlatformError> {
+    let started = Instant::now();
+    let fallback = |reason: &str| {
+        trace(format_args!("{}: applying the whole selection: {reason}", capture.bundle_id));
+        Ok(None)
+    };
+    let (Some((location, length)), Some(before)) = (capture.range, element.string("AXValue")) else {
+        return fallback("the field doesn't report its text or selection");
+    };
+    let (location, length) = (location.max(0) as usize, length.max(0) as usize);
+    let units: Vec<u16> = before.encode_utf16().collect();
+    let Some(selected) = units.get(location..location + length).and_then(|u| String::from_utf16(u).ok()) else {
+        return fallback("the selection is outside the field's text");
+    };
+    // Where each edit is in the field, checked against the field's text before anything moves.
+    let mut starts = Vec::with_capacity(edits.len());
+    for edit in edits {
+        let start = field_offset(&capture.text, &selected, edit.start).map(|offset| location + offset);
+        let old: Vec<u16> = edit.old.encode_utf16().collect();
+        match start {
+            Some(start) if units.get(start..start + old.len()) == Some(old.as_slice()) => starts.push(start),
+            _ => return fallback("the field's text doesn't line up with the changes"),
+        }
+    }
+    let restore = |mover: Mover| element.move_selection(mover, location, location + length);
+    // Confirm the app lets SuperEditr move its selection, on the first edit to be written.
+    let movers: &[Mover] = if capture.web { &[Mover::Range, Mover::Marker] } else { &[Mover::Range] };
+    let Some(mover) = movers.iter().copied().find(|&mover| element.select_text(mover, starts[0], &edits[0].old)) else {
+        movers.iter().any(|&mover| restore(mover));
+        if !wait_until(Duration::from_millis(200), || selection_unchanged(capture)) {
+            trace(format_args!("{}: in place: the selection couldn't be put back", capture.bundle_id));
+            return Err(PlatformError::Stale);
+        }
+        return fallback("the app doesn't let SuperEditr move the selection");
+    };
+
+    let native = !capture.web && element.settable("AXSelectedText");
+    let snapshot = (!native).then(pasteboard::Snapshot::take);
+    let mut ours = None;
+    let mut attempts = 0;
+    for (i, (edit, &start)) in edits.iter().zip(&starts).enumerate() {
+        let end = start + edit.old.encode_utf16().count();
+        if i > 0 && !(field_focused(capture, element) && element.select_text(mover, start, &edit.old)) {
+            return in_place_stopped(capture, i, edits.len(), "the text to fix no longer matched");
+        }
+        let Some(value) = element.string("AXValue") else {
+            return in_place_stopped(capture, i, edits.len(), "the field's text couldn't be read");
+        };
+        let Some(expected) = spliced(&value, start, end, &edit.new) else {
+            return in_place_stopped(capture, i, edits.len(), "the field's text changed");
+        };
+        let landed = if native {
+            let new = CFString::new(&edit.new);
+            element.set("AXSelectedText", new.as_CFTypeRef())
+                && wait_until(Duration::from_millis(150), || value_is(element, &expected))
+        } else {
+            let pasted = paste_and_check(
+                capture,
+                element,
+                &edit.new,
+                None,
+                || {
+                    element.string("AXValue").as_deref() == Some(value.as_str())
+                        && element.raw_selected_text().as_deref() == Some(edit.old.as_str())
+                },
+                |wait| wait_until(wait, || value_is(element, &expected)),
+            );
+            ours = Some(pasted.ours);
+            attempts += pasted.attempts;
+            pasted.landed
+        };
+        if !landed {
+            // Nothing written yet: the whole replace can still go ahead, once the selection is back.
+            if i == 0
+                && element.string("AXValue").as_deref() == Some(before.as_str())
+                && restore(mover)
+                && wait_until(Duration::from_millis(200), || selection_unchanged(capture))
+            {
+                return fallback("the first change didn't land");
+            }
+            return in_place_stopped(capture, i, edits.len(), "a change didn't land");
+        }
+    }
+    // The caret after the fixed text, where replacing the whole selection leaves it.
+    let grown: isize =
+        edits.iter().map(|e| e.new.encode_utf16().count() as isize - e.old.encode_utf16().count() as isize).sum();
+    let caret = (location + length).saturating_add_signed(grown);
+    element.move_selection(mover, caret, caret);
+    let verified = verify_replacement(element, capture, Some(&before), text, None, Duration::from_millis(150));
+    let code = if capture.code.is_empty() {
+        String::new()
+    } else {
+        let pieces = code_in(element);
+        let kept = capture
+            .code
+            .iter()
+            .filter(|&&(s, e)| {
+                let code: String = capture.text.chars().skip(s).take(e - s).filter(|c| !is_invisible(*c)).collect();
+                pieces
+                    .iter()
+                    .any(|p| p.text.chars().filter(|c| !is_invisible(*c)).collect::<String>().contains(code.trim()))
+            })
+            .count();
+        format!("; {kept} of {} code spans still code", capture.code.len())
+    };
+    trace(format_args!(
+        "{}: applied in place: {} edits by {}, selection moved by {mover:?}{}; {} after {:?}{code}",
+        capture.bundle_id,
+        edits.len(),
+        if native { "Accessibility writes".to_string() } else { format!("pastes ({attempts} attempts)") },
+        if capture.web { format!(", {}", key_window_state(capture.pid)) } else { String::new() },
+        if verified { "verified" } else { "not verified" },
+        started.elapsed(),
+    ));
+    if !verified {
+        // Like a paste that didn't verify, leave the suggestion on the clipboard.
+        return Err(PlatformError::Unverified);
+    }
+    if let (Some(snapshot), Some(ours)) = (snapshot, ours) {
+        restore_clipboard(snapshot, ours);
+    }
+    Ok(Some(if native { ReplaceMethod::Accessibility } else { ReplaceMethod::Paste }))
+}
+
+/// Stops applying in place after `applied` of `total` edits. The suggestion stays on the clipboard.
+fn in_place_stopped(
+    capture: &Capture,
+    applied: usize,
+    total: usize,
+    reason: &str,
+) -> Result<Option<ReplaceMethod>, PlatformError> {
+    trace(format_args!("{}: applied in place partly: {applied} of {total} edits, then {reason}", capture.bundle_id));
+    // The first edit may have landed unseen.
+    Err(if applied == 0 { PlatformError::Unverified } else { PlatformError::Partial { applied, total } })
 }
 
 /// Whether `pid` is the front app, whether SuperEditr's panel still has focus, and whether the
@@ -1998,6 +2294,27 @@ mod pasteboard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_an_edit_in_the_field_text() {
+        // The same text: the edit is where it was read.
+        assert_eq!(field_offset("Their going, realy", "Their going, realy", 13), Some(13));
+        // Chromium's text for a rich field leaves an empty paragraph out.
+        assert_eq!(field_offset("One.\n\nteh end", "One.\nteh end", 6), Some(5));
+        // An editor pads code with zero-width spaces that the read text may not have.
+        assert_eq!(field_offset("run make realy", "run \u{200B}make\u{200B} realy", 9), Some(11));
+        // Offsets are UTF-16 units: an emoji takes two.
+        assert_eq!(field_offset("😀 teh", "😀 teh", 2), Some(3));
+        // Past the end, or on a line break, is nowhere.
+        assert_eq!(field_offset("ab", "ab", 2), None);
+        assert_eq!(field_offset("a\nb", "a\nb", 1), None);
+    }
+
+    #[test]
+    fn splices_utf16_ranges() {
+        assert_eq!(spliced("😀 teh end", 3, 6, "the").as_deref(), Some("😀 the end"));
+        assert_eq!(spliced("abc", 2, 4, "x"), None);
+    }
 
     #[test]
     fn places_code_by_position() {

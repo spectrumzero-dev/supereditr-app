@@ -44,6 +44,8 @@ With nothing selected, ⌘E E and ⌃⌥⇧E select the sentence before the curs
 
 Typing or clicking elsewhere hides an automatic suggestion. Turn automatic suggestions off in Settings → Behavior to use the shortcut only. All shortcuts can be changed, and any style can have its own global shortcut.
 
+SuperEditr opens when you log in, so it is running again after you restart your Mac. Turn this off in Settings → Behavior → Open at login.
+
 ## Install
 
 Requires macOS 13 or later. Apple Intelligence needs macOS 26 or later on Apple silicon.

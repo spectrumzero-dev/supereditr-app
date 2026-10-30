@@ -283,11 +283,12 @@ fn is_proofread(preset_id: &str, steer: Option<&str>) -> bool {
 /// Writes the accepted text back into the source app.
 pub async fn apply(app: &AppHandle, id: u64, text: String) -> Result<String, String> {
     let state = state(app);
+    let keep_formatting = state.config().keep_formatting;
     let (captured, proofread) = {
         let mut session = state.session.lock().unwrap();
         let current = session.as_mut().filter(|s| s.id == id).ok_or("This review has ended.")?;
         current.cancel();
-        (current.capture.clone(), current.proofread)
+        (current.capture.clone(), current.proofread && keep_formatting)
     };
     overlay::hide(app);
     crate::hotkeys::set_overlay_shortcuts(app, false);
@@ -423,7 +424,7 @@ pub async fn quick_fix(app: &AppHandle) {
     }
     *state.quiet_until.lock().unwrap() = Instant::now() + Duration::from_millis(800);
     let text = revised.clone();
-    let proofread = is_proofread(&config.default_preset().id, None);
+    let proofread = config.keep_formatting && is_proofread(&config.default_preset().id, None);
     let result = tauri::async_runtime::spawn_blocking(move || platform::replace(&captured, &text, proofread)).await;
     if let Ok(Err(error)) = result {
         platform::copy_to_clipboard(&revised);

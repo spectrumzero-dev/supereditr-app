@@ -1476,6 +1476,26 @@ impl Element {
     }
 }
 
+/// Types `text` into the app `pid` as one key event, replacing its selection. Only short text
+/// without line breaks can be typed this way: a key event carries at most 20 UTF-16 units. Text
+/// with a character an editor may turn into formatting as it is typed (`*bold*`, `` `code` ``,
+/// `--`) is left to a paste.
+fn type_text(pid: i32, text: &str) -> bool {
+    let units: Vec<u16> = text.encode_utf16().collect();
+    if units.is_empty() || units.len() > 20 || text.contains(['\n', '\r', '`', '*', '_', '~', '#', '>', '-', '[', '='])
+    {
+        return false;
+    }
+    let Ok(source) = CGEventSource::new(CGEventSourceStateID::CombinedSessionState) else { return false };
+    for down in [true, false] {
+        let Ok(event) = CGEvent::new_keyboard_event(source.clone(), 0, down) else { return false };
+        event.set_flags(CGEventFlags::empty());
+        event.set_string_from_utf16_unchecked(&units);
+        event.post_to_pid(pid);
+    }
+    true
+}
+
 /// Polls `done` until it holds or `wait` runs out.
 fn wait_until(wait: Duration, done: impl Fn() -> bool) -> bool {
     let deadline = Instant::now() + wait;
@@ -1546,9 +1566,10 @@ fn replace_in_place(
     };
 
     let native = !capture.web && element.settable("AXSelectedText");
-    let snapshot = (!native).then(pasteboard::Snapshot::take);
+    // The clipboard is saved before the first paste and put back after the last.
+    let mut snapshot = None;
     let mut ours = None;
-    let mut attempts = 0;
+    let (mut typed, mut attempts) = (0, 0);
     for (i, (edit, &start)) in edits.iter().zip(&starts).enumerate() {
         let end = start + edit.old.encode_utf16().count();
         if i > 0 && !(field_focused(capture, element) && element.select_text(mover, start, &edit.old)) {
@@ -1565,20 +1586,28 @@ fn replace_in_place(
             element.set("AXSelectedText", new.as_CFTypeRef())
                 && wait_until(Duration::from_millis(150), || value_is(element, &expected))
         } else {
-            let pasted = paste_and_check(
-                capture,
-                element,
-                &edit.new,
-                None,
-                || {
-                    element.string("AXValue").as_deref() == Some(value.as_str())
-                        && element.raw_selected_text().as_deref() == Some(edit.old.as_str())
-                },
-                |wait| wait_until(wait, || value_is(element, &expected)),
-            );
-            ours = Some(pasted.ours);
-            attempts += pasted.attempts;
-            pasted.landed
+            let untouched = || {
+                element.string("AXValue").as_deref() == Some(value.as_str())
+                    && element.raw_selected_text().as_deref() == Some(edit.old.as_str())
+            };
+            // A short replacement is typed: no clipboard round trip, which is the slow step in
+            // Chromium. If the app ignores the typing, it is pasted instead.
+            if type_text(capture.pid, &edit.new)
+                && wait_until(Duration::from_millis(250), || value_is(element, &expected))
+            {
+                typed += 1;
+                true
+            } else if untouched() {
+                snapshot.get_or_insert_with(pasteboard::Snapshot::take);
+                let pasted = paste_and_check(capture, element, &edit.new, None, untouched, |wait| {
+                    wait_until(wait, || value_is(element, &expected))
+                });
+                ours = Some(pasted.ours);
+                attempts += pasted.attempts;
+                pasted.landed
+            } else {
+                false
+            }
         };
         if !landed {
             // Nothing written yet: the whole replace can still go ahead, once the selection is back.
@@ -1615,13 +1644,17 @@ fn replace_in_place(
         format!("; {kept} of {} code spans still code", capture.code.len())
     };
     trace(format_args!(
-        "{}: applied in place: {} edits by {}, selection moved by {mover:?}{}; {} after {:?}{code}",
+        "{}: applied in place: {} edits in {} ms by {}, selection moved by {mover:?}{}; {}{code}",
         capture.bundle_id,
         edits.len(),
-        if native { "Accessibility writes".to_string() } else { format!("pastes ({attempts} attempts)") },
+        started.elapsed().as_millis(),
+        if native {
+            "Accessibility writes".to_string()
+        } else {
+            format!("typing {typed}, pasting {} ({attempts} paste attempts)", edits.len() - typed)
+        },
         if capture.web { format!(", {}", key_window_state(capture.pid)) } else { String::new() },
         if verified { "verified" } else { "not verified" },
-        started.elapsed(),
     ));
     if !verified {
         // Like a paste that didn't verify, leave the suggestion on the clipboard.

@@ -818,6 +818,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 let lines = ((try? String(contentsOfFile: captureLog, encoding: .utf8)) ?? "").split(separator: "\n")
                 let found = lines.last { $0.contains("code in the field") }.map(String.init) ?? "none"
                 check(found.contains("1 pieces"), "the code span is found", "last code line: \(found)")
+                log("NOTE \(lines.last { $0.contains("code placed") }.map(String.init) ?? "no code placed")")
                 screenshot(window: overlay(), to: outDir + "/web-code-review.png")
                 press(keyReturn)
                 _ = waitFor(3) { overlay() == nil ? true : nil }

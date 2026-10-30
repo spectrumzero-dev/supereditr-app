@@ -228,6 +228,31 @@ async fn engine_leaves_code_as_written() {
 }
 
 #[tokio::test]
+async fn engine_leaves_code_the_app_formats_as_written() {
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"<text>Should I update? Wrangler 4.150.0</text>\"}}]}\n\n\
+                data: [DONE]\n\n";
+    let (url, _) = mock_server(vec![(200, "text/event-stream", body.into())]).await;
+    let engine = Engine::new("American English");
+    let config = supereditr_core::Config::default();
+    let job = Job {
+        text: "should i update? wrangler 4.150.0".into(),
+        preset: config.default_preset().clone(),
+        steer: None,
+        profile: Some(profile(ProviderKind::OpenAiCompatible, &url, "local-model")),
+        style_notes: String::new(),
+        dialect: "American English".into(),
+        words: Vec::new(),
+        code: vec![(17, 33)],
+        local_checks: true,
+        builtin_ai: false,
+    };
+    let mut events = Vec::new();
+    engine.run(job, &mut |e| events.push(e)).await;
+    let Some(Event::Done(outcome)) = events.last() else { panic!("{events:?}") };
+    assert_eq!(outcome.text, "Should I update? wrangler 4.150.0");
+}
+
+#[tokio::test]
 async fn engine_falls_back_to_the_offline_checker_when_the_ai_fails() {
     let (url, _) = mock_server(vec![(500, "application/json", "{}".into())]).await;
     let engine = Engine::new("American English");

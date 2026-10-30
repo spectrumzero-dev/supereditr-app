@@ -47,22 +47,25 @@ pub fn code_spans(text: &str) -> Vec<(usize, usize)> {
     let chars: Vec<char> = text.chars().collect();
     let run_at = |i: usize| chars[i..].iter().take_while(|&&c| c == '`').count();
     let line_end = |i: usize| chars[i..].iter().position(|&c| c == '\n').map_or(chars.len(), |n| i + n);
-    // A fence: up to three spaces, then three or more backticks. Returns their count.
+    // A fence: up to three spaces, then three or more backticks. Returns their count, and whether
+    // only spaces follow them on the line, as a closing fence needs (an opening one may name a
+    // language).
     let fence_at = |line: usize| {
         let indent = chars[line..].iter().take(4).take_while(|&&c| c == ' ').count();
         let run = if indent < 4 && line + indent < chars.len() { run_at(line + indent) } else { 0 };
-        (run >= 3).then_some(run)
+        let bare = chars[line + indent + run..line_end(line)].iter().all(|c| c.is_whitespace());
+        (run >= 3).then_some((run, bare))
     };
     let mut spans = Vec::new();
     let mut i = 0;
     while i < chars.len() {
         let at_line_start = i == 0 || chars[i - 1] == '\n';
-        if at_line_start && let Some(open) = fence_at(i) {
+        if at_line_start && let Some((open, _)) = fence_at(i) {
             let mut end = chars.len();
             let mut line = line_end(i);
             while line < chars.len() {
                 let next = line + 1;
-                if next < chars.len() && fence_at(next).is_some_and(|close| close >= open) {
+                if next < chars.len() && fence_at(next).is_some_and(|(close, bare)| close >= open && bare) {
                     end = line_end(next);
                     break;
                 }
@@ -99,16 +102,6 @@ pub fn code_spans(text: &str) -> Vec<(usize, usize)> {
             // An unmatched run is plain text.
             None => i += open,
         }
-    }
-    spans
-}
-
-/// [`code_spans`] plus every place `shown_as_code` appears in `text`: code the app formats as code
-/// with no backticks left in its text, as chat composers do once a span is typed.
-pub fn all_code_spans(text: &str, shown_as_code: &[String]) -> Vec<(usize, usize)> {
-    let mut spans = code_spans(text);
-    for code in shown_as_code.iter().map(|c| c.trim()).filter(|c| !c.is_empty()) {
-        spans.extend(crate::words::spans(text, code));
     }
     spans
 }
@@ -176,18 +169,13 @@ mod tests {
     }
 
     #[test]
-    fn finds_code_the_app_formats() {
-        let text = "should i update? wrangler 4.150.0 (update available 4.156.0)";
-        let spans = all_code_spans(text, &["wrangler 4.150.0 (update available 4.156.0)".into(), " ".into()]);
-        assert_eq!(spans, vec![(17, 60)]);
-    }
-
-    #[test]
     fn finds_fenced_blocks() {
         let text = "Run this:\n```sh\nnpm i teh pakage\n```\nthen `check`.";
         assert_eq!(code(text), vec!["```sh\nnpm i teh pakage\n```", "`check`"]);
         // An unclosed fence runs to the end; a shorter run doesn't close a longer fence.
         assert_eq!(code("see\n````\nfoo\n```\nbar"), vec!["````\nfoo\n```\nbar"]);
+        // A line with more after its backticks is content, not a closing fence.
+        assert_eq!(code("```md\n```js\nteh\n```\nafter"), vec!["```md\n```js\nteh\n```"]);
         // A fence only starts a line.
         assert_eq!(code("say ```x``` here"), vec!["```x```"]);
     }

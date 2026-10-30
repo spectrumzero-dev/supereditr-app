@@ -314,45 +314,106 @@ fn visible_length(element: &Element, depth: usize) -> usize {
     element.children().iter().map(|child| visible_length(child, depth + 1)).sum()
 }
 
-/// The text of each element in a web field that is marked as code (`<code>`, which WebKit and
-/// Chromium give the subrole `AXCodeStyleGroup`). The log gets the count and the subroles seen,
-/// never the text, so a field whose code goes unnoticed can be diagnosed.
-fn code_in(field: &Element) -> Vec<String> {
-    fn walk(
-        element: &Element,
-        depth: usize,
-        budget: &mut usize,
-        subroles: &mut BTreeSet<String>,
-        code: &mut Vec<String>,
-    ) {
+/// A piece of a web field formatted as code: its text, and where it starts in the field, counted
+/// in characters other than line breaks.
+#[derive(Debug, Clone, PartialEq)]
+struct CodePiece {
+    text: String,
+    start: usize,
+}
+
+fn visible_count(text: &str) -> usize {
+    text.chars().filter(|c| !is_line_break(*c)).count()
+}
+
+/// The elements in a web field marked as code (`<code>`, which WebKit and Chromium give the
+/// subrole `AXCodeStyleGroup`), in order. The log gets the count and the subroles seen, never the
+/// text, so a field whose code goes unnoticed can be diagnosed.
+fn code_in(field: &Element) -> Vec<CodePiece> {
+    struct Walk {
+        budget: usize,
+        seen: usize,
+        subroles: BTreeSet<String>,
+        code: Vec<CodePiece>,
+    }
+    fn walk(element: &Element, depth: usize, state: &mut Walk) {
         for child in element.children() {
-            if *budget == 0 {
+            if state.budget == 0 {
                 return;
             }
-            *budget -= 1;
+            state.budget -= 1;
             let subrole = child.string("AXSubrole");
             if subrole.as_deref() == Some("AXCodeStyleGroup") {
                 let text = static_text(&child, 0);
+                let length = visible_count(&text);
                 if !text.trim().is_empty() {
-                    code.push(text);
+                    state.code.push(CodePiece { text, start: state.seen });
                 }
+                state.seen += length;
+            } else if child.string("AXRole").as_deref() == Some("AXStaticText") {
+                state.seen += child.string("AXValue").map_or(0, |v| visible_count(&v));
             } else if depth < 8 {
-                walk(&child, depth + 1, budget, subroles, code);
+                walk(&child, depth + 1, state);
             }
-            subroles.extend(subrole);
+            state.subroles.extend(subrole);
         }
     }
     // A composer has a few dozen elements; a whole page can have thousands, each a slow call.
     let started = Instant::now();
-    let (mut budget, mut subroles, mut code) = (1500, BTreeSet::new(), Vec::new());
-    walk(field, 0, &mut budget, &mut subroles, &mut code);
+    let mut state = Walk { budget: 1500, seen: 0, subroles: BTreeSet::new(), code: Vec::new() };
+    walk(field, 0, &mut state);
     trace(format_args!(
         "code in the field: {} pieces in {:?}; subroles {}",
-        code.len(),
+        state.code.len(),
         started.elapsed(),
-        subroles.into_iter().collect::<Vec<_>>().join(", ")
+        state.subroles.into_iter().collect::<Vec<_>>().join(", ")
     ));
-    code
+    state.code
+}
+
+/// Character ranges of `text`, the selection, that the app formats as code. `selection_start` is
+/// where the selection starts in the field, counted like [`CodePiece::start`]. A piece is placed by
+/// its position when that is known and the selected text there matches it; otherwise wherever it
+/// appears in `text` as whole words.
+fn code_ranges(text: &str, selection_start: Option<usize>, pieces: &[CodePiece]) -> Vec<(usize, usize)> {
+    let chars: Vec<char> = text.chars().collect();
+    // Index in `chars` of each character other than a line break.
+    let visible: Vec<usize> = (0..chars.len()).filter(|&i| !is_line_break(chars[i])).collect();
+    let (mut ranges, mut by_position, mut by_text) = (Vec::new(), 0, 0);
+    for piece in pieces {
+        let code: Vec<char> = piece.text.chars().filter(|c| !is_line_break(*c)).collect();
+        let placed = selection_start.and_then(|selected| {
+            let start = piece.start.max(selected);
+            let end = (piece.start + code.len()).min(selected + visible.len());
+            if start >= end {
+                return Some(None); // outside the selection
+            }
+            let (s, e) = (visible[start - selected], visible[end - selected - 1] + 1);
+            let here: Vec<char> = chars[s..e].iter().copied().filter(|c| !is_line_break(*c)).collect();
+            (here == code[start - piece.start..end - piece.start]).then_some(Some((s, e)))
+        });
+        match placed {
+            Some(range) => {
+                ranges.extend(range);
+                by_position += 1;
+            }
+            None => {
+                ranges.extend(supereditr_core::words::spans(text, piece.text.trim()));
+                by_text += 1;
+            }
+        }
+    }
+    if !pieces.is_empty() {
+        trace(format_args!("code placed: {by_position} by position, {by_text} by text"));
+    }
+    ranges
+}
+
+/// How many characters other than line breaks come before `location`, a UTF-16 offset into `value`.
+fn visible_before(value: &str, location: isize) -> Option<usize> {
+    let units: Vec<u16> = value.encode_utf16().collect();
+    let prefix = String::from_utf16(units.get(..usize::try_from(location).ok()?)?).ok()?;
+    Some(visible_count(&prefix))
 }
 
 /// An element's static text, a few levels down, in order.
@@ -454,9 +515,9 @@ pub struct Capture {
     range: Option<(isize, isize)>,
     /// Text from Settings' "Try it now" box: applying sends it back to the box, not to an app.
     pub playground: bool,
-    /// The text of each piece of the field the app formats as code, whose backticks are gone
-    /// from `text`: reviews leave it as written.
-    pub code: Vec<String>,
+    /// Character ranges of `text` the app formats as code, whose backticks are gone from `text`:
+    /// reviews leave them as written.
+    pub code: Vec<(usize, usize)>,
 }
 
 /// A capture of text in Settings' "Try it now" box, anchored at `bounds` (screen points).
@@ -723,7 +784,13 @@ fn capture_ax(app: &Element, pid: i32, bundle_id: &str, app_name: &str) -> Resul
     let editable = element.settable("AXValue") || element.attr("AXEditableAncestor").is_some();
     let range = element.range("AXSelectedTextRange");
     let web = is_browser_or_electron(bundle_id, pid) || in_web_area(&element);
-    let code = if web { code_in(&element) } else { Vec::new() };
+    let code = if web {
+        let selection_start =
+            range.and_then(|r| element.string("AXValue").and_then(|value| visible_before(&value, r.location)));
+        code_ranges(&text, selection_start, &code_in(&element))
+    } else {
+        Vec::new()
+    };
     let plausible = |r: &CGRect| r.size.width > 0.5 && r.size.height > 0.5 && r.size.height < 2000.0;
     let bounds = range
         .and_then(|r| element.bounds_for_range(r))
@@ -1787,6 +1854,33 @@ mod pasteboard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn places_code_by_position() {
+        let piece = |text: &str, start| CodePiece { text: text.into(), start };
+        // The field reads "Fix teh bug in teh parser"; only the second "teh" is code.
+        let text = "Fix teh bug in teh parser";
+        assert_eq!(code_ranges(text, Some(0), &[piece("teh", 15)]), vec![(15, 18)]);
+        // Selected from "bug": the selection starts 8 characters into the field.
+        assert_eq!(code_ranges("bug in teh parser", Some(8), &[piece("teh", 15)]), vec![(7, 10)]);
+        // Code against prose, as in "foo" formatted and "bar" not.
+        assert_eq!(code_ranges("run foobar", Some(0), &[piece("foo", 4)]), vec![(4, 7)]);
+        // Line breaks don't count: the field's second paragraph starts after one.
+        assert_eq!(code_ranges("one\ntwo teh", Some(0), &[piece("teh", 7)]), vec![(8, 11)]);
+        // Code that runs past the selection is protected where it overlaps.
+        assert_eq!(code_ranges("run wrangler", Some(0), &[piece("wrangler deploy", 4)]), vec![(4, 12)]);
+        // Code outside the selection protects nothing.
+        assert!(code_ranges("Fix teh bug", Some(0), &[piece("teh", 15)]).is_empty());
+    }
+
+    #[test]
+    fn places_code_by_text_when_its_position_is_unknown_or_wrong() {
+        let piece = |text: &str, start| CodePiece { text: text.into(), start };
+        assert_eq!(code_ranges("Fix teh bug", None, &[piece("teh", 4)]), vec![(4, 7)]);
+        assert_eq!(code_ranges("Fix teh bug", Some(0), &[piece("teh", 0)]), vec![(4, 7)]);
+        assert_eq!(visible_before("a\nb😀c", 5), Some(3));
+        assert_eq!(visible_before("ab", 5), None);
+    }
 
     /// The sentence `sentence_before` picks with the caret at `|`.
     fn pick(marked: &str) -> Option<String> {

@@ -153,9 +153,10 @@ pub struct Job {
     pub dialect: String,
     /// The author's word list: names and terms to keep exactly as written.
     pub words: Vec<String>,
-    /// Text the app shows as code but whose Markdown backticks are gone, such as a code span in a
-    /// chat composer. It is kept exactly as written, like code in backticks.
-    pub code: Vec<String>,
+    /// Character ranges of `text` the app shows as code but whose Markdown backticks are gone,
+    /// such as a code span in a chat composer. They are kept exactly as written, like code in
+    /// backticks.
+    pub code: Vec<(usize, usize)>,
     /// Whether the offline checker may run. Off only for the CLI's `--no-local` and for tests that
     /// need the AI's answer alone.
     pub local_checks: bool,
@@ -214,7 +215,8 @@ impl Engine {
             return;
         }
         let started = Instant::now();
-        let code = guard::all_code_spans(&job.text, &job.code);
+        let code: Vec<(usize, usize)> =
+            guard::code_spans(&job.text).into_iter().chain(job.code.iter().copied()).collect();
         let english = lang::is_english(&job.text);
         let is_proofread = job.preset.id == "proofread" && job.steer.is_none();
 

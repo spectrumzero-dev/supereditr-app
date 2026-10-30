@@ -967,7 +967,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
             _ = selectAll() || selectAll()
             let selected = visible(focusedElement().flatMap { attribute($0, kAXSelectedTextAttribute) as? String } ?? "")
-            guard selected.contains("Weekly notes") && selected.contains("See you soon.") else {
+            guard selected.contains("Weekly notes") && selected.contains("you soon.") else {
                 check(false, "\(name): the whole field is selected", "selected \(String(reflecting: selected))")
                 formatsRows.append("\(editor): not selected")
                 continue
@@ -995,9 +995,9 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             _ = waitFor(3) { overlay() == nil ? true : nil }
             let after = waitFor(3) { () -> (structure: String, text: String)? in
                 let state = formatsState(id)
-                return state.text.contains("Secend") || state.text.contains("realy") ? nil : state
+                return ["Secend", "realy", "you you"].contains(where: state.text.contains) ? nil : state
             } ?? formatsState(id)
-            let fixed = !after.text.contains("Secend") && !after.text.contains("realy")
+            let fixed = !["Secend", "realy", "you you"].contains(where: after.text.contains)
             check(fixed, "\(name): the fixes land", "the field holds \(String(reflecting: after.text))")
             check(after.structure == before.structure, "\(name): every structure and the code survive the fix",
                   "before \(before.structure); after \(after.structure)")

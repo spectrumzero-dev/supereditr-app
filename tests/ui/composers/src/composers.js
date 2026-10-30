@@ -49,7 +49,7 @@ function html({ pad = false, br = false } = {}) {
 }
 
 // The formats document: every common structure a composer holds, with typos in prose the
-// rule-based checker fixes ("teh", "Secend", "realy") and the same typo in code it must leave alone.
+// rule-based checker fixes ("teh", "Secend", "realy", and "you you", a deletion) and the same typo in code it must leave alone.
 // An empty paragraph sits before the list. A field must be read with one line per block or list
 // item, fixed, and keep every structure; the smoke test compares the page's description before and
 // after.
@@ -62,7 +62,7 @@ const FORMATS = [
   "<blockquote><p>Quoted line with realy good news.</p></blockquote>",
   "<pre><code>let teh = 1;</code></pre>",
   "<p>Line one<br>Line two after a break.</p>",
-  "<p>See you soon.</p>",
+  "<p>See you you soon.</p>",
 ].join("");
 
 /** The formats document's structure: how many of each kind of block and mark, and the text of the

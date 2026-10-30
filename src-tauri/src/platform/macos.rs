@@ -1502,8 +1502,14 @@ fn set_selection(element: &Element, start: usize, length: usize) -> bool {
 }
 
 /// Types `text` into the app `pid`, replacing its selection: key events carrying the text, 20 UTF-16
-/// units at a time (the most one event holds), with no clipboard round trip.
+/// units at a time (the most one event holds), with no clipboard round trip. Empty text deletes the
+/// selection with the Delete key.
 fn type_text(pid: i32, text: &str) -> bool {
+    const DELETE: u16 = 51;
+    if text.is_empty() {
+        post_key(pid, DELETE, CGEventFlags::empty());
+        return true;
+    }
     let units: Vec<u16> = text.encode_utf16().collect();
     let Ok(source) = CGEventSource::new(CGEventSourceStateID::CombinedSessionState) else { return false };
     for chunk in units.chunks(20) {

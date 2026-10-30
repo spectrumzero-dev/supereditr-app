@@ -622,34 +622,30 @@ press(keyEscape)
 quitOpened("com.apple.TextEdit")
 
 // 6c. ↩ in the review writes the fix into a web page's text field. Browsers and Electron apps take
-// the paste path rather than an Accessibility write. Checked in a plain text box and in an editable
-// div, the kind of field chat apps use. Chrome runs as its own copy with a throwaway profile.
+// the paste path rather than an Accessibility write. Checked in a plain text box, in an editable div,
+// the kind of field chat apps use, and in the composer matrix's editors. Chrome runs as its own copy
+// with a throwaway profile.
 let chromeApp = "/Applications/Google Chrome.app", chrome = "com.google.Chrome"
 if !FileManager.default.fileExists(atPath: chromeApp) {
     log("SKIP applying in a web page: Chrome isn't installed")
 } else {
     let typo = "Their going to love this."
     let page = work + "/fields.html"
+    // The composer matrix's editors, bundled into one script next to this file.
+    let composerScript = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("composers/composers.bundle.js")
+    check(FileManager.default.fileExists(atPath: composerScript.path), "the composer editors are there", composerScript.path)
     try! """
     <!doctype html><meta charset="utf-8"><title>Fields</title>
     <textarea id="control" autofocus rows="2" cols="60">Control field.</textarea>
     <textarea id="plain" rows="3" cols="60">\(typo)</textarea>
     <div id="rich" contenteditable="true" style="border:1px solid; width:30em; min-height:3em">\(typo)</div>
     <div id="paragraphs" contenteditable="true" style="border:1px solid; width:30em"><p>\(typo)</p><p><br></p><p>See you soon.</p></div>
-    <div id="code" contenteditable="true" style="border:1px solid; width:30em"><p><code>teh fix</code> first. \(typo) Then run <code>their going to work</code></p></div>
-    <div id="markdown" contenteditable="true" style="border:1px solid; width:30em"><p><code>teh fix</code> first. \(typo) Then run <code>their going to work</code></p></div>
-    <script>
-    // Pastes as Claude's composer does: from the plain text only, with `backticks` made code.
-    document.getElementById("markdown").addEventListener("paste", e => {
-      e.preventDefault()
-      const text = e.clipboardData.getData("text/plain").replace(/&/g, "&amp;").replace(/</g, "&lt;")
-      document.execCommand("insertHTML", false, text.replace(/`([^`]+)`/g, "<code>$1</code>"))
-    })
-    </script>
+    <div id="composers"></div>
+    <script src="\(composerScript.absoluteString)"></script>
     """.write(toFile: page, atomically: true, encoding: .utf8)
     let chromeOpened = openFront(chromeApp, bundleID: chrome, file: page, newInstance: true,
                                  launchArguments: ["--user-data-dir=\(work)/chrome", "--no-first-run", "--no-default-browser-check"])
-    check(chromeOpened, "Chrome opens the page with two fields")
+    check(chromeOpened, "Chrome opens the page with its fields")
     // Keys go only to the test's own Chrome; stop here rather than type into another one.
     if chromeOpened {
         // Chrome builds its Accessibility tree only once asked, as SuperEditr does when it reads. Asking
@@ -808,77 +804,114 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         } else {
             check(false, "the paragraphs field is found", "no element with DOM id \"paragraphs\"")
         }
-        // Code spans, as a chat composer shows text typed in backticks: Chrome's text has no
-        // backticks left, so SuperEditr finds the spans in the field and leaves them as written
-        // while the sentence between them is fixed. One starts the field and one ends it, and the
-        // first holds a typo the rule-based checker would otherwise fix.
-        // The second field pastes as Claude's composer does, from the plain text alone, so the code
-        // comes back as code only from the Markdown SuperEditr puts there.
-        let codes = ["teh fix", "their going to work"]
-        for (id, name) in [("code", "the code field"), ("markdown", "the Markdown field")] {
-            if let ours = launchedSinceStart(chrome).last,
-               let field = byDOMIdentifier(AXUIElementCreateApplication(ours.processIdentifier), id) {
-                AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-                pump(0.5)
-                check(selectAll(), "\(name)'s text is selected")
-                press(keyE, .maskCommand)
-                pump(0.1)
-                press(keyE, .maskCommand)
-                let panel = waitFor(5) { overlay() }
-                check(panel != nil, "⌘E E reviews \(name)", "no overlay within 5 s")
-                if panel != nil {
-                    pump(1.5)  // the rule-based checker's result
-                    let lines = ((try? String(contentsOfFile: captureLog, encoding: .utf8)) ?? "").split(separator: "\n")
-                    let found = lines.last { $0.contains("code in the field") }.map(String.init) ?? "none"
-                    check(found.contains("2 pieces"), "both code spans are found in \(name)", "last code line: \(found)")
-                    log("NOTE \(lines.last { $0.contains("code placed") }.map(String.init) ?? "no code placed")")
-                    screenshot(window: overlay(), to: outDir + "/web-\(id)-review.png")
-                    press(keyReturn)
-                    _ = waitFor(3) { overlay() == nil ? true : nil }
-                    pump(1)
-                    let value = attribute(field, kAXValueAttribute) as? String ?? ""
-                    check(codes.allSatisfy(value.contains) && !value.contains(typo), "the fix leaves the code spans in \(name) as written",
-                          "the field reads \(String(reflecting: value))")
-                    // The fix is pasted with the spans marked as code, so they stay formatted as code.
-                    func codeTexts(_ element: AXUIElement, depth: Int = 0) -> [String] {
-                        if (attribute(element, "AXSubrole") as? String) == "AXCodeStyleGroup" { return [allText(element, levels: 4)] }
-                        guard depth < 8, let children = attribute(element, kAXChildrenAttribute) as? [AXUIElement] else { return [] }
-                        return children.flatMap { codeTexts($0, depth: depth + 1) }
-                    }
-                    let formatted = codeTexts(field)
-                    check(codes.allSatisfy { code in formatted.contains { $0.contains(code) } },
-                          "the code spans in \(name) are still code after the fix", "code in the field: \(formatted)")
-                    screenshot(window: nil, rect: windows(bundleID: chrome).first?.frame, to: outDir + "/web-\(id)-applied.png")
-                }
-            } else {
-                check(false, "\(name) is found", "no element with DOM id \"\(id)\"")
-            }
+        // The composer matrix: the same text in an editable div that pastes HTML, a Markdown composer
+        // like Claude's desktop app (it pastes from the plain text alone, reads it as Markdown, and pads
+        // code with zero-width spaces), and the open-source editors chat and issue-tracker composers are
+        // built on (tests/ui/composers). Each field holds a typo to fix, code at both ends of its first
+        // paragraph (one with a typo of its own), bold, a link and an empty paragraph, and runs the same
+        // checks. Bold and links don't survive the fix yet: those log a NOTE rather than fail.
+        let composerFields = [("code", "editable div"), ("markdown", "Markdown composer"), ("tiptap", "TipTap"),
+                              ("lexical", "Lexical"), ("quill", "Quill"), ("slate", "Slate")]
+        let codes = ["teh fix", "their going to work"], composerTypo = "Their going to love"
+        let visible = { (text: String) in String(text.unicodeScalars.filter { !["\u{200B}", "\u{2060}", "\u{FEFF}"].contains($0) }) }
+        func chromeElement(_ id: String) -> AXUIElement? {
+            guard let ours = launchedSinceStart(chrome).last else { return nil }
+            return byDOMIdentifier(AXUIElementCreateApplication(ours.processIdentifier), id)
         }
-        // ⌥↩ pressed again while the first one applies used to hang SuperEditr: applying turns the
-        // panel's shortcuts off while the main thread handles the next press. Press it three times
-        // in a row, then check that ⌘E E still opens a review.
-        _ = selectAll()
-        press(keyE, .maskCommand)
-        pump(0.1)
-        press(keyE, .maskCommand)
-        if waitFor(5, { overlay() }) != nil {
-            pump(1.5)
-            for _ in 0..<3 {
-                press(keyReturn, .maskAlternate)
-                usleep(15_000)
-            }
-            pump(1.5)
-            _ = selectAll()
+        // What the editor's DOM holds, from the page's description of it: "code=a|b; bold=c; …".
+        func composerState(_ id: String) -> [String: String] {
+            let text = chromeElement("\(id)-state").map { allText($0, levels: 4) } ?? ""
+            return Dictionary(text.split(separator: ";").compactMap { pair -> (String, String)? in
+                let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                guard parts.count == 2 else { return nil }
+                return (parts[0].trimmingCharacters(in: .whitespaces), parts[1].trimmingCharacters(in: .whitespaces))
+            }, uniquingKeysWith: { $1 })
+        }
+        func reviewFocused(_ field: AXUIElement) -> Bool {
+            AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            pump(0.5)
+            _ = selectAll() || selectAll()
             press(keyE, .maskCommand)
             pump(0.1)
             press(keyE, .maskCommand)
-            check(waitFor(5, { overlay() }) != nil, "⌘E E still opens a review after ⌥↩ pressed three times quickly",
-                  "no overlay within 5 s: SuperEditr may be stuck")
-            press(keyEscape)
-            _ = waitFor(3) { overlay() == nil ? true : nil }
-        } else {
-            check(false, "⌘E E reviews the field before the ⌥↩ presses", "no overlay within 5 s")
+            return waitFor(5) { overlay() } != nil
         }
+        var matrix: [String] = []
+        for (id, editor) in composerFields {
+            let name = "the \(editor) field"
+            guard let field = waitFor(5, { chromeElement(id) }) else {
+                check(false, "\(name) is found", "no element with DOM id \"\(id)\"")
+                matrix.append("\(editor): not found")
+                continue
+            }
+            var row: [String] = []
+            func expect(_ ok: Bool, _ short: String, _ what: String, _ detail: @autoclosure () -> String) {
+                check(ok, "\(name): \(what)", detail())
+                row.append("\(short) \(ok ? "ok" : "FAIL")")
+            }
+            // Behaviour SuperEditr doesn't have yet: shown in the log and the summary, never a failure.
+            func gap(_ ok: Bool, _ short: String, _ what: String, _ detail: String) {
+                log("NOTE \(name): \(what) \(ok ? "survives the fix" : "is lost in the fix (\(detail))")")
+                row.append("\(short) \(ok ? "ok" : "gap")")
+            }
+            let opened = reviewFocused(field)
+            expect(opened, "review", "⌘E E opens a review", "no overlay within 5 s")
+            guard opened else { matrix.append("\(editor): \(row.joined(separator: ", "))"); continue }
+            pump(1.5)  // the rule-based checker's result
+            let read = lastChromeRead()
+            expect(read.contains("via Accessibility"), "read", "it is read through Accessibility", "last read: \(read)")
+            let lines = ((try? String(contentsOfFile: captureLog, encoding: .utf8)) ?? "").split(separator: "\n")
+            let found = lines.last { $0.contains("code in the field") }.map(String.init) ?? "none"
+            expect(found.contains("2 pieces"), "code found", "both code spans are found", "last code line: \(found)")
+            log("NOTE \(name): \(lines.last { $0.contains("code placed") }.map(String.init) ?? "no code placed")")
+            screenshot(window: overlay(), to: outDir + "/composer-\(id)-review.png")
+            press(keyReturn)
+            _ = waitFor(3) { overlay() == nil ? true : nil }
+            pump(1)
+            let value = attribute(field, kAXValueAttribute) as? String ?? ""
+            let state = composerState(id)
+            expect(!value.isEmpty && !value.contains(composerTypo), "fixed", "↩ writes the fix", "the field reads \(String(reflecting: value))")
+            expect(codes.allSatisfy(visible(value).contains), "code kept", "the code is left as written",
+                   "the field reads \(String(reflecting: value))")
+            expect(state["code"] == codes.joined(separator: "|"), "code format", "the code is still formatted as code",
+                   "the page reports \(state)")
+            expect(state["paragraphs"] == "3" && state["empty"] == "1", "empty paragraph", "the empty paragraph survives",
+                   "the page reports \(state)")
+            gap(state["bold"] == "today", "bold", "bold", "the page reports bold=\(state["bold"] ?? "?")")
+            gap(state["links"] == "the notes", "link", "the link", "the page reports links=\(state["links"] ?? "?")")
+            screenshot(window: nil, rect: windows(bundleID: chrome).first?.frame, to: outDir + "/composer-\(id)-applied.png")
+            if overlay() != nil {
+                press(keyEscape)
+                _ = waitFor(3) { overlay() == nil ? true : nil }
+            }
+            // ⌥↩ pressed again while the first one applies used to hang SuperEditr: applying turns the
+            // panel's shortcuts off while the main thread handles the next press. With the typo back,
+            // press it three times in a row, then check that ⌘E E still opens a review.
+            if let reset = chromeElement("reset-\(id)") { AXUIElementPerformAction(reset, kAXPressAction as CFString) }
+            pump(0.5)
+            // Slate's reset builds a new editable element.
+            if let again = waitFor(3, { chromeElement(id) }), reviewFocused(again) {
+                pump(1.5)
+                for _ in 0..<3 {
+                    press(keyReturn, .maskAlternate)
+                    usleep(15_000)
+                }
+                pump(1.5)
+                _ = selectAll()
+                press(keyE, .maskCommand)
+                pump(0.1)
+                press(keyE, .maskCommand)
+                expect(waitFor(5, { overlay() }) != nil, "⌥↩", "⌘E E still opens a review after ⌥↩ pressed three times quickly",
+                       "no overlay within 5 s: SuperEditr may be stuck")
+                press(keyEscape)
+                _ = waitFor(3) { overlay() == nil ? true : nil }
+            } else {
+                expect(false, "⌥↩", "⌘E E reviews it again before the ⌥↩ presses", "no overlay within 5 s")
+            }
+            matrix.append("\(editor): \(row.joined(separator: ", "))")
+        }
+        log("     composer matrix:")
+        matrix.forEach { log("       \($0)") }
         // How many tries each paste needed, from SuperEditr's log, to show how often the retry helps.
         let pastes = ((try? String(contentsOfFile: captureLog, encoding: .utf8)) ?? "").split(separator: "\n")
             .filter { $0.contains("com.google.Chrome: pasted") }

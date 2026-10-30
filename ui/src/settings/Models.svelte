@@ -23,12 +23,13 @@
   /** Draws the eye to the scan row when Get Started sent the user here. */
   let highlight = $state(false);
 
+  // Alphabetical, with the catch-all server last.
   const kinds: { kind: ProviderKind; name: string; keyUrl?: string; blurb: string }[] = [
-    { kind: "anthropic", name: "Claude", keyUrl: "https://console.anthropic.com/settings/keys", blurb: "Claude Haiku is fast and inexpensive. Needs an API key." },
-    { kind: "open_ai", name: "OpenAI", keyUrl: "https://platform.openai.com/api-keys", blurb: "GPT models. Needs an API key." },
-    { kind: "gemini", name: "Gemini", keyUrl: "https://aistudio.google.com/apikey", blurb: "Google AI Studio keys include a free tier." },
+    { kind: "anthropic", name: "Claude API", keyUrl: "https://console.anthropic.com/settings/keys", blurb: "Claude Haiku is fast and inexpensive. Needs an API key." },
     { kind: "claude_cli", name: "Claude subscription", blurb: "Uses your signed-in Claude Code. Slower to start." },
+    { kind: "gemini", name: "Gemini API", keyUrl: "https://aistudio.google.com/apikey", blurb: "Google AI Studio keys include a free tier." },
     { kind: "ollama", name: "Ollama", blurb: "Private and free, runs on this Mac." },
+    { kind: "open_ai", name: "OpenAI API", keyUrl: "https://platform.openai.com/api-keys", blurb: "GPT models. Needs an API key." },
     { kind: "open_ai_compatible", name: "Other server", blurb: "LM Studio, OpenRouter, Groq, or any OpenAI-compatible endpoint." },
   ];
 

@@ -855,7 +855,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             pump(0.1)
             press(keyE, .maskCommand)
             guard waitFor(5, { overlay() }) != nil else { return false }
-            return waitFor(4) { panelText().range(of: #"\breplace\b"#, options: .regularExpression) != nil ? true : nil } != nil
+            return waitFor(4) { panelText().range(of: #"\b\d+ changes?\b"#, options: .regularExpression) != nil ? true : nil } != nil
         }
         var matrix: [String] = []
         for (id, editor) in composerFields {
@@ -959,7 +959,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             pump(0.1)
             press(keyE, .maskCommand)
             let opened = waitFor(5, { overlay() }) != nil
-                && waitFor(4) { panelText().range(of: #"\breplace\b"#, options: .regularExpression) != nil ? true : nil } != nil
+                && waitFor(4) { panelText().range(of: #"\b\d+ changes?\b"#, options: .regularExpression) != nil ? true : nil } != nil
             check(opened, "\(name): ⌘E E opens a review with a fix", "panel text: \(panelText())")
             guard opened else {
                 formatsRows.append("\(editor): no review")
@@ -968,7 +968,9 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             }
             let read = lastChromeRead()
             try? "\(read)\n\n\(panelText())".write(toFile: outDir + "/formats-\(id)-review.txt", atomically: true, encoding: .utf8)
-            log("NOTE \(name): \(read.split(separator: " ", maxSplits: 1).last ?? "")")
+            // Every line break read: the selection is the whole field, so as long as its text.
+            let counts = read.range(of: #"read (\d+) characters of (\d+)"#, options: .regularExpression).map { String(read[$0]).split(separator: " ") }
+            check(counts.map { $0[1] == $0[4] } ?? false, "\(name): it is read with every line break", "last read: \(read)")
             screenshot(window: overlay(), to: outDir + "/formats-\(id)-review.png")
             press(keyReturn)
             _ = waitFor(3) { overlay() == nil ? true : nil }
@@ -1074,7 +1076,7 @@ press(keyE, .maskCommand)
 let twoPanel = waitFor(5) { overlay() }
 check(twoPanel != nil, "⌘E E reviews the draft with two typos", "no overlay within 5 s")
 if twoPanel != nil {
-    _ = waitFor(4) { panelText().range(of: #"\breplace\b"#, options: .regularExpression) != nil ? true : nil }
+    _ = waitFor(4) { panelText().range(of: #"\b\d+ changes?\b"#, options: .regularExpression) != nil ? true : nil }
     press(keyReturn)
     _ = waitFor(3) { overlay() == nil ? true : nil }
     let fixed = "They're going to love this, it is really fast."

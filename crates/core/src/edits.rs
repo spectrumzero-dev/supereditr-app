@@ -9,23 +9,37 @@
 
 use crate::diff::{Segment, diff};
 use std::fmt;
-use unicode_segmentation::UnicodeSegmentation;
 
 /// The most edits applied in place. More than that replaces the whole selection.
-pub const MAX_EDITS: usize = 4;
+pub const MAX_EDITS: usize = 8;
 /// The longest text, in characters, an edit may replace or write.
 const MAX_EDIT_LENGTH: usize = 40;
 
-/// One change applied in place: `old`, at `start` in the original, becomes `new`. `old` is never
-/// empty, so the text to replace can always be selected and read back before it is written.
+/// One change applied in place: `old`, at `start` in the original, becomes `new`. An insertion has
+/// an empty `old` and an [`Anchor`] to find and confirm its place by.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Edit {
-    /// Where `old` starts in the original, in characters.
+    /// Where `old` starts in the original (where `new` goes, for an insertion), in characters.
     pub start: usize,
-    /// Where `old` starts in the original, in UTF-16 code units, as Accessibility counts.
+    /// The same, in UTF-16 code units, as Accessibility counts.
     pub start_utf16: usize,
     pub old: String,
     pub new: String,
+    pub anchor: Option<Anchor>,
+}
+
+/// The visible text next to an insertion, read back before it is written. Code counts: reading it
+/// back leaves it untouched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Anchor {
+    pub text: String,
+    /// Where `text` starts in the original, in characters.
+    pub start: usize,
+    /// `text` comes after the insertion rather than before it.
+    pub after: bool,
+    /// Invisible characters (an editor's padding around code) separate `text` from the insertion,
+    /// so the insertion goes on the far side of the field's padding.
+    pub padded: bool,
 }
 
 /// Why a revision replaces the whole selection rather than being applied in place.
@@ -37,7 +51,7 @@ pub enum Whole {
     TooMany(usize),
     /// A change that crosses a line break, holds invisible characters or is longer than a few words.
     NotLocal,
-    /// A change inside text the app formats as code, or an insertion with code on both sides.
+    /// A change to text the app formats as code.
     Code,
 }
 
@@ -47,30 +61,20 @@ impl fmt::Display for Whole {
             Self::Rewrite => f.write_str("a rewrite, not a proofread"),
             Self::TooMany(n) => write!(f, "{n} changes, more than {MAX_EDITS}"),
             Self::NotLocal => f.write_str("a change that isn't local"),
-            Self::Code => f.write_str("a change touching code"),
+            Self::Code => f.write_str("a change to code"),
         }
     }
 }
 
 /// The edits that turn `original` into `revised`, last first, so applying them in order leaves
-/// the positions of those still to come unchanged. `proofread` is whether the revision is a plain
-/// proofread; `code` holds character ranges of `original` the app formats as code. An insertion
-/// takes in a neighbouring token, so every edit replaces text that can be read back first: a space
-/// or punctuation mark next to it where there is one, since a word beside it may be formatted (a
-/// link, bold) and replacing it could drop the formatting; otherwise the word before or after it.
+/// the positions of those still to come unchanged. Each edit is exactly a change the revision
+/// made: nothing around it is rewritten. `proofread` is whether the revision is a plain proofread;
+/// `code` holds character ranges of `original` the app formats as code.
 pub fn plan(original: &str, revised: &str, proofread: bool, code: &[(usize, usize)]) -> Result<Vec<Edit>, Whole> {
     if !proofread {
         return Err(Whole::Rewrite);
     }
     let chars: Vec<char> = original.chars().collect();
-    let slice = |s: usize, e: usize| chars[s..e].iter().collect::<String>();
-    // Character offsets where each word, space or punctuation mark of the original starts or ends.
-    let mut bounds = vec![0];
-    for token in original.split_word_bounds() {
-        bounds.push(bounds.last().unwrap() + token.chars().count());
-    }
-    let in_code = |s: usize, e: usize| code.iter().any(|&(cs, ce)| s < ce && cs < e);
-
     let changes: Vec<(usize, String, String)> = diff(original, revised)
         .segments
         .into_iter()
@@ -82,39 +86,63 @@ pub fn plan(original: &str, revised: &str, proofread: bool, code: &[(usize, usiz
     if changes.len() > MAX_EDITS {
         return Err(Whole::TooMany(changes.len()));
     }
+    let local = |text: &str| {
+        text.chars().count() <= MAX_EDIT_LENGTH
+            && !text.chars().any(|c| c == '\n' || c == '\r' || crate::diff::is_invisible(c))
+    };
     let mut edits = Vec::with_capacity(changes.len());
     for (start, old, new) in changes {
-        let (start, old, new) = if old.is_empty() {
-            // The token before the insertion or the one after it, a space or punctuation first.
-            let before = bounds.iter().rev().find(|&&b| b < start).map(|&b| (b, start));
-            let after = bounds.iter().find(|&&b| b > start).map(|&b| (start, b));
-            let word = |&(s, e): &(usize, usize)| chars[s..e].iter().any(|c| c.is_alphanumeric());
-            let mut candidates: Vec<(usize, usize)> = [before, after].into_iter().flatten().collect();
-            candidates.sort_by_key(word);
-            match candidates.into_iter().find(|&(s, e)| !in_code(s, e)) {
-                Some((s, e)) if s < start => (s, slice(s, e), format!("{}{new}", slice(s, e))),
-                Some((s, e)) => (s, slice(s, e), format!("{new}{}", slice(s, e))),
-                None => return Err(Whole::Code),
-            }
-        } else {
-            (start, old, new)
-        };
         let end = start + old.chars().count();
-        if in_code(start, end) {
+        if code.iter().any(|&(s, e)| start < e && s < end) {
             return Err(Whole::Code);
         }
-        let local = |text: &str| {
-            text.chars().count() <= MAX_EDIT_LENGTH
-                && !text.chars().any(|c| c == '\n' || c == '\r' || crate::diff::is_invisible(c))
-        };
         if !local(&old) || !local(&new) {
             return Err(Whole::NotLocal);
         }
+        let anchor = if old.is_empty() { Some(anchor(&chars, start).ok_or(Whole::NotLocal)?) } else { None };
         let start_utf16 = chars[..start].iter().map(|c| c.len_utf16()).sum();
-        edits.push(Edit { start, start_utf16, old, new });
+        edits.push(Edit { start, start_utf16, old, new, anchor });
     }
     edits.reverse();
     Ok(edits)
+}
+
+/// The visible word, space or mark beside an insertion at `at`: the one before it, past any
+/// invisible padding, or at the start the one after it. None when there is none on its line.
+fn anchor(chars: &[char], at: usize) -> Option<Anchor> {
+    let skip = |c: char| crate::diff::is_invisible(c);
+    let text = |s: usize, e: usize| chars[s..e].iter().collect::<String>();
+    // Before: back over padding, then back to the start of that word or run of spaces/marks.
+    let mut end = at;
+    while end > 0 && skip(chars[end - 1]) {
+        end -= 1;
+    }
+    if end > 0 && chars[end - 1] != '\n' {
+        let kind = |c: char| c.is_alphanumeric();
+        let mut start = end - 1;
+        while start > 0
+            && !skip(chars[start - 1])
+            && chars[start - 1] != '\n'
+            && kind(chars[start - 1]) == kind(chars[end - 1])
+        {
+            start -= 1;
+        }
+        return Some(Anchor { text: text(start, end), start, after: false, padded: end < at });
+    }
+    // After: forward over padding, then to the end of that word or run.
+    let mut start = at;
+    while start < chars.len() && skip(chars[start]) {
+        start += 1;
+    }
+    if start < chars.len() && chars[start] != '\n' {
+        let kind = |c: char| c.is_alphanumeric();
+        let mut end = start + 1;
+        while end < chars.len() && !skip(chars[end]) && chars[end] != '\n' && kind(chars[end]) == kind(chars[start]) {
+            end += 1;
+        }
+        return Some(Anchor { text: text(start, end), start, after: true, padded: start > at });
+    }
+    None
 }
 
 #[cfg(test)]
@@ -131,6 +159,10 @@ mod tests {
         for edit in edits {
             let end = edit.start + edit.old.chars().count();
             assert_eq!(chars[edit.start..end].iter().collect::<String>(), edit.old);
+            if let Some(anchor) = &edit.anchor {
+                let len = anchor.text.chars().count();
+                assert_eq!(chars[anchor.start..anchor.start + len].iter().collect::<String>(), anchor.text);
+            }
             chars.splice(edit.start..end, edit.new.chars());
         }
         chars.into_iter().collect()
@@ -142,34 +174,41 @@ mod tests {
         let revised = "They're going to love this, it is really fast.";
         let edits = plan(original, revised, true, &[]).unwrap();
         assert_eq!(pairs(&edits), vec![(32, "realy", "really"), (0, "Their", "They're")]);
+        assert!(edits.iter().all(|e| e.anchor.is_none()));
         assert_eq!(apply(original, &edits), revised);
     }
 
     #[test]
-    fn an_insertion_takes_in_the_space_next_to_it() {
-        // "notes" may be a link: the comma goes in by replacing the space after it.
+    fn an_insertion_is_anchored_on_the_text_before_it() {
+        // "notes" may be a link: it is only read back, never rewritten.
         let original = "Read the notes and go.";
         let revised = "Read the notes, and go.";
         let edits = plan(original, revised, true, &[]).unwrap();
-        assert_eq!(pairs(&edits), vec![(14, " ", ", ")]);
+        assert_eq!(pairs(&edits), vec![(14, "", ",")]);
+        let anchor = edits[0].anchor.as_ref().unwrap();
+        assert_eq!((anchor.text.as_str(), anchor.start, anchor.after, anchor.padded), ("notes", 9, false, false));
         assert_eq!(apply(original, &edits), revised);
     }
 
     #[test]
-    fn an_insertion_between_words_takes_in_a_word() {
-        let original = "Thanks.Bye";
-        let revised = "Thanks.So bye";
-        let edits = plan(original, revised, true, &[]).unwrap();
-        assert!(edits.iter().all(|e| !e.old.is_empty()));
-        assert_eq!(apply(original, &edits), revised);
-    }
-
-    #[test]
-    fn an_insertion_at_the_start_takes_in_the_word_after_it() {
+    fn an_insertion_at_the_start_is_anchored_on_the_text_after_it() {
         let original = "going now.";
         let revised = "I'm going now.";
         let edits = plan(original, revised, true, &[]).unwrap();
-        assert!(edits.iter().all(|e| !e.old.is_empty()));
+        assert!(edits.iter().all(|e| e.old.is_empty() == e.anchor.is_some()));
+        assert_eq!(apply(original, &edits), revised);
+    }
+
+    #[test]
+    fn an_insertion_after_padded_code_goes_past_the_padding() {
+        // Claude's composer pads a code chip with zero-width spaces; the full stop goes after them.
+        let original = "this is \u{200B}code\u{200B}";
+        let code = [(9, 13)];
+        let revised = "This is \u{200B}code\u{200B}.";
+        let edits = plan(original, revised, true, &code).unwrap();
+        assert_eq!(pairs(&edits), vec![(14, "", "."), (0, "this", "This")]);
+        let anchor = edits[0].anchor.as_ref().unwrap();
+        assert_eq!((anchor.text.as_str(), anchor.start, anchor.after, anchor.padded), ("code", 9, false, true));
         assert_eq!(apply(original, &edits), revised);
     }
 
@@ -188,29 +227,16 @@ mod tests {
         let revised = "Café 👩‍💻 the plan.";
         let edits = plan(original, revised, true, &[]).unwrap();
         assert_eq!(pairs(&edits), vec![(9, "teh", "the")]);
-        let utf16: usize = "Café 👩‍💻 ".encode_utf16().count();
-        assert_eq!(edits[0].start_utf16, utf16);
+        assert_eq!(edits[0].start_utf16, "Café 👩‍💻 ".encode_utf16().count());
         assert_eq!(apply(original, &edits), revised);
     }
 
     #[test]
     fn a_change_next_to_code_is_applied_in_place() {
-        // "run" and "realy" sit right against code at each end.
-        let original = "realy `teh fix` and run";
-        let code = [(6, 15)];
-        let revised = "really `teh fix` and run";
-        let edits = plan(original, revised, true, &code).unwrap();
+        let original = "realy make and run";
+        let code = [(6, 10)];
+        let edits = plan(original, "really make and run", true, &code).unwrap();
         assert_eq!(pairs(&edits), vec![(0, "realy", "really")]);
-    }
-
-    #[test]
-    fn an_insertion_after_code_takes_in_the_word_after_it() {
-        let original = "Run `make` now please.";
-        let code = [(4, 10)];
-        let revised = "Run `make`, now please.";
-        let edits = plan(original, revised, true, &code).unwrap();
-        assert_eq!(pairs(&edits), vec![(10, " ", ", ")]);
-        assert_eq!(apply(original, &edits), revised);
     }
 
     #[test]
@@ -227,23 +253,21 @@ mod tests {
 
     #[test]
     fn more_than_the_cap_replaces_the_whole_selection() {
-        let original = "teh a teh b teh c teh d teh e";
-        let revised = original.replace("teh", "the");
-        assert_eq!(plan(original, &revised, true, &[]), Err(Whole::TooMany(5)));
-        let four = "teh a teh b teh c teh d";
-        assert_eq!(plan(four, &four.replace("teh", "the"), true, &[]).map(|e| e.len()), Ok(MAX_EDITS));
+        let original = "teh a teh b teh c teh d teh e teh f teh g teh h teh i";
+        assert_eq!(plan(original, &original.replace("teh", "the"), true, &[]), Err(Whole::TooMany(9)));
+        let eight = "teh a teh b teh c teh d teh e teh f teh g teh h";
+        assert_eq!(plan(eight, &eight.replace("teh", "the"), true, &[]).map(|e| e.len()), Ok(MAX_EDITS));
     }
 
     #[test]
     fn changes_across_lines_or_long_ones_replace_the_whole_selection() {
         assert_eq!(plan("One\nTwo", "One Two", true, &[]), Err(Whole::NotLocal));
-        let long = "See you Monday.";
         let reworded = "See you at the long quarterly planning session we hold on Monday.";
-        assert_eq!(plan(long, reworded, true, &[]), Err(Whole::NotLocal));
+        assert_eq!(plan("See you Monday.", reworded, true, &[]), Err(Whole::NotLocal));
     }
 
     #[test]
-    fn invisible_padding_replaces_the_whole_selection() {
+    fn invisible_changes_replace_the_whole_selection() {
         assert_eq!(plan("a\u{200B}b c", "a b c", true, &[]), Err(Whole::NotLocal));
     }
 

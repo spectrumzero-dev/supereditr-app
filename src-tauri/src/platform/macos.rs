@@ -248,15 +248,16 @@ impl Element {
     /// every line break. Chromium's own text drops some: an empty paragraph adds nothing to
     /// `AXValue`, and `AXSelectedText` can leave out the break between two paragraphs. Each
     /// paragraph is still a child group, an empty one included, so the empty ones are put back.
-    /// None for any other element, before its value is read.
+    /// A field with other blocks too (a heading, a list) gets its `AXValue` as it is: it has a line
+    /// break between blocks and list items, which `AXSelectedText` leaves out. None for any other
+    /// element, before its value is read.
     fn web_text(&self) -> Option<String> {
         let paragraphs = self.children();
-        if paragraphs.is_empty()
-            || paragraphs.len() > 500
-            || self.string("AXRole").as_deref() != Some("AXTextArea")
-            || !paragraphs.iter().all(|p| p.string("AXRole").as_deref() == Some("AXGroup"))
-        {
+        if paragraphs.is_empty() || paragraphs.len() > 500 || self.string("AXRole").as_deref() != Some("AXTextArea") {
             return None;
+        }
+        if !paragraphs.iter().all(|p| p.string("AXRole").as_deref() == Some("AXGroup")) {
+            return self.string("AXValue");
         }
         let lengths: Vec<usize> = paragraphs.iter().map(|p| visible_length(p, 0)).collect();
         let value = self.string("AXValue")?;
@@ -329,6 +330,8 @@ fn visible_count(text: &str) -> usize {
 /// What [`code_in`] found in a web field.
 struct Formatting {
     code: Vec<CodePiece>,
+    /// List markers ("• ", "1. "): part of the field's text, but not text the user wrote.
+    markers: Vec<CodePiece>,
     /// The field has formatting a plain-text replace would lose: code, a link, a list or a heading.
     any: bool,
 }
@@ -344,6 +347,7 @@ fn code_in(field: &Element) -> Formatting {
         seen: usize,
         subroles: BTreeSet<String>,
         code: Vec<CodePiece>,
+        markers: Vec<CodePiece>,
         formatted: bool,
     }
     fn walk(element: &Element, depth: usize, state: &mut Walk) {
@@ -366,6 +370,12 @@ fn code_in(field: &Element) -> Formatting {
                 state.seen += length;
             } else if role.as_deref() == Some("AXStaticText") {
                 state.seen += child.string("AXValue").map_or(0, |v| visible_count(&v));
+            } else if role.as_deref() == Some("AXListMarker") {
+                let text = child.string("AXValue").unwrap_or_default();
+                if !text.trim().is_empty() {
+                    state.markers.push(CodePiece { text: text.clone(), start: state.seen });
+                }
+                state.seen += visible_count(&text);
             } else if depth < 8 {
                 walk(&child, depth + 1, state);
             }
@@ -375,8 +385,15 @@ fn code_in(field: &Element) -> Formatting {
     // A composer has a few dozen elements. A bigger field stops after 1,500 or 150 ms: each is a
     // call to the app, which can be slow while it is busy.
     let started = Instant::now();
-    let mut state =
-        Walk { started, budget: 1500, seen: 0, subroles: BTreeSet::new(), code: Vec::new(), formatted: false };
+    let mut state = Walk {
+        started,
+        budget: 1500,
+        seen: 0,
+        subroles: BTreeSet::new(),
+        code: Vec::new(),
+        markers: Vec::new(),
+        formatted: false,
+    };
     walk(field, 0, &mut state);
     trace(format_args!(
         "code in the field: {} pieces in {:?}{}; subroles {}",
@@ -385,7 +402,7 @@ fn code_in(field: &Element) -> Formatting {
         if state.budget == 0 { " (stopped early)" } else { "" },
         state.subroles.into_iter().collect::<Vec<_>>().join(", ")
     ));
-    Formatting { code: state.code, any: state.formatted }
+    Formatting { code: state.code, markers: state.markers, any: state.formatted }
 }
 
 /// Character ranges of `text`, the selection, that the app formats as code. `selection_start` is
@@ -639,9 +656,21 @@ pub struct Capture {
     /// Character ranges of `text` the app formats as code, whose backticks are gone from `text`:
     /// reviews leave them as written.
     pub code: Vec<(usize, usize)>,
+    /// Character ranges of `text` that are list markers ("• ", "1. "): reviews leave them alone.
+    markers: Vec<(usize, usize)>,
     /// A web field with formatting (code, a link, a list or a heading) that replacing the whole
     /// selection could lose, so a proofread there is worth applying in place.
     formatted: bool,
+}
+
+impl Capture {
+    /// Ranges of `text` a review leaves as written: code, and list markers.
+    pub fn protected(&self) -> Vec<(usize, usize)> {
+        let mut ranges = self.code.clone();
+        ranges.extend(&self.markers);
+        ranges.sort_unstable();
+        ranges
+    }
 }
 
 /// A capture of text in Settings' "Try it now" box, anchored at `bounds` (screen points).
@@ -658,6 +687,7 @@ pub fn playground_capture(text: String, bounds: Rect) -> Capture {
         range: None,
         playground: true,
         code: Vec::new(),
+        markers: Vec::new(),
         formatted: false,
     }
 }
@@ -912,13 +942,14 @@ fn capture_ax(app: &Element, pid: i32, bundle_id: &str, app_name: &str) -> Resul
     // Only a text field is searched for code: when the selection is read from a whole page, the
     // page can have thousands of elements.
     let field = matches!(element.string("AXRole").as_deref(), Some("AXTextArea" | "AXTextField"));
-    let (code, formatted) = if web && field {
+    let (code, markers, formatted) = if web && field {
         let selection_start =
             range.and_then(|r| element.string("AXValue").and_then(|value| visible_before(&value, r.location)));
         let found = code_in(&element);
-        (code_ranges(&text, selection_start, &found.code), found.any)
+        let markers = code_ranges(&text, selection_start, &found.markers);
+        (code_ranges(&text, selection_start, &found.code), markers, found.any)
     } else {
-        (Vec::new(), false)
+        (Vec::new(), Vec::new(), false)
     };
     let plausible = |r: &CGRect| r.size.width > 0.5 && r.size.height > 0.5 && r.size.height < 2000.0;
     let bounds = range
@@ -939,6 +970,7 @@ fn capture_ax(app: &Element, pid: i32, bundle_id: &str, app_name: &str) -> Resul
         range: range.map(|r| (r.location, r.length)),
         playground: false,
         code,
+        markers,
         formatted,
     })
 }
@@ -1167,6 +1199,7 @@ fn capture_clipboard(app: &Element, pid: i32, bundle_id: String, app_name: Strin
         range: None,
         playground: false,
         code: Vec::new(),
+        markers: Vec::new(),
         formatted: false,
     })
 }
@@ -1210,7 +1243,7 @@ pub fn replace(capture: &Capture, text: &str, proofread: bool) -> Result<Replace
             ));
             None
         } else {
-            Some(supereditr_core::edits::plan(&capture.text, text, proofread, &capture.code))
+            Some(supereditr_core::edits::plan(&capture.text, text, proofread, &capture.protected()))
         };
         match plan {
             None => {}
@@ -1458,6 +1491,55 @@ fn field_offset(captured: &str, selected: &str, start: usize) -> Option<usize> {
     None
 }
 
+/// Where an edit goes in the field: UTF-16 units `start..end` to replace (equal for an insertion),
+/// and `text`, at `check`, to read back first: the words replaced, or an insertion's anchor.
+struct Place {
+    check: usize,
+    text: String,
+    start: usize,
+    end: usize,
+}
+
+/// Finds `edit` in the field, whose text is `units` with the selection, `selected`, starting at
+/// `location`, and confirms the field holds what the edit expects there. An insertion goes on the
+/// same side of any invisible padding beside its anchor as in the text that was read.
+fn place(
+    edit: &supereditr_core::edits::Edit,
+    captured: &str,
+    selected: &str,
+    units: &[u16],
+    location: usize,
+) -> Option<Place> {
+    let (check_from, text) = match &edit.anchor {
+        Some(anchor) => (anchor.start, &anchor.text),
+        None => (edit.start, &edit.old),
+    };
+    let check = location + field_offset(captured, selected, check_from)?;
+    let len = text.encode_utf16().count();
+    if units.get(check..check + len)? != text.encode_utf16().collect::<Vec<_>>().as_slice() {
+        return None;
+    }
+    let invisible = |u: u16| char::from_u32(u32::from(u)).is_some_and(is_invisible);
+    let start = match &edit.anchor {
+        None => return Some(Place { check, text: text.clone(), start: check, end: check + len }),
+        Some(anchor) if !anchor.after => {
+            let mut at = check + len;
+            while anchor.padded && units.get(at).is_some_and(|&u| invisible(u)) {
+                at += 1;
+            }
+            at
+        }
+        Some(anchor) => {
+            let mut at = check;
+            while anchor.padded && at > 0 && invisible(units[at - 1]) {
+                at -= 1;
+            }
+            at
+        }
+    };
+    Some(Place { check, text: text.clone(), start, end: start })
+}
+
 /// `value` with UTF-16 units `start..end` replaced by `new`.
 fn spliced(value: &str, start: usize, end: usize, new: &str) -> Option<String> {
     let units: Vec<u16> = value.encode_utf16().collect();
@@ -1576,19 +1658,23 @@ fn replace_in_place(
         return fallback("the selection is outside the field's text");
     };
     // Where each edit is in the field, checked against the field's text before anything moves.
-    let mut starts = Vec::with_capacity(edits.len());
+    let mut places = Vec::with_capacity(edits.len());
     for edit in edits {
-        let start = field_offset(&capture.text, &selected, edit.start).map(|offset| location + offset);
-        let old: Vec<u16> = edit.old.encode_utf16().collect();
-        match start {
-            Some(start) if units.get(start..start + old.len()) == Some(old.as_slice()) => starts.push(start),
-            _ => return fallback("the field's text doesn't line up with the changes"),
+        match place(edit, &capture.text, &selected, &units, location) {
+            Some(place) => places.push(place),
+            None => return fallback("the field's text doesn't line up with the changes"),
         }
     }
     let restore = |mover: Mover| element.move_selection(mover, location, location + length);
+    // Selects the text an edit checks, reads it back, and for an insertion puts the caret in place.
+    let select = |mover: Mover, place: &Place| {
+        element.select_text(mover, place.check, &place.text)
+            && (place.check == place.start && place.end == place.start + place.text.encode_utf16().count()
+                || element.move_selection(mover, place.start, place.end))
+    };
     // Confirm the app lets SuperEditr move its selection, on the first edit to be written.
     let movers: &[Mover] = if capture.web { &[Mover::Range, Mover::Marker] } else { &[Mover::Range] };
-    let Some(mover) = movers.iter().copied().find(|&mover| element.select_text(mover, starts[0], &edits[0].old)) else {
+    let Some(mover) = movers.iter().copied().find(|&mover| select(mover, &places[0])) else {
         movers.iter().any(|&mover| restore(mover));
         if !wait_until(Duration::from_millis(200), || selection_unchanged(capture)) {
             trace(format_args!("{}: in place: the selection couldn't be put back", capture.bundle_id));
@@ -1602,9 +1688,9 @@ fn replace_in_place(
     let mut snapshot = None;
     let mut ours = None;
     let (mut typed, mut attempts) = (0, 0);
-    for (i, (edit, &start)) in edits.iter().zip(&starts).enumerate() {
-        let end = start + edit.old.encode_utf16().count();
-        if i > 0 && !(field_focused(capture, element) && element.select_text(mover, start, &edit.old)) {
+    for (i, (edit, place)) in edits.iter().zip(&places).enumerate() {
+        let (start, end) = (place.start, place.end);
+        if i > 0 && !(field_focused(capture, element) && select(mover, place)) {
             return in_place_stopped(capture, i, edits.len(), "the text to fix no longer matched");
         }
         let Some(value) = element.string("AXValue") else {
@@ -1620,7 +1706,7 @@ fn replace_in_place(
         } else {
             let untouched = || {
                 element.string("AXValue").as_deref() == Some(value.as_str())
-                    && element.raw_selected_text().as_deref() == Some(edit.old.as_str())
+                    && element.raw_selected_text().unwrap_or_default() == edit.old
             };
             // A short replacement is typed: no clipboard round trip, which is the slow step in
             // Chromium. If the app ignores the typing, it is pasted instead.
@@ -2373,6 +2459,23 @@ mod tests {
         // Past the end, or on a line break, is nowhere.
         assert_eq!(field_offset("ab", "ab", 2), None);
         assert_eq!(field_offset("a\nb", "a\nb", 1), None);
+    }
+
+    #[test]
+    fn places_an_insertion_past_code_padding() {
+        use supereditr_core::edits::plan;
+        // Read as "this is code", the field pads the code with zero-width spaces.
+        let read = "this is \u{200B}code\u{200B}";
+        let edits = plan(read, "This is \u{200B}code\u{200B}.", true, &[(9, 13)]).unwrap();
+        let field = "Hi\nthis is \u{200B}code\u{200B}";
+        let units: Vec<u16> = field.encode_utf16().collect();
+        let insertion = place(&edits[0], read, read, &units, 3).unwrap();
+        assert_eq!((insertion.check, insertion.text.as_str(), insertion.start, insertion.end), (12, "code", 17, 17));
+        let replacement = place(&edits[1], read, read, &units, 3).unwrap();
+        assert_eq!((replacement.check, replacement.start, replacement.end), (3, 3, 7));
+        // A field whose text doesn't match what was read gives no place.
+        let other: Vec<u16> = "Hi\nthat is code".encode_utf16().collect();
+        assert!(place(&edits[1], read, read, &other, 3).is_none());
     }
 
     #[test]

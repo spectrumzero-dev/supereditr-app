@@ -107,7 +107,8 @@ function editableDiv(host, content) {
   const root = document.createElement("div");
   root.contentEditable = "true";
   root.className = "editor";
-  const reset = () => (root.innerHTML = content ?? html({ br: true }));
+  // An editable div shows an empty paragraph only with a line break in it, as editors give it.
+  const reset = () => (root.innerHTML = content?.replace("<p></p>", "<p><br></p>") ?? html({ br: true }));
   reset();
   host.append(root);
   return { root, reset };

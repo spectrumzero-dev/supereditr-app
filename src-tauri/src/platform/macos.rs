@@ -1419,10 +1419,10 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
 // --- Applying in place ------------------------------------------------------------------------
 
 /// Where the edit at character `start` of `captured` (the selection as SuperEditr read it) starts in
-/// `selected` (the same selection in the field's own text), in UTF-16 units. The two can differ in
-/// line breaks (Chromium leaves empty paragraphs out of a field's text) and in the zero-width
-/// characters editors pad formatting with, so both are skipped when counting. None when `start` is
-/// past the text or sits on a skipped character.
+/// `selected` (the selection as the app counts positions in it), in UTF-16 units. The two can differ
+/// in line breaks (Chromium counts none between blocks) and in the zero-width characters editors pad
+/// formatting with, so both are skipped when counting. None when `start` is past the text or sits on
+/// a skipped character.
 fn field_offset(captured: &str, selected: &str, start: usize) -> Option<usize> {
     let skipped = |c: char| is_line_break(c) || is_invisible(c);
     let before = captured.chars().take(start).filter(|c| !skipped(*c)).count();
@@ -1452,53 +1452,42 @@ struct Place {
     end: usize,
 }
 
-/// Finds `edit` in the field, whose text is `units` with the selection, `selected`, starting at
-/// `location`, and confirms the field holds what the edit expects there. An insertion goes on the
-/// same side of any invisible padding beside its anchor as in the text that was read.
-fn place(
-    edit: &supereditr_core::edits::Edit,
-    captured: &str,
-    selected: &str,
-    units: &[u16],
-    location: usize,
-) -> Option<Place> {
+/// Finds `edit` in the selection, `selected` as the app reports it, starting at `location`, and
+/// confirms the selection holds what the edit expects there. Positions count as the app counts its
+/// selection, which isn't always its `AXValue`: Chromium's leave out the line breaks between blocks.
+/// An insertion goes on the same side of any invisible padding beside its anchor as in the text
+/// that was read.
+fn place(edit: &supereditr_core::edits::Edit, captured: &str, selected: &str, location: usize) -> Option<Place> {
+    let units: Vec<u16> = selected.encode_utf16().collect();
     let (check_from, text) = match &edit.anchor {
         Some(anchor) => (anchor.start, &anchor.text),
         None => (edit.start, &edit.old),
     };
-    let check = location + field_offset(captured, selected, check_from)?;
+    let offset = field_offset(captured, selected, check_from)?;
     let len = text.encode_utf16().count();
-    if units.get(check..check + len)? != text.encode_utf16().collect::<Vec<_>>().as_slice() {
+    if units.get(offset..offset + len)? != text.encode_utf16().collect::<Vec<_>>().as_slice() {
         return None;
     }
+    let check = location + offset;
     let invisible = |u: u16| char::from_u32(u32::from(u)).is_some_and(is_invisible);
     let start = match &edit.anchor {
         None => return Some(Place { check, text: text.clone(), start: check, end: check + len }),
         Some(anchor) if !anchor.after => {
-            let mut at = check + len;
+            let mut at = offset + len;
             while anchor.padded && units.get(at).is_some_and(|&u| invisible(u)) {
                 at += 1;
             }
-            at
+            location + at
         }
         Some(anchor) => {
-            let mut at = check;
+            let mut at = offset;
             while anchor.padded && at > 0 && invisible(units[at - 1]) {
                 at -= 1;
             }
-            at
+            location + at
         }
     };
     Some(Place { check, text: text.clone(), start, end: start })
-}
-
-/// `value` with UTF-16 units `start..end` replaced by `new`.
-fn spliced(value: &str, start: usize, end: usize, new: &str) -> Option<String> {
-    let units: Vec<u16> = value.encode_utf16().collect();
-    let mut out = units.get(..start)?.to_vec();
-    out.extend(new.encode_utf16());
-    out.extend_from_slice(units.get(end..)?);
-    String::from_utf16(&out).ok()
 }
 
 /// Sets the field's selection to UTF-16 units `start..start + length`, without waiting.
@@ -1542,15 +1531,10 @@ fn wait_until(wait: Duration, done: impl Fn() -> bool) -> bool {
     }
 }
 
-/// Whether the field's text reads `expected`, ignoring the zero-width characters editors add.
-fn value_is(element: &Element, expected: &str) -> bool {
-    let visible = |s: &str| s.chars().filter(|c| !is_invisible(*c)).collect::<String>();
-    element.string("AXValue").is_some_and(|value| visible(&value) == visible(expected))
-}
-
 /// Applies a proofread as `edits` (last first), each writing only one change: an Accessibility
 /// write in a native field, typing in a web one. Before each write the text there is selected and
-/// read back; after each, the field must read as expected; after the last, it must hold `text`.
+/// read back; after each, what was written is selected and read back; after the last, the field
+/// must hold `text`.
 ///
 /// `Ok(None)` when nothing was written and the selection is back as captured (the app doesn't let
 /// SuperEditr move its selection, or the field doesn't line up with the edits): the caller then
@@ -1580,27 +1564,27 @@ fn replace_in_place(
             PlatformError::Partial { applied, total: edits.len() }
         })
     };
-    let (Some((location, length)), Some(before)) = (capture.range, element.string("AXValue")) else {
+    // The selection as the app counts positions in it, still as captured (`replace` checked).
+    let (Some(range), Some(selected), Some(before)) =
+        (element.range("AXSelectedTextRange"), element.string("AXSelectedText"), element.string("AXValue"))
+    else {
         return fallback("the field doesn't report its text or selection");
     };
-    let (location, length) = (location.max(0) as usize, length.max(0) as usize);
-    let units: Vec<u16> = before.encode_utf16().collect();
-    let Some(selected) = units.get(location..location + length).and_then(|u| String::from_utf16(u).ok()) else {
-        return fallback("the selection is outside the field's text");
-    };
-    // Where each edit is in the field, checked against the field's text before anything moves.
+    let (location, length) = (range.location.max(0) as usize, range.length.max(0) as usize);
+    // Where each edit is, checked against the selection before anything moves.
     let Some(places) =
-        edits.iter().map(|edit| place(edit, &capture.text, &selected, &units, location)).collect::<Option<Vec<_>>>()
+        edits.iter().map(|edit| place(edit, &capture.text, &selected, location)).collect::<Option<Vec<_>>>()
     else {
         return fallback("the field's text doesn't line up with the changes");
     };
-    // Selects the text an edit checks and reads it back; for an insertion, then puts the caret there.
+    // Selects `text` at `start` and confirms it by reading the selection back.
+    let select_text = |start: usize, text: &str| {
+        set_selection(element, start, text.encode_utf16().count())
+            && wait_until(Duration::from_millis(200), || element.string("AXSelectedText").as_deref() == Some(text))
+    };
+    // Selects the text an edit checks; for an insertion, then puts the caret in place.
     let select = |place: &Place| {
-        set_selection(element, place.check, place.text.encode_utf16().count())
-            && wait_until(Duration::from_millis(200), || {
-                element.string("AXSelectedText").as_deref() == Some(&place.text)
-            })
-            && (place.start != place.end || set_selection(element, place.start, 0))
+        select_text(place.check, &place.text) && (place.start != place.end || set_selection(element, place.start, 0))
     };
     let restore = || {
         set_selection(element, location, length)
@@ -1618,17 +1602,17 @@ fn replace_in_place(
         if i > 0 && !(field_focused(capture, element) && select(place)) {
             return stopped(i, "the text to fix no longer matched");
         }
-        let Some(expected) =
-            element.string("AXValue").and_then(|value| spliced(&value, place.start, place.end, &edit.new))
-        else {
-            return stopped(i, "the field's text changed");
-        };
+        let value = element.string("AXValue");
         let wrote = if native {
             element.set("AXSelectedText", CFString::new(&edit.new).as_CFTypeRef())
         } else {
             type_text(capture.pid, &edit.new)
         };
-        if !(wrote && wait_until(Duration::from_millis(250), || value_is(element, &expected))) {
+        // Landed once the field changes and what was written reads back where it should be.
+        let landed = wrote
+            && wait_until(Duration::from_millis(250), || element.string("AXValue") != value)
+            && (edit.new.is_empty() || select_text(place.start, &edit.new));
+        if !landed {
             // Nothing written yet: the whole replace can still go ahead, once the selection is back.
             if i == 0 && element.string("AXValue").as_deref() == Some(before.as_str()) && restore() {
                 return fallback("the first change didn't land");
@@ -2336,26 +2320,19 @@ mod tests {
     }
 
     #[test]
-    fn places_an_insertion_past_code_padding() {
+    fn places_edits_as_chromium_counts_its_selection() {
         use supereditr_core::edits::plan;
-        // Read as "this is code", the field pads the code with zero-width spaces.
-        let read = "this is \u{200B}code\u{200B}";
-        let edits = plan(read, "This is \u{200B}code\u{200B}.", true, &[(9, 13)]).unwrap();
-        let field = "Hi\nthis is \u{200B}code\u{200B}";
-        let units: Vec<u16> = field.encode_utf16().collect();
-        let insertion = place(&edits[0], read, read, &units, 3).unwrap();
-        assert_eq!((insertion.check, insertion.text.as_str(), insertion.start, insertion.end), (12, "code", 17, 17));
-        let replacement = place(&edits[1], read, read, &units, 3).unwrap();
-        assert_eq!((replacement.check, replacement.start, replacement.end), (3, 3, 7));
-        // A field whose text doesn't match what was read gives no place.
-        let other: Vec<u16> = "Hi\nthat is code".encode_utf16().collect();
-        assert!(place(&edits[1], read, read, &other, 3).is_none());
-    }
-
-    #[test]
-    fn splices_utf16_ranges() {
-        assert_eq!(spliced("😀 teh end", 3, 6, "the").as_deref(), Some("😀 the end"));
-        assert_eq!(spliced("abc", 2, 4, "x"), None);
+        // Read with its line breaks; Chromium's selection has none between blocks, and its code chip
+        // is padded with zero-width spaces.
+        let read = "Hi\n\nthis is \u{200B}code\u{200B}";
+        let selected = "Hithis is \u{200B}code\u{200B}";
+        let edits = plan(read, "Hi\n\nThis is \u{200B}code\u{200B}.", true, &[(13, 17)]).unwrap();
+        let insertion = place(&edits[0], read, selected, 5).unwrap();
+        assert_eq!((insertion.check, insertion.text.as_str(), insertion.start, insertion.end), (16, "code", 21, 21));
+        let replacement = place(&edits[1], read, selected, 5).unwrap();
+        assert_eq!((replacement.check, replacement.start, replacement.end), (7, 7, 11));
+        // A selection that doesn't hold what was read gives no place.
+        assert!(place(&edits[1], read, "Hithat is code", 5).is_none());
     }
 
     #[test]

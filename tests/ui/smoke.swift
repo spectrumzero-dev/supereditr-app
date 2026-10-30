@@ -763,6 +763,9 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 _ = waitFor(3) { overlay() == nil ? true : nil }
             }
         }
+        // The load is for those applies only: left on, it slows every later step, screenshots most.
+        load.forEach { $0.terminate() }
+        load.removeAll()
         // Paragraphs around an empty one, as in Claude's message box (ProseMirror): Chrome's own text
         // for the field leaves the empty paragraph out, and ⌘A's selected text can drop the break
         // between paragraphs. SuperEditr reads the field from its paragraphs, so the empty line

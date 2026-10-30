@@ -28,8 +28,11 @@ let demoConfig: Config = {
   offered_presets: ["proofread", "polish", "shorter", "friendly", "professional", "simplify", "english"],
   show_timing: true,
   diagnostic_log: false,
+  offered_launch_at_login: true,
   onboarded: false,
 };
+
+let demoLaunchAtLogin = true;
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (inTauri) {
@@ -51,6 +54,8 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
     test_provider: () => ({ firstTokenMs: 284, totalMs: 412, output: "This is a quick test." }),
     list_models: () => ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"],
     accessibility_status: () => false,
+    launch_at_login: () => demoLaunchAtLogin,
+    set_launch_at_login: () => (demoLaunchAtLogin = Boolean(args?.enabled)),
     check_shortcut: () => (args?.accelerator === "Command+Space" ? "macOS uses this for Spotlight." : null),
     default_presets: () => demoConfig.presets.map((p) => ({ ...p })),
     builtin_ai: () => ({ supported: true, available: true, message: null }),
@@ -83,6 +88,9 @@ export const api = {
   pauseShortcuts: (paused: boolean) => invoke<void>("pause_shortcuts", { paused }),
   openAppleIntelligence: () => invoke<void>("open_apple_intelligence_settings"),
   accessibility: (prompt: boolean) => invoke<boolean>("accessibility_status", { prompt }),
+  launchAtLogin: () => invoke<boolean>("launch_at_login"),
+  /** Returns whether opening at login is on afterwards. */
+  setLaunchAtLogin: (enabled: boolean) => invoke<boolean>("set_launch_at_login", { enabled }),
   openAccessibility: () => invoke<void>("open_accessibility_settings"),
   /** Opens System Settings → Accessibility with the drag-and-drop guide beside it. */
   guideAccessibility: () => invoke<void>("guide_accessibility"),

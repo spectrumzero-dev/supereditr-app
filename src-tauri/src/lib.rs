@@ -148,6 +148,49 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Whether a Launch Agent pointing at this executable keeps working after a restart: it's inside an
+/// app bundle, and not on a mounted disk image or in the temporary copy macOS runs a downloaded app
+/// from until it's moved (App Translocation).
+fn lasting_app_path(exe: &str) -> bool {
+    exe.contains(".app/Contents/MacOS/") && !exe.starts_with("/Volumes/") && !exe.contains("/AppTranslocation/")
+}
+
+/// Opening at login is on by default: turned on once, before Settings first reads the config, and
+/// then left to the user. Only a copy of the app that stays where it is gets added, and while it's
+/// on, each launch points the Launch Agent at the current copy, so moving the app doesn't break it.
+fn launch_at_login_by_default(app: &AppHandle) {
+    use tauri_plugin_autostart::ManagerExt;
+    // The path the autostart plugin writes into the Launch Agent.
+    let Some(exe) =
+        std::env::current_exe().and_then(|exe| exe.canonicalize()).ok().map(|exe| exe.display().to_string())
+    else {
+        return;
+    };
+    if !lasting_app_path(&exe) {
+        return;
+    }
+    let launcher = app.autolaunch();
+    let state = app.state::<AppState>();
+    let mut config = state.config();
+    if config.offered_launch_at_login {
+        // Rewritten only when the app has moved: macOS announces every change to a login item.
+        let agent = app.path().home_dir().map(|home| home.join("Library/LaunchAgents/SuperEditr.plist"));
+        let moved = agent.is_ok_and(|agent| std::fs::read_to_string(agent).is_ok_and(|plist| !plist.contains(&exe)));
+        if moved && let Err(e) = launcher.enable() {
+            eprintln!("SuperEditr: couldn't update opening at login: {e}");
+        }
+        return;
+    }
+    if let Err(e) = launcher.enable() {
+        eprintln!("SuperEditr: couldn't turn on opening at login: {e}");
+        return;
+    }
+    config.offered_launch_at_login = true;
+    if let Err(e) = state.save_config(config) {
+        eprintln!("SuperEditr: couldn't save settings: {e}");
+    }
+}
+
 pub fn run() {
     let mut builder = tauri::Builder::default();
     if updater::ENABLED {
@@ -171,6 +214,7 @@ pub fn run() {
                 eprintln!("SuperEditr: couldn't record the first run in {}: {e}", install.display());
             }
             app.manage(AppState::new(settings));
+            launch_at_login_by_default(app.handle());
             app.manage(hotkeys::Registry::default());
             write_status_file(config_dir.join("status.json"));
 
@@ -272,6 +316,8 @@ pub fn run() {
             commands::fit_settings_height,
             commands::pause_shortcuts,
             commands::open_apple_intelligence_settings,
+            commands::launch_at_login,
+            commands::set_launch_at_login,
             commands::accessibility_status,
             commands::open_accessibility_settings,
             commands::guide_accessibility,
@@ -282,4 +328,20 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("SuperEditr failed to start");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lasting_app_path;
+
+    #[test]
+    fn only_a_copy_that_stays_put_opens_at_login() {
+        assert!(lasting_app_path("/Applications/SuperEditr.app/Contents/MacOS/supereditr"));
+        assert!(lasting_app_path("/Users/me/Applications/SuperEditr.app/Contents/MacOS/supereditr"));
+        assert!(!lasting_app_path("/Volumes/SuperEditr/SuperEditr.app/Contents/MacOS/supereditr"));
+        assert!(!lasting_app_path(
+            "/private/var/folders/xy/T/AppTranslocation/0A1B2C/d/SuperEditr.app/Contents/MacOS/supereditr"
+        ));
+        assert!(!lasting_app_path("/Users/me/supereditr/target/debug/supereditr"));
+    }
 }

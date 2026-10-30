@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import type { Config } from "../lib/types";
   import ShortcutInput from "./ShortcutInput.svelte";
+  import { api } from "./ipc";
 
   interface Props {
     config: Config;
@@ -9,6 +11,22 @@
   }
   let { config = $bindable(), problems, onchange }: Props = $props();
   let newApp = $state("");
+  let launchAtLogin = $state(true);
+  let launchError = $state("");
+
+  onMount(() => {
+    api.launchAtLogin().then((on) => (launchAtLogin = on));
+  });
+
+  async function setLaunchAtLogin(enabled: boolean) {
+    launchError = "";
+    try {
+      launchAtLogin = await api.setLaunchAtLogin(enabled);
+    } catch (e) {
+      launchError = String(e);
+      launchAtLogin = await api.launchAtLogin();
+    }
+  }
 
   function addApp() {
     const id = newApp.trim();
@@ -91,6 +109,20 @@
       <div class="label">Show response times</div>
       <input type="checkbox" class="switch" bind:checked={config.show_timing} onchange={onchange} />
     </div>
+  </div>
+
+  <div class="group-title">Startup</div>
+  <div class="group">
+    <div class="row">
+      <div>
+        <div class="label">Open at login</div>
+        <div class="hint">Starts SuperEditr in the menu bar when you log in, so it’s running again after you restart your Mac.</div>
+      </div>
+      <input type="checkbox" class="switch" aria-label="Open at login" checked={launchAtLogin} onchange={(e) => setLaunchAtLogin(e.currentTarget.checked)} />
+    </div>
+    {#if launchError}
+      <div class="row warn">{launchError}</div>
+    {/if}
   </div>
 
   <div class="group-title">Apps where SuperEditr never reads text</div>

@@ -101,6 +101,8 @@ export interface Config {
   show_timing: boolean;
   /** Keep capture.log for diagnosing a problem in a particular app; see crates/core/src/config.rs. */
   diagnostic_log: boolean;
+  /** Opening at login was turned on once as the default; see crates/core/src/config.rs. */
+  offered_launch_at_login: boolean;
   onboarded: boolean;
 }
 

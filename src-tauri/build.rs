@@ -34,13 +34,20 @@ fn source_commit() -> Option<String> {
         }
         println!("cargo:warning=Ignoring SUPEREDITR_SOURCE_SHA, which isn't a commit hash.");
     }
-    // Rebuild the label when the checkout moves to another commit.
-    for path in ["HEAD", "packed-refs"].into_iter().map(str::to_owned).chain(git(&["symbolic-ref", "-q", "HEAD"])) {
-        if let Some(file) =
-            git(&["rev-parse", "--path-format=absolute", "--git-path", &path]).filter(|file| Path::new(file).exists())
-        {
-            println!("cargo:rerun-if-changed={file}");
+    // Rebuild the label when the checkout moves to another commit. A branch whose ref is only in
+    // packed-refs has no file yet, so watch the nearest folder above it, where the next commit
+    // writes one. (Watching a missing path would rerun this script on every build.)
+    let git_path = |path: &str| git(&["rev-parse", "--path-format=absolute", "--git-path", path]).map(PathBuf::from);
+    for file in ["HEAD", "packed-refs"].into_iter().filter_map(git_path) {
+        if file.exists() {
+            println!("cargo:rerun-if-changed={}", file.display());
         }
+    }
+    if let (Some(branch), Some(refs)) =
+        (git(&["symbolic-ref", "-q", "HEAD"]).and_then(|r| git_path(&r)), git_path("refs"))
+        && let Some(existing) = branch.ancestors().take_while(|p| p.starts_with(&refs)).find(|p| p.exists())
+    {
+        println!("cargo:rerun-if-changed={}", existing.display());
     }
     git(&["rev-parse", "--short=7", "HEAD"])
 }

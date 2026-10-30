@@ -4,8 +4,10 @@
   "description": "Rich-text editors for the UI smoke tests composer matrix, bundled into composers.bundle.js by build.sh.",
   "license": "MIT",
   "devDependencies": {
+    "@lexical/code": "0.53.0",
     "@lexical/html": "0.53.0",
     "@lexical/link": "0.53.0",
+    "@lexical/list": "0.53.0",
     "@lexical/rich-text": "0.53.0",
     "@tiptap/core": "3.32.2",
     "@tiptap/pm": "3.32.2",

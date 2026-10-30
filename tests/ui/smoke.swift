@@ -924,6 +924,81 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         }
         log("     composer matrix:")
         matrix.forEach { log("       \($0)") }
+        // The formats matrix: a document with every common structure (a heading, bold, italic, a link and
+        // code in a paragraph, a bulleted list with a nested item, a numbered list, a quote, a code block, a
+        // line break inside a paragraph) in each editor, with typos in the prose and in the code. Each
+        // field must get its fixes and keep every structure and its code exactly. The text SuperEditr
+        // reviewed (the panel) and the field's Accessibility tree go to the artifacts, to show how Chrome
+        // exposes each structure.
+        let formatFields = [("formats-div", "editable div"), ("formats-markdown", "Markdown composer"),
+                            ("formats-tiptap", "TipTap"), ("formats-lexical", "Lexical")]
+        func axDump(_ element: AXUIElement, depth: Int = 0) -> String {
+            let role = attribute(element, kAXRoleAttribute) as? String ?? "?"
+            let subrole = attribute(element, kAXSubroleAttribute) as? String ?? ""
+            let value = (attribute(element, kAXValueAttribute) as? String).map { " " + String(reflecting: $0) } ?? ""
+            let line = String(repeating: "  ", count: depth) + role + (subrole.isEmpty ? "" : "/" + subrole) + value
+            guard depth < 30, let children = attribute(element, kAXChildrenAttribute) as? [AXUIElement] else { return line }
+            return ([line] + children.map { axDump($0, depth: depth + 1) }).joined(separator: "\n")
+        }
+        // "headings=1 items=3 …; text=…" → the structure, and the text.
+        func formatsState(_ id: String) -> (structure: String, text: String) {
+            let raw = chromeElement("\(id)-state").map { allText($0, levels: 4) } ?? ""
+            let parts = raw.components(separatedBy: "; text=")
+            return (parts.first ?? "", parts.count > 1 ? parts[1] : "")
+        }
+        var formatsRows: [String] = []
+        for (id, editor) in formatFields {
+            let name = "the \(editor) formats field"
+            guard let field = chromeElement(id) else {
+                check(false, "\(name) is found", "no element with DOM id \"\(id)\"")
+                continue
+            }
+            let before = formatsState(id)
+            try? axDump(field).write(toFile: outDir + "/formats-\(id)-accessibility.txt", atomically: true, encoding: .utf8)
+            AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            _ = selectAll() || selectAll()
+            let selected = visible(focusedElement().flatMap { attribute($0, kAXSelectedTextAttribute) as? String } ?? "")
+            guard selected.contains("Weekly notes") && selected.contains("See you soon.") else {
+                check(false, "\(name): the whole field is selected", "selected \(String(reflecting: selected))")
+                formatsRows.append("\(editor): not selected")
+                continue
+            }
+            press(keyE, .maskCommand)
+            pump(0.1)
+            press(keyE, .maskCommand)
+            let opened = waitFor(5, { overlay() }) != nil
+                && waitFor(4) { panelText().range(of: #"\breplace\b"#, options: .regularExpression) != nil ? true : nil } != nil
+            check(opened, "\(name): ⌘E E opens a review with a fix", "panel text: \(panelText())")
+            guard opened else {
+                formatsRows.append("\(editor): no review")
+                press(keyEscape)
+                continue
+            }
+            let read = lastChromeRead()
+            try? "\(read)\n\n\(panelText())".write(toFile: outDir + "/formats-\(id)-review.txt", atomically: true, encoding: .utf8)
+            log("NOTE \(name): \(read.split(separator: " ", maxSplits: 1).last ?? "")")
+            screenshot(window: overlay(), to: outDir + "/formats-\(id)-review.png")
+            press(keyReturn)
+            _ = waitFor(3) { overlay() == nil ? true : nil }
+            let after = waitFor(3) { () -> (structure: String, text: String)? in
+                let state = formatsState(id)
+                return state.text.contains("Secend") || state.text.contains("realy") ? nil : state
+            } ?? formatsState(id)
+            let fixed = !after.text.contains("Secend") && !after.text.contains("realy")
+            check(fixed, "\(name): the fixes land", "the field holds \(String(reflecting: after.text))")
+            check(after.structure == before.structure, "\(name): every structure and the code survive the fix",
+                  "before \(before.structure); after \(after.structure)")
+            let path = appliedPath("com.google.Chrome")
+            log("NOTE \(name): \(path)")
+            formatsRows.append("\(editor): \(fixed ? "fixed" : "NOT fixed"), \(after.structure == before.structure ? "structure kept" : "STRUCTURE LOST"), \(path.contains("applied in place:") ? "in place" : "whole")")
+            screenshot(window: nil, rect: windows(bundleID: chrome).first?.frame, to: outDir + "/formats-\(id)-applied.png")
+            if overlay() != nil {
+                press(keyEscape)
+                _ = waitFor(3) { overlay() == nil ? true : nil }
+            }
+        }
+        log("     formats matrix:")
+        formatsRows.forEach { log("       \($0)") }
         // ⌥↩ pressed again while the first one applies used to hang SuperEditr: applying turns the
         // panel's shortcuts off while the main thread handles the next press. With the typo put back in
         // the last field, press it three times in a row, then check that ⌘E E still opens a review.

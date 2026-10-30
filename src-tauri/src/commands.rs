@@ -111,7 +111,7 @@ pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> SettingsPaylo
         config,
         keys,
         accessibility: platform::accessibility_trusted(false),
-        version: env!("CARGO_PKG_VERSION"),
+        version: env!("SUPEREDITR_VERSION_LABEL"),
         platform: std::env::consts::OS,
         hotkey_problems: Vec::new(),
     }

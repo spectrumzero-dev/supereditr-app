@@ -151,6 +151,7 @@ async fn check(args: Args) {
             style_notes: String::new(),
             dialect: config.dialect.clone(),
             words: config.words.clone(),
+            code: Vec::new(),
             local_checks: !args.flags.contains_key("no-local"),
             builtin_ai: !args.flags.contains_key("offline"),
         };

@@ -188,6 +188,7 @@ async fn engine_leaves_the_offline_checker_out_while_an_ai_answers() {
         style_notes: String::new(),
         dialect: "American English".into(),
         words: Vec::new(),
+        code: Vec::new(),
         local_checks: true,
         builtin_ai: false,
     };
@@ -197,6 +198,33 @@ async fn engine_leaves_the_offline_checker_out_while_an_ai_answers() {
     let Some(Event::Done(outcome)) = events.last() else { panic!("{events:?}") };
     assert_eq!(outcome.text, "This is the draft.\n", "tags stripped, trailing newline restored");
     assert_eq!(outcome.view.change_count, 2);
+}
+
+#[tokio::test]
+async fn engine_leaves_code_as_written() {
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"<text>Should I update? `Wrangler 4.150.0` \"}}]}\n\n\
+                data: {\"choices\":[{\"delta\":{\"content\":\"now.\\n```\\nNpm i\\n```</text>\"}}]}\n\n\
+                data: [DONE]\n\n";
+    let (url, _) = mock_server(vec![(200, "text/event-stream", body.into())]).await;
+    let engine = Engine::new("American English");
+    let config = supereditr_core::Config::default();
+    let job = Job {
+        text: "should i update? `wrangler 4.150.0` now\n```\nnpm i\n```".into(),
+        preset: config.default_preset().clone(),
+        steer: None,
+        profile: Some(profile(ProviderKind::OpenAiCompatible, &url, "local-model")),
+        style_notes: String::new(),
+        dialect: "American English".into(),
+        words: Vec::new(),
+        code: Vec::new(),
+        local_checks: true,
+        builtin_ai: false,
+    };
+    let mut events = Vec::new();
+    engine.run(job, &mut |e| events.push(e)).await;
+    let Some(Event::Done(outcome)) = events.last() else { panic!("{events:?}") };
+    assert_eq!(outcome.text, "Should I update? `wrangler 4.150.0` now.\n```\nnpm i\n```");
+    assert_eq!(outcome.view.change_count, 3);
 }
 
 #[tokio::test]
@@ -212,6 +240,7 @@ async fn engine_falls_back_to_the_offline_checker_when_the_ai_fails() {
         style_notes: String::new(),
         dialect: "American English".into(),
         words: Vec::new(),
+        code: Vec::new(),
         local_checks: true,
         builtin_ai: false,
     };
@@ -233,6 +262,7 @@ async fn engine_works_offline_without_a_provider() {
         style_notes: String::new(),
         dialect: "American English".into(),
         words: Vec::new(),
+        code: Vec::new(),
         local_checks: true,
         builtin_ai: false,
     };
@@ -260,6 +290,7 @@ async fn engine_never_sends_a_secret() {
             style_notes: String::new(),
             dialect: "American English".into(),
             words: Vec::new(),
+            code: Vec::new(),
             local_checks: true,
             builtin_ai: true,
         };
@@ -339,6 +370,7 @@ async fn engine_rejects_an_empty_revision() {
         style_notes: String::new(),
         dialect: "American English".into(),
         words: Vec::new(),
+        code: Vec::new(),
         local_checks: false,
         builtin_ai: false,
     };
@@ -360,6 +392,7 @@ async fn engine_rejects_a_wrapped_empty_revision() {
         style_notes: String::new(),
         dialect: "American English".into(),
         words: Vec::new(),
+        code: Vec::new(),
         local_checks: false,
         builtin_ai: false,
     };
@@ -418,6 +451,7 @@ async fn changes_that_drop_the_authors_terms_start_rejected() {
         style_notes: String::new(),
         dialect: "American English".into(),
         words: Vec::new(),
+        code: Vec::new(),
         local_checks: true,
         builtin_ai: false,
     };
@@ -444,6 +478,7 @@ async fn the_authors_words_reach_the_ai_and_survive_it() {
         style_notes: String::new(),
         dialect: "American English".into(),
         words: vec!["Rhyan".into(), "1234 Glenmoor Ct".into(), "QuillPoint".into()],
+        code: Vec::new(),
         local_checks: true,
         builtin_ai: false,
     };
@@ -471,6 +506,7 @@ async fn offers_to_learn_unknown_words_not_yet_listed() {
         style_notes: String::new(),
         dialect: "American English".into(),
         words: vec!["Brynlee".into()],
+        code: Vec::new(),
         local_checks: true,
         builtin_ai: false,
     };
@@ -497,6 +533,7 @@ async fn reports_when_nothing_can_check_the_text() {
         style_notes: String::new(),
         dialect: "American English".into(),
         words: Vec::new(),
+        code: Vec::new(),
         local_checks: false,
         builtin_ai: false,
     };
@@ -520,6 +557,7 @@ async fn the_offline_checker_catches_what_the_model_missed() {
         style_notes: String::new(),
         dialect: "American English".into(),
         words: Vec::new(),
+        code: Vec::new(),
         local_checks: true,
         builtin_ai: false,
     };

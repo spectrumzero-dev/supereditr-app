@@ -561,6 +561,7 @@ pub async fn preview_review(
         style_notes: config.style_notes.clone(),
         dialect: config.dialect.clone(),
         words: config.words.clone(),
+        code: Vec::new(),
         local_checks: true,
         builtin_ai: true,
     };

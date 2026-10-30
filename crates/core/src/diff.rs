@@ -146,6 +146,40 @@ pub fn apply(view: &DiffView, rejected: &HashSet<usize>) -> String {
     out
 }
 
+/// `view` with every change that touches one of `spans` (character ranges of the original) turned
+/// back into original text, and the remaining changes numbered again. An insertion touches a span
+/// when it falls inside it, not at its edge.
+pub fn without_changes_in(view: DiffView, spans: &[(usize, usize)]) -> DiffView {
+    if spans.is_empty() {
+        return view;
+    }
+    let mut segments: Vec<Segment> = Vec::new();
+    let mut next_id = 0;
+    for segment in view.segments {
+        let segment = match segment {
+            Segment::Change { old, old_start, .. } if touches(old_start, old.chars().count(), spans) => {
+                Segment::Equal { text: old }
+            }
+            Segment::Change { id: _, old, new, kind, old_start, note } => {
+                next_id += 1;
+                Segment::Change { id: next_id - 1, old, new, kind, old_start, note }
+            }
+            equal => equal,
+        };
+        match (&segment, segments.last_mut()) {
+            (Segment::Equal { text }, Some(Segment::Equal { text: prev })) => prev.push_str(text),
+            (Segment::Equal { text }, _) if text.is_empty() => {}
+            _ => segments.push(segment),
+        }
+    }
+    finish(segments, view.pending)
+}
+
+fn touches(start: usize, len: usize, spans: &[(usize, usize)]) -> bool {
+    let end = start + len;
+    spans.iter().any(|&(s, e)| if len == 0 { s < start && start < e } else { start < e && s < end })
+}
+
 fn classify(old: &str, new: &str) -> ChangeKind {
     let strip_ws = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
     if strip_ws(old) == strip_ws(new) {
@@ -224,6 +258,30 @@ mod tests {
         assert_eq!(apply(&view, &HashSet::new()), "This is the draft.");
         assert_eq!(apply(&view, &HashSet::from([0])), "This are the draft.");
         assert_eq!(apply(&view, &HashSet::from([0, 1])), "This are teh draft.");
+    }
+
+    #[test]
+    fn changes_inside_spans_are_left_out() {
+        let original = "should i run `npm i` now";
+        let view = diff(original, "Should I run `npm install` now.");
+        // `npm i` covers characters 13..20.
+        let kept = without_changes_in(view, &[(13, 20)]);
+        assert_eq!(apply(&kept, &HashSet::new()), "Should I run `npm i` now.");
+        let ids: Vec<usize> = kept
+            .segments
+            .iter()
+            .filter_map(|s| match s {
+                Segment::Change { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, vec![0, 1, 2]);
+        assert_eq!(kept.change_count, 3);
+        // An insertion at a span's edge is kept; one inside it is not.
+        let view = diff("run `x` now", "run `x`, now");
+        assert_eq!(apply(&without_changes_in(view, &[(4, 7)]), &HashSet::new()), "run `x`, now");
+        let view = diff("run `a b` now", "run `a, b` now");
+        assert_eq!(apply(&without_changes_in(view, &[(4, 9)]), &HashSet::new()), "run `a b` now");
     }
 
     #[test]

@@ -246,6 +246,7 @@ pub fn run(app: &AppHandle, id: u64, preset_id: String, steer: Option<String>) {
         style_notes: config.style_notes.clone(),
         dialect: config.dialect.clone(),
         words: config.words.clone(),
+        code: current.capture.code.clone(),
         local_checks: true,
         builtin_ai: true,
     };
@@ -383,6 +384,7 @@ pub async fn quick_fix(app: &AppHandle) {
         style_notes: config.style_notes.clone(),
         dialect: config.dialect.clone(),
         words: config.words.clone(),
+        code: captured.code.clone(),
         local_checks: true,
         builtin_ai: true,
     };

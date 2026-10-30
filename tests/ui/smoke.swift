@@ -636,6 +636,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
     <textarea id="plain" rows="3" cols="60">\(typo)</textarea>
     <div id="rich" contenteditable="true" style="border:1px solid; width:30em; min-height:3em">\(typo)</div>
     <div id="paragraphs" contenteditable="true" style="border:1px solid; width:30em"><p>\(typo)</p><p><br></p><p>See you soon.</p></div>
+    <div id="code" contenteditable="true" style="border:1px solid; width:30em"><p>\(typo) Then run <code>their going to work</code>.</p></div>
     """.write(toFile: page, atomically: true, encoding: .utf8)
     let chromeOpened = openFront(chromeApp, bundleID: chrome, file: page, newInstance: true,
                                  launchArguments: ["--user-data-dir=\(work)/chrome", "--no-first-run", "--no-default-browser-check"])
@@ -797,6 +798,37 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             }
         } else {
             check(false, "the paragraphs field is found", "no element with DOM id \"paragraphs\"")
+        }
+        // A code span, as a chat composer shows text typed in backticks: Chrome's text has no
+        // backticks left, so SuperEditr finds the span in the field and leaves it as written while
+        // the sentence before it is fixed.
+        let code = "their going to work"
+        if let ours = launchedSinceStart(chrome).last,
+           let field = byDOMIdentifier(AXUIElementCreateApplication(ours.processIdentifier), "code") {
+            AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            pump(0.5)
+            check(selectAll(), "the code field's text is selected")
+            press(keyE, .maskCommand)
+            pump(0.1)
+            press(keyE, .maskCommand)
+            let panel = waitFor(5) { overlay() }
+            check(panel != nil, "⌘E E reviews the field with code", "no overlay within 5 s")
+            if panel != nil {
+                pump(1.5)  // the rule-based checker's result
+                let lines = ((try? String(contentsOfFile: captureLog, encoding: .utf8)) ?? "").split(separator: "\n")
+                let found = lines.last { $0.contains("code in the field") }.map(String.init) ?? "none"
+                check(found.contains("1 pieces"), "the code span is found", "last code line: \(found)")
+                screenshot(window: overlay(), to: outDir + "/web-code-review.png")
+                press(keyReturn)
+                _ = waitFor(3) { overlay() == nil ? true : nil }
+                pump(1)
+                let value = attribute(field, kAXValueAttribute) as? String ?? ""
+                check(value.contains(code) && !value.contains(typo), "the fix leaves the code span as written",
+                      "the field reads \(String(reflecting: value))")
+                screenshot(window: nil, rect: windows(bundleID: chrome).first?.frame, to: outDir + "/web-code-applied.png")
+            }
+        } else {
+            check(false, "the code field is found", "no element with DOM id \"code\"")
         }
         // How many tries each paste needed, from SuperEditr's log, to show how often the retry helps.
         let pastes = ((try? String(contentsOfFile: captureLog, encoding: .utf8)) ?? "").split(separator: "\n")

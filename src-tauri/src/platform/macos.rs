@@ -15,7 +15,7 @@ use core_foundation::dictionary::CFDictionary;
 use core_foundation::string::{CFString, CFStringRef};
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::ffi::c_void;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -314,6 +314,58 @@ fn visible_length(element: &Element, depth: usize) -> usize {
     element.children().iter().map(|child| visible_length(child, depth + 1)).sum()
 }
 
+/// The text of each element in a web field that is marked as code (`<code>`, which WebKit and
+/// Chromium give the subrole `AXCodeStyleGroup`). The log gets the count and the subroles seen,
+/// never the text, so a field whose code goes unnoticed can be diagnosed.
+fn code_in(field: &Element) -> Vec<String> {
+    fn walk(
+        element: &Element,
+        depth: usize,
+        budget: &mut usize,
+        subroles: &mut BTreeSet<String>,
+        code: &mut Vec<String>,
+    ) {
+        for child in element.children() {
+            if *budget == 0 {
+                return;
+            }
+            *budget -= 1;
+            let subrole = child.string("AXSubrole");
+            if subrole.as_deref() == Some("AXCodeStyleGroup") {
+                let text = static_text(&child, 0);
+                if !text.trim().is_empty() {
+                    code.push(text);
+                }
+            } else if depth < 8 {
+                walk(&child, depth + 1, budget, subroles, code);
+            }
+            subroles.extend(subrole);
+        }
+    }
+    // A composer has a few dozen elements; a whole page can have thousands, each a slow call.
+    let started = Instant::now();
+    let (mut budget, mut subroles, mut code) = (1500, BTreeSet::new(), Vec::new());
+    walk(field, 0, &mut budget, &mut subroles, &mut code);
+    trace(format_args!(
+        "code in the field: {} pieces in {:?}; subroles {}",
+        code.len(),
+        started.elapsed(),
+        subroles.into_iter().collect::<Vec<_>>().join(", ")
+    ));
+    code
+}
+
+/// An element's static text, a few levels down, in order.
+fn static_text(element: &Element, depth: usize) -> String {
+    if element.string("AXRole").as_deref() == Some("AXStaticText") {
+        return element.string("AXValue").unwrap_or_default();
+    }
+    if depth >= 4 {
+        return String::new();
+    }
+    element.children().iter().map(|child| static_text(child, depth + 1)).collect()
+}
+
 /// `value` with its empty paragraphs put back. Chromium separates a rich field's non-empty
 /// paragraphs with fewer line breaks than there are paragraph breaks between them (one, for one
 /// empty paragraph between two), and may end with a line break for an empty last paragraph.
@@ -402,6 +454,9 @@ pub struct Capture {
     range: Option<(isize, isize)>,
     /// Text from Settings' "Try it now" box: applying sends it back to the box, not to an app.
     pub playground: bool,
+    /// The text of each piece of the field the app formats as code, whose backticks are gone
+    /// from `text`: reviews leave it as written.
+    pub code: Vec<String>,
 }
 
 /// A capture of text in Settings' "Try it now" box, anchored at `bounds` (screen points).
@@ -417,6 +472,7 @@ pub fn playground_capture(text: String, bounds: Rect) -> Capture {
         element: None,
         range: None,
         playground: true,
+        code: Vec::new(),
     }
 }
 
@@ -666,6 +722,8 @@ fn capture_ax(app: &Element, pid: i32, bundle_id: &str, app_name: &str) -> Resul
     // too. Editable fields let their value be set; web editors report an editable ancestor.
     let editable = element.settable("AXValue") || element.attr("AXEditableAncestor").is_some();
     let range = element.range("AXSelectedTextRange");
+    let web = is_browser_or_electron(bundle_id, pid) || in_web_area(&element);
+    let code = if web { code_in(&element) } else { Vec::new() };
     let plausible = |r: &CGRect| r.size.width > 0.5 && r.size.height > 0.5 && r.size.height < 2000.0;
     let bounds = range
         .and_then(|r| element.bounds_for_range(r))
@@ -680,10 +738,11 @@ fn capture_ax(app: &Element, pid: i32, bundle_id: &str, app_name: &str) -> Resul
         text,
         bounds,
         editable,
-        web: is_browser_or_electron(bundle_id, pid) || in_web_area(&element),
+        web,
         element: Some(element),
         range: range.map(|r| (r.location, r.length)),
         playground: false,
+        code,
     })
 }
 
@@ -910,6 +969,7 @@ fn capture_clipboard(app: &Element, pid: i32, bundle_id: String, app_name: Strin
         element: None,
         range: None,
         playground: false,
+        code: Vec::new(),
     })
 }
 

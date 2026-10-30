@@ -148,7 +148,9 @@ pub fn apply(view: &DiffView, rejected: &HashSet<usize>) -> String {
 
 /// `view` with every change that touches one of `spans` (character ranges of the original) turned
 /// back into original text, and the remaining changes numbered again. An insertion touches a span
-/// when it falls inside it, not at its edge.
+/// when it falls inside it, not at its edge. A change at a span's edge that only adds or removes
+/// spaces or invisible characters is turned back too: editors pad formatted code with them, and a
+/// change there shows as an empty box.
 pub fn without_changes_in(view: DiffView, spans: &[(usize, usize)]) -> DiffView {
     if spans.is_empty() {
         return view;
@@ -157,7 +159,10 @@ pub fn without_changes_in(view: DiffView, spans: &[(usize, usize)]) -> DiffView 
     let mut next_id = 0;
     for segment in view.segments {
         let segment = match segment {
-            Segment::Change { old, old_start, .. } if touches(old_start, old.chars().count(), spans) => {
+            Segment::Change { old, new, old_start, .. }
+                if touches(old_start, old.chars().count(), spans)
+                    || (blank(&old) && blank(&new) && borders(old_start, old.chars().count(), spans)) =>
+            {
                 Segment::Equal { text: old }
             }
             Segment::Change { id: _, old, new, kind, old_start, note } => {
@@ -178,6 +183,47 @@ pub fn without_changes_in(view: DiffView, spans: &[(usize, usize)]) -> DiffView 
 fn touches(start: usize, len: usize, spans: &[(usize, usize)]) -> bool {
     let end = start + len;
     spans.iter().any(|&(s, e)| if len == 0 { s < start && start < e } else { start < e && s < end })
+}
+
+fn borders(start: usize, len: usize, spans: &[(usize, usize)]) -> bool {
+    spans.iter().any(|&(s, e)| start <= e && s <= start + len)
+}
+
+/// Only spaces, line breaks and invisible characters: zero-width spaces and joiners, word joiners,
+/// byte order marks and object replacement characters.
+fn blank(text: &str) -> bool {
+    text.chars()
+        .all(|c| c.is_whitespace() || matches!(c, '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}' | '\u{FFFC}'))
+}
+
+/// Where each of `ranges` (character ranges of `original` that a revision left as they were) is in
+/// `revised`. A range the revision changed is left out.
+pub fn carry_ranges(original: &str, revised: &str, ranges: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    // Each unchanged stretch: where it starts in the original, where in the revision, and its length.
+    let mut stretches = Vec::new();
+    let (mut old_pos, mut new_pos) = (0, 0);
+    for segment in diff(original, revised).segments {
+        match segment {
+            Segment::Equal { text } => {
+                let length = text.chars().count();
+                stretches.push((old_pos, new_pos, length));
+                old_pos += length;
+                new_pos += length;
+            }
+            Segment::Change { old, new, .. } => {
+                old_pos += old.chars().count();
+                new_pos += new.chars().count();
+            }
+        }
+    }
+    ranges
+        .iter()
+        .filter_map(|&(s, e)| {
+            let &(old_start, new_start, _) =
+                stretches.iter().find(|&&(start, _, length)| start <= s && e <= start + length)?;
+            Some((new_start + s - old_start, new_start + e - old_start))
+        })
+        .collect()
 }
 
 fn classify(old: &str, new: &str) -> ChangeKind {
@@ -282,6 +328,26 @@ mod tests {
         assert_eq!(apply(&without_changes_in(view, &[(4, 7)]), &HashSet::new()), "run `x`, now");
         let view = diff("run `a b` now", "run `a, b` now");
         assert_eq!(apply(&without_changes_in(view, &[(4, 9)]), &HashSet::new()), "run `a b` now");
+    }
+
+    #[test]
+    fn invisible_changes_beside_code_are_left_out() {
+        // A zero-width space after the code, which the model dropped.
+        let view = diff("does this code\u{200B} block work nw", "Does this code block work now?");
+        let kept = without_changes_in(view, &[(10, 14)]);
+        assert_eq!(apply(&kept, &HashSet::new()), "Does this code\u{200B} block work now?");
+        assert_eq!(kept.change_count, 2);
+        // Away from code, a spacing fix still counts.
+        let view = diff("a  b `c`", "a b `c`");
+        assert_eq!(without_changes_in(view, &[(5, 8)]).change_count, 1);
+    }
+
+    #[test]
+    fn ranges_follow_the_revision() {
+        let original = "does this code block work nw";
+        assert_eq!(carry_ranges(original, "Does this code block work now?", &[(10, 14)]), vec![(10, 14)]);
+        assert_eq!(carry_ranges(original, "So does this code block work now?", &[(10, 14)]), vec![(13, 17)]);
+        assert!(carry_ranges(original, "does this snippet block work", &[(10, 14)]).is_empty());
     }
 
     #[test]

@@ -826,6 +826,15 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 let value = attribute(field, kAXValueAttribute) as? String ?? ""
                 check(value.contains(code) && !value.contains(typo), "the fix leaves the code span as written",
                       "the field reads \(String(reflecting: value))")
+                // The fix is pasted with the span marked as code, so it stays formatted as code.
+                func codeText(_ element: AXUIElement, depth: Int = 0) -> String? {
+                    if (attribute(element, "AXSubrole") as? String) == "AXCodeStyleGroup" { return allText(element, levels: 4) }
+                    guard depth < 8, let children = attribute(element, kAXChildrenAttribute) as? [AXUIElement] else { return nil }
+                    return children.lazy.compactMap { codeText($0, depth: depth + 1) }.first
+                }
+                let formatted = codeText(field)
+                check(formatted?.contains(code) == true, "the code span is still formatted as code after the fix",
+                      "code in the field: \(formatted.map { String(reflecting: $0) } ?? "none")")
                 screenshot(window: nil, rect: windows(bundleID: chrome).first?.frame, to: outDir + "/web-code-applied.png")
             }
         } else {

@@ -404,9 +404,66 @@ fn code_ranges(text: &str, selection_start: Option<usize>, pieces: &[CodePiece])
         }
     }
     if !pieces.is_empty() {
-        trace(format_args!("code placed: {by_position} by position, {by_text} by text"));
+        // Which invisible characters the field's text has, by code point: editors pad formatted
+        // code with them.
+        let mut invisible: Vec<String> = chars
+            .iter()
+            .filter(|c| {
+                !c.is_ascii()
+                    && (c.is_whitespace()
+                        || matches!(c, '\u{200B}'..='\u{200F}' | '\u{2060}' | '\u{FEFF}' | '\u{FFFC}'))
+            })
+            .map(|c| format!("U+{:04X}", u32::from(*c)))
+            .collect();
+        invisible.dedup();
+        trace(format_args!(
+            "code placed: {by_position} by position, {by_text} by text; invisible characters: {}",
+            if invisible.is_empty() { "none".to_string() } else { invisible.join(" ") }
+        ));
     }
     ranges
+}
+
+/// Zero-width spaces and joiners, word joiners, byte order marks and object replacement
+/// characters: editors put them around formatted text.
+fn is_invisible(c: char) -> bool {
+    matches!(c, '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}' | '\u{FFFC}')
+}
+
+/// `text` as HTML for pasting, with `code` (character ranges) marked as `<code>`. Each line is a
+/// paragraph, as a plain-text paste into a rich editor makes it, an empty one included.
+fn html_with_code(text: &str, code: &[(usize, usize)]) -> String {
+    let in_code = |i: usize| code.iter().any(|&(s, e)| s <= i && i < e);
+    let lines: Vec<&str> = text.split('\n').collect();
+    let paragraphs = lines.len() > 1;
+    let mut html = String::from("<meta charset=\"utf-8\">");
+    let mut i = 0;
+    for line in lines {
+        html.push_str(if paragraphs { "<p>" } else { "" });
+        let mut open = false;
+        for c in line.chars() {
+            if in_code(i) != open {
+                open = !open;
+                html.push_str(if open { "<code>" } else { "</code>" });
+            }
+            match c {
+                '&' => html.push_str("&amp;"),
+                '<' => html.push_str("&lt;"),
+                '>' => html.push_str("&gt;"),
+                '"' => html.push_str("&quot;"),
+                c => html.push(c),
+            }
+            i += 1;
+        }
+        if open {
+            html.push_str("</code>");
+        }
+        if paragraphs {
+            html.push_str(if line.is_empty() { "<br></p>" } else { "</p>" });
+        }
+        i += 1; // the line break
+    }
+    html
 }
 
 /// How many characters other than line breaks come before `location`, a UTF-16 offset into `value`.
@@ -1128,8 +1185,11 @@ fn verify_replacement(element: &Element, capture: &Capture, before: Option<&str>
                 }
                 None => value.contains(text),
             };
-            // Chromium's value drops empty paragraphs; its rebuilt text keeps them.
-            if landed || element.web_text().is_some_and(|full| full.contains(text)) {
+            // Chromium's value drops empty paragraphs; its rebuilt text keeps them. An editor may
+            // pad pasted code with invisible characters of its own.
+            let visible = |s: &str| s.chars().filter(|c| !is_invisible(*c)).collect::<String>();
+            let found = |full: &str| full.contains(text) || visible(full).contains(&visible(text));
+            if landed || found(&value) || element.web_text().is_some_and(|full| found(&full)) {
                 return true;
             }
         }
@@ -1143,7 +1203,11 @@ fn verify_replacement(element: &Element, capture: &Capture, before: Option<&str>
 fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMethod, PlatformError> {
     let before = element.string("AXValue");
     let snapshot = pasteboard::Snapshot::take();
-    let ours = pasteboard::write_transient_string(text);
+    // Code the app formatted is pasted as code again: a plain-text paste would turn it into prose.
+    let html = Some(supereditr_core::diff::carry_ranges(&capture.text, text, &capture.code))
+        .filter(|code| !code.is_empty())
+        .map(|code| html_with_code(text, &code));
+    let ours = pasteboard::write_transient_string(text, html.as_deref());
     let window = key_window_state(capture.pid);
     let started = Instant::now();
     // The app's own Paste menu item first. The app can be left without a key window (after the
@@ -1784,12 +1848,16 @@ mod pasteboard {
         pb.changeCount()
     }
 
-    /// Writes text marked transient so clipboard managers skip it (nspasteboard.org convention).
-    pub fn write_transient_string(text: &str) -> isize {
+    /// Writes text marked transient so clipboard managers skip it (nspasteboard.org convention),
+    /// with an HTML version when given one, which rich editors paste with its formatting.
+    pub fn write_transient_string(text: &str, html: Option<&str>) -> isize {
         let pb = general();
         pb.clearContents();
         let item = NSPasteboardItem::new();
         item.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString });
+        if let Some(html) = html {
+            item.setString_forType(&NSString::from_str(html), &NSString::from_str("public.html"));
+        }
         for marker in ["org.nspasteboard.TransientType", "org.nspasteboard.AutoGeneratedType"] {
             item.setData_forType(&NSData::new(), &NSString::from_str(marker));
         }
@@ -1871,6 +1939,18 @@ mod tests {
         assert_eq!(code_ranges("run wrangler", Some(0), &[piece("wrangler deploy", 4)]), vec![(4, 12)]);
         // Code outside the selection protects nothing.
         assert!(code_ranges("Fix teh bug", Some(0), &[piece("teh", 15)]).is_empty());
+    }
+
+    #[test]
+    fn marks_code_in_pasted_html() {
+        assert_eq!(
+            html_with_code("Does this code block <work>?", &[(10, 14)]),
+            "<meta charset=\"utf-8\">Does this <code>code</code> block &lt;work&gt;?"
+        );
+        assert_eq!(
+            html_with_code("run npm\n\nthen ci", &[(4, 7), (14, 16)]),
+            "<meta charset=\"utf-8\"><p>run <code>npm</code></p><p><br></p><p>then <code>ci</code></p>"
+        );
     }
 
     #[test]

@@ -148,6 +148,26 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Opening at login is on by default: turned on once, before Settings first reads the config, and
+/// then left to the user. A development build outside an app bundle is never added.
+fn launch_at_login_by_default(app: &AppHandle) {
+    use tauri_plugin_autostart::ManagerExt;
+    let state = app.state::<AppState>();
+    let mut config = state.config();
+    let bundled = std::env::current_exe().is_ok_and(|exe| exe.to_string_lossy().contains(".app/Contents/MacOS/"));
+    if config.offered_launch_at_login || !bundled {
+        return;
+    }
+    if let Err(e) = app.autolaunch().enable() {
+        eprintln!("SuperEditr: couldn't turn on opening at login: {e}");
+        return;
+    }
+    config.offered_launch_at_login = true;
+    if let Err(e) = state.save_config(config) {
+        eprintln!("SuperEditr: couldn't save settings: {e}");
+    }
+}
+
 pub fn run() {
     let mut builder = tauri::Builder::default();
     if updater::ENABLED {
@@ -171,6 +191,7 @@ pub fn run() {
                 eprintln!("SuperEditr: couldn't record the first run in {}: {e}", install.display());
             }
             app.manage(AppState::new(settings));
+            launch_at_login_by_default(app.handle());
             app.manage(hotkeys::Registry::default());
             write_status_file(config_dir.join("status.json"));
 

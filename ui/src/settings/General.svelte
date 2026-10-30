@@ -11,7 +11,7 @@
   }
   let { config = $bindable(), problems, onchange }: Props = $props();
   let newApp = $state("");
-  let launchAtLogin = $state(false);
+  let launchAtLogin = $state(true);
   let launchError = $state("");
 
   onMount(() => {

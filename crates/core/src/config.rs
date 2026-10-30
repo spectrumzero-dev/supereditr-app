@@ -87,6 +87,9 @@ pub struct Config {
     /// Keep capture.log, a local record of each selection read and write (app IDs, timings and
     /// lengths, never text), for diagnosing a problem in a particular app. Off unless turned on.
     pub diagnostic_log: bool,
+    /// Opening at login has been turned on once, as the default. macOS keeps whether it's on now,
+    /// so a user who turns it off afterwards keeps it off.
+    pub offered_launch_at_login: bool,
     pub onboarded: bool,
 }
 
@@ -109,6 +112,7 @@ impl Default for Config {
             offered_exclusions: DEFAULT_EXCLUSIONS.iter().map(|s| s.to_string()).collect(),
             show_timing: true,
             diagnostic_log: false,
+            offered_launch_at_login: false,
             onboarded: false,
         }
     }
@@ -223,6 +227,21 @@ mod tests {
         assert_eq!(loaded.presets[0].instruction, "custom");
         assert!(loaded.preset("english").is_some(), "new built-ins are merged back in");
         assert_eq!(loaded.providers[0].kind, ProviderKind::Anthropic);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn launch_at_login_is_offered_once() {
+        assert!(!Config::default().offered_launch_at_login);
+        let dir = std::env::temp_dir().join(format!("supereditr-login-{}", std::process::id()));
+        let path = dir.join("config.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, r#"{"onboarded": true}"#).unwrap();
+        let mut config = Config::load(&path);
+        assert!(!config.offered_launch_at_login, "settings saved before the option existed haven't had it offered");
+        config.offered_launch_at_login = true;
+        config.save(&path).unwrap();
+        assert!(Config::load(&path).offered_launch_at_login);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

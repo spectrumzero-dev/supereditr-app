@@ -27,10 +27,11 @@ let demoConfig: Config = {
   offered_presets: ["proofread", "polish", "shorter", "friendly", "professional", "simplify", "english"],
   show_timing: true,
   diagnostic_log: false,
+  offered_launch_at_login: true,
   onboarded: false,
 };
 
-let demoLaunchAtLogin = false;
+let demoLaunchAtLogin = true;
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (inTauri) {

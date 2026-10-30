@@ -509,22 +509,25 @@ if let settings {
     }
     screenshot(window: nil, rect: frame(of: settings), to: outDir + "/shortcut-recorder.png")
 
-    // Open at login writes a Launch Agent that starts this copy of SuperEditr, in the throwaway
-    // HOME, and turning it off removes it.
+    // Open at login is on by default: the first launch wrote a Launch Agent that starts this copy
+    // of SuperEditr, in the throwaway HOME. The switch removes it and writes it again.
     let agent = home + "/Library/LaunchAgents/SuperEditr.plist"
+    let binary = URL(fileURLWithPath: appPath + "/Contents/MacOS/supereditr").resolvingSymlinksInPath().path
+    func agentStartsThisApp() -> Bool? {
+        guard let plist = try? String(contentsOfFile: agent, encoding: .utf8) else { return nil }
+        return plist.contains(binary) && plist.contains("RunAtLoad") ? true : nil
+    }
+    check(agentStartsThisApp() != nil, "Open at login is on by default", (try? String(contentsOfFile: agent, encoding: .utf8)) ?? "no \(agent)")
     let loginSwitch = waitFor(5) {
         findElement(settings) { (attribute($0, kAXRoleAttribute) as? String) == kAXCheckBoxRole && ownText($0).contains("Open at login") }
     }
     check(loginSwitch != nil, "Settings → Behavior shows Open at login")
     if let loginSwitch {
         AXUIElementPerformAction(loginSwitch, kAXPressAction as CFString)
-        let written = waitFor(4) { try? String(contentsOfFile: agent, encoding: .utf8) }
-        let binary = URL(fileURLWithPath: appPath + "/Contents/MacOS/supereditr").resolvingSymlinksInPath().path
-        check(written?.contains(binary) == true && written?.contains("RunAtLoad") == true,
-              "Open at login adds a Launch Agent for this app", written ?? "no \(agent)")
-        AXUIElementPerformAction(loginSwitch, kAXPressAction as CFString)
         let removed = waitFor(4) { FileManager.default.fileExists(atPath: agent) ? nil : true }
         check(removed != nil, "turning Open at login off removes the Launch Agent", "\(agent) still exists")
+        AXUIElementPerformAction(loginSwitch, kAXPressAction as CFString)
+        check(waitFor(4) { agentStartsThisApp() } != nil, "turning Open at login on adds the Launch Agent again", "no Launch Agent for \(binary)")
     }
 
     // Get Started's "Find my AI accounts" opens Models and scans there: one place finds AIs.

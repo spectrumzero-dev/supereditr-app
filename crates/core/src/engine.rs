@@ -153,6 +153,10 @@ pub struct Job {
     pub dialect: String,
     /// The author's word list: names and terms to keep exactly as written.
     pub words: Vec<String>,
+    /// Character ranges of `text` the app shows as code but whose Markdown backticks are gone,
+    /// such as a code span in a chat composer. They are kept exactly as written, like code in
+    /// backticks.
+    pub code: Vec<(usize, usize)>,
     /// Whether the offline checker may run. Off only for the CLI's `--no-local` and for tests that
     /// need the AI's answer alone.
     pub local_checks: bool,
@@ -211,6 +215,8 @@ impl Engine {
             return;
         }
         let started = Instant::now();
+        let code: Vec<(usize, usize)> =
+            guard::code_spans(&job.text).into_iter().chain(job.code.iter().copied()).collect();
         let english = lang::is_english(&job.text);
         let is_proofread = job.preset.id == "proofread" && job.steer.is_none();
 
@@ -234,7 +240,7 @@ impl Engine {
                 return;
             }
             let view = if can_check_locally {
-                self.local_review(&job.text, &job.words, started, on_event)
+                self.local_review(&job.text, &job.words, &code, started, on_event)
             } else {
                 diff::diff(&job.text, &job.text)
             };
@@ -312,7 +318,7 @@ impl Engine {
         // On failure, fall back to the offline checker's result where it can help.
         let fail = |message: String, on_event: &mut (dyn FnMut(Event) + Send)| {
             if can_check_locally {
-                self.local_review(&original, &job.words, started, on_event);
+                self.local_review(&original, &job.words, &code, started, on_event);
             }
             on_event(Event::Failed { message, local_only: can_check_locally });
         };
@@ -331,7 +337,9 @@ impl Engine {
                 } else {
                     text
                 };
-                let view = diff::diff(&original, &text);
+                // Code stays exactly as written, whatever the model or the final pass did to it.
+                let view = diff::without_changes_in(diff::diff(&original, &text), &code);
+                let text = diff::apply(&view, &Default::default());
                 let total = started.elapsed().as_millis() as u64;
                 let mut outcome = Outcome::new(&original, view, text, source, first_token, total);
                 outcome.backup_for = backup_for;
@@ -343,15 +351,16 @@ impl Engine {
         }
     }
 
-    /// Runs the offline checker and reports its result as a `Local` event.
+    /// Runs the offline checker, leaving `code` alone, and reports its result as a `Local` event.
     fn local_review(
         &self,
         text: &str,
         words: &[String],
+        code: &[(usize, usize)],
         started: Instant,
         on_event: &mut (dyn FnMut(Event) + Send),
     ) -> DiffView {
-        let view = self.local(words).check(text);
+        let view = diff::without_changes_in(self.local(words).check(text), code);
         on_event(Event::Local { view: view.clone(), ms: started.elapsed().as_millis() as u64 });
         view
     }

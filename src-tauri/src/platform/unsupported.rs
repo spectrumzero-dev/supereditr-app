@@ -13,6 +13,7 @@ pub struct Capture {
     pub bounds: Option<Rect>,
     pub editable: bool,
     pub playground: bool,
+    pub code: Vec<(usize, usize)>,
 }
 
 pub fn playground_capture(text: String, bounds: Rect) -> Capture {
@@ -24,6 +25,7 @@ pub fn playground_capture(text: String, bounds: Rect) -> Capture {
         bounds: Some(bounds),
         editable: true,
         playground: true,
+        code: Vec::new(),
     }
 }
 

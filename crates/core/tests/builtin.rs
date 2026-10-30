@@ -37,6 +37,7 @@ async fn review(engine: &Engine, profile: Option<ProviderProfile>) -> Vec<Event>
         style_notes: String::new(),
         dialect: "American English".into(),
         words: Vec::new(),
+        code: Vec::new(),
         local_checks: false,
         builtin_ai: true,
     };

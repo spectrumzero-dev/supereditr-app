@@ -15,7 +15,7 @@ use core_foundation::dictionary::CFDictionary;
 use core_foundation::string::{CFString, CFStringRef};
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::ffi::c_void;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -314,6 +314,227 @@ fn visible_length(element: &Element, depth: usize) -> usize {
     element.children().iter().map(|child| visible_length(child, depth + 1)).sum()
 }
 
+/// A piece of a web field formatted as code: its text, and where it starts in the field, counted
+/// in characters other than line breaks.
+#[derive(Debug, Clone, PartialEq)]
+struct CodePiece {
+    text: String,
+    start: usize,
+}
+
+fn visible_count(text: &str) -> usize {
+    text.chars().filter(|c| !is_line_break(*c)).count()
+}
+
+/// The elements in a web field marked as code (`<code>`, which WebKit and Chromium give the
+/// subrole `AXCodeStyleGroup`), in order. The log gets the count and the subroles seen, never the
+/// text, so a field whose code goes unnoticed can be diagnosed.
+fn code_in(field: &Element) -> Vec<CodePiece> {
+    struct Walk {
+        started: Instant,
+        budget: usize,
+        seen: usize,
+        subroles: BTreeSet<String>,
+        code: Vec<CodePiece>,
+    }
+    fn walk(element: &Element, depth: usize, state: &mut Walk) {
+        for child in element.children() {
+            if state.budget == 0 || state.started.elapsed() > Duration::from_millis(150) {
+                state.budget = 0;
+                return;
+            }
+            state.budget -= 1;
+            let subrole = child.string("AXSubrole");
+            if subrole.as_deref() == Some("AXCodeStyleGroup") {
+                let text = static_text(&child, 0);
+                let length = visible_count(&text);
+                if !text.trim().is_empty() {
+                    state.code.push(CodePiece { text, start: state.seen });
+                }
+                state.seen += length;
+            } else if child.string("AXRole").as_deref() == Some("AXStaticText") {
+                state.seen += child.string("AXValue").map_or(0, |v| visible_count(&v));
+            } else if depth < 8 {
+                walk(&child, depth + 1, state);
+            }
+            state.subroles.extend(subrole);
+        }
+    }
+    // A composer has a few dozen elements. A bigger field stops after 1,500 or 150 ms: each is a
+    // call to the app, which can be slow while it is busy.
+    let started = Instant::now();
+    let mut state = Walk { started, budget: 1500, seen: 0, subroles: BTreeSet::new(), code: Vec::new() };
+    walk(field, 0, &mut state);
+    trace(format_args!(
+        "code in the field: {} pieces in {:?}{}; subroles {}",
+        state.code.len(),
+        started.elapsed(),
+        if state.budget == 0 { " (stopped early)" } else { "" },
+        state.subroles.into_iter().collect::<Vec<_>>().join(", ")
+    ));
+    state.code
+}
+
+/// Character ranges of `text`, the selection, that the app formats as code. `selection_start` is
+/// where the selection starts in the field, counted like [`CodePiece::start`]. A piece is placed by
+/// its position when that is known and the selected text there matches it; otherwise wherever it
+/// appears in `text` as whole words.
+fn code_ranges(text: &str, selection_start: Option<usize>, pieces: &[CodePiece]) -> Vec<(usize, usize)> {
+    let chars: Vec<char> = text.chars().collect();
+    // Index in `chars` of each character other than a line break.
+    let visible: Vec<usize> = (0..chars.len()).filter(|&i| !is_line_break(chars[i])).collect();
+    let (mut ranges, mut by_position, mut by_text) = (Vec::new(), 0, 0);
+    for piece in pieces {
+        let code: Vec<char> = piece.text.chars().filter(|c| !is_line_break(*c)).collect();
+        let placed = selection_start.and_then(|selected| {
+            let start = piece.start.max(selected);
+            let end = (piece.start + code.len()).min(selected + visible.len());
+            if start >= end {
+                return Some(None); // outside the selection
+            }
+            let (s, e) = (visible[start - selected], visible[end - selected - 1] + 1);
+            let here: Vec<char> = chars[s..e].iter().copied().filter(|c| !is_line_break(*c)).collect();
+            (here == code[start - piece.start..end - piece.start]).then_some(Some((s, e)))
+        });
+        match placed {
+            Some(range) => {
+                ranges.extend(range);
+                by_position += 1;
+            }
+            None => {
+                ranges.extend(supereditr_core::words::spans(text, piece.text.trim()));
+                by_text += 1;
+            }
+        }
+    }
+    if !pieces.is_empty() {
+        // Which invisible characters the field's text has, by code point: editors pad formatted
+        // code with them.
+        let mut invisible: Vec<String> = chars
+            .iter()
+            .filter(|c| {
+                !c.is_ascii()
+                    && (c.is_whitespace()
+                        || matches!(c, '\u{200B}'..='\u{200F}' | '\u{2060}' | '\u{FEFF}' | '\u{FFFC}'))
+            })
+            .map(|c| format!("U+{:04X}", u32::from(*c)))
+            .collect();
+        invisible.dedup();
+        trace(format_args!(
+            "code placed: {by_position} by position, {by_text} by text; invisible characters: {}",
+            if invisible.is_empty() { "none".to_string() } else { invisible.join(" ") }
+        ));
+    }
+    ranges
+}
+
+/// Zero-width spaces and joiners, word joiners, byte order marks and object replacement
+/// characters: editors put them around formatted text.
+fn is_invisible(c: char) -> bool {
+    matches!(c, '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}' | '\u{FFFC}')
+}
+
+/// `text` as Markdown for pasting, with `code` (character ranges) in backticks: editors that build
+/// what is pasted from the plain text, as Claude's composer does, turn it back into code. The
+/// zero-width spaces an editor pads code with are left out where they touch it, since the editor
+/// adds its own; every other character is kept, a zero-width joiner in an emoji included.
+fn markdown_with_code(text: &str, code: &[(usize, usize)]) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let in_code = |i: usize| code.iter().any(|&(s, e)| s <= i && i < e);
+    let padding = |c: char| matches!(c, '\u{200B}' | '\u{2060}' | '\u{FEFF}');
+    // A run of padding right before or after a span.
+    let touches_code = |i: usize| {
+        let (mut a, mut b) = (i, i);
+        while a > 0 && padding(chars[a - 1]) && !in_code(a - 1) {
+            a -= 1;
+        }
+        while b + 1 < chars.len() && padding(chars[b + 1]) && !in_code(b + 1) {
+            b += 1;
+        }
+        (a > 0 && in_code(a - 1)) || (b + 1 < chars.len() && in_code(b + 1))
+    };
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if !in_code(i) || chars[i] == '\n' {
+            if !(padding(chars[i]) && touches_code(i)) {
+                out.push(chars[i]);
+            }
+            i += 1;
+            continue;
+        }
+        // The code up to the end of its span or line: Markdown code doesn't cross paragraphs.
+        let start = i;
+        while i < chars.len() && in_code(i) && chars[i] != '\n' {
+            i += 1;
+        }
+        let piece: String = chars[start..i].iter().collect::<String>().trim_matches(padding).to_string();
+        if piece.is_empty() {
+            continue;
+        }
+        // One backtick more than the longest run inside, and a space against a backtick at an end.
+        let longest = piece.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+        let fence = "`".repeat(longest + 1);
+        let pad = if piece.starts_with('`') || piece.ends_with('`') { " " } else { "" };
+        out.push_str(&format!("{fence}{pad}{piece}{pad}{fence}"));
+    }
+    out
+}
+
+/// `text` as HTML for pasting, with `code` (character ranges) marked as `<code>`. Each line is a
+/// paragraph, as a plain-text paste into a rich editor makes it, an empty one included.
+fn html_with_code(text: &str, code: &[(usize, usize)]) -> String {
+    let in_code = |i: usize| code.iter().any(|&(s, e)| s <= i && i < e);
+    let lines: Vec<&str> = text.split('\n').collect();
+    let paragraphs = lines.len() > 1;
+    let mut html = String::from("<meta charset=\"utf-8\">");
+    let mut i = 0;
+    for line in lines {
+        html.push_str(if paragraphs { "<p>" } else { "" });
+        let mut open = false;
+        for c in line.chars() {
+            if in_code(i) != open {
+                open = !open;
+                html.push_str(if open { "<code>" } else { "</code>" });
+            }
+            match c {
+                '&' => html.push_str("&amp;"),
+                '<' => html.push_str("&lt;"),
+                '>' => html.push_str("&gt;"),
+                '"' => html.push_str("&quot;"),
+                c => html.push(c),
+            }
+            i += 1;
+        }
+        if open {
+            html.push_str("</code>");
+        }
+        if paragraphs {
+            html.push_str(if line.is_empty() { "<br></p>" } else { "</p>" });
+        }
+        i += 1; // the line break
+    }
+    html
+}
+
+/// How many characters other than line breaks come before `location`, a UTF-16 offset into `value`.
+fn visible_before(value: &str, location: isize) -> Option<usize> {
+    let units: Vec<u16> = value.encode_utf16().collect();
+    let prefix = String::from_utf16(units.get(..usize::try_from(location).ok()?)?).ok()?;
+    Some(visible_count(&prefix))
+}
+
+/// An element's static text, a few levels down, in order.
+fn static_text(element: &Element, depth: usize) -> String {
+    if element.string("AXRole").as_deref() == Some("AXStaticText") {
+        return element.string("AXValue").unwrap_or_default();
+    }
+    if depth >= 4 {
+        return String::new();
+    }
+    element.children().iter().map(|child| static_text(child, depth + 1)).collect()
+}
+
 /// `value` with its empty paragraphs put back. Chromium separates a rich field's non-empty
 /// paragraphs with fewer line breaks than there are paragraph breaks between them (one, for one
 /// empty paragraph between two), and may end with a line break for an empty last paragraph.
@@ -402,6 +623,9 @@ pub struct Capture {
     range: Option<(isize, isize)>,
     /// Text from Settings' "Try it now" box: applying sends it back to the box, not to an app.
     pub playground: bool,
+    /// Character ranges of `text` the app formats as code, whose backticks are gone from `text`:
+    /// reviews leave them as written.
+    pub code: Vec<(usize, usize)>,
 }
 
 /// A capture of text in Settings' "Try it now" box, anchored at `bounds` (screen points).
@@ -417,6 +641,7 @@ pub fn playground_capture(text: String, bounds: Rect) -> Capture {
         element: None,
         range: None,
         playground: true,
+        code: Vec::new(),
     }
 }
 
@@ -666,6 +891,17 @@ fn capture_ax(app: &Element, pid: i32, bundle_id: &str, app_name: &str) -> Resul
     // too. Editable fields let their value be set; web editors report an editable ancestor.
     let editable = element.settable("AXValue") || element.attr("AXEditableAncestor").is_some();
     let range = element.range("AXSelectedTextRange");
+    let web = is_browser_or_electron(bundle_id, pid) || in_web_area(&element);
+    // Only a text field is searched for code: when the selection is read from a whole page, the
+    // page can have thousands of elements.
+    let field = matches!(element.string("AXRole").as_deref(), Some("AXTextArea" | "AXTextField"));
+    let code = if web && field {
+        let selection_start =
+            range.and_then(|r| element.string("AXValue").and_then(|value| visible_before(&value, r.location)));
+        code_ranges(&text, selection_start, &code_in(&element))
+    } else {
+        Vec::new()
+    };
     let plausible = |r: &CGRect| r.size.width > 0.5 && r.size.height > 0.5 && r.size.height < 2000.0;
     let bounds = range
         .and_then(|r| element.bounds_for_range(r))
@@ -680,10 +916,11 @@ fn capture_ax(app: &Element, pid: i32, bundle_id: &str, app_name: &str) -> Resul
         text,
         bounds,
         editable,
-        web: is_browser_or_electron(bundle_id, pid) || in_web_area(&element),
+        web,
         element: Some(element),
         range: range.map(|r| (r.location, r.length)),
         playground: false,
+        code,
     })
 }
 
@@ -910,6 +1147,7 @@ fn capture_clipboard(app: &Element, pid: i32, bundle_id: String, app_name: Strin
         element: None,
         range: None,
         playground: false,
+        code: Vec::new(),
     })
 }
 
@@ -944,7 +1182,7 @@ pub fn replace(capture: &Capture, text: &str) -> Result<ReplaceMethod, PlatformE
             let before = element.string("AXValue");
             let value = CFString::new(text);
             if element.set("AXSelectedText", value.as_CFTypeRef()) {
-                if verify_replacement(element, capture, before.as_deref(), text, Duration::from_millis(150)) {
+                if verify_replacement(element, capture, before.as_deref(), text, None, Duration::from_millis(150)) {
                     return Ok(ReplaceMethod::Accessibility);
                 }
                 // The write may have been applied without being verifiable; never paste on top of it.
@@ -988,7 +1226,16 @@ fn is_same_or_descendant(candidate: &Element, ancestor: &Element) -> bool {
 /// Confirms by reading the field back that it now contains `text`: at the captured position when
 /// the range is known, anywhere in a changed value otherwise. A field whose text can't be read is
 /// never treated as verified.
-fn verify_replacement(element: &Element, capture: &Capture, before: Option<&str>, text: &str, wait: Duration) -> bool {
+/// `pasted`, when given, is what was put on the clipboard if it differs from `text`: an editor that
+/// keeps the Markdown for code as written shows it with its backticks.
+fn verify_replacement(
+    element: &Element,
+    capture: &Capture,
+    before: Option<&str>,
+    text: &str,
+    pasted: Option<&str>,
+    wait: Duration,
+) -> bool {
     let deadline = Instant::now() + wait;
     loop {
         if let Some(value) = element.string("AXValue").filter(|value| Some(value.as_str()) != before) {
@@ -1001,8 +1248,13 @@ fn verify_replacement(element: &Element, capture: &Capture, before: Option<&str>
                 }
                 None => value.contains(text),
             };
-            // Chromium's value drops empty paragraphs; its rebuilt text keeps them.
-            if landed || element.web_text().is_some_and(|full| full.contains(text)) {
+            // Chromium's value drops empty paragraphs; its rebuilt text keeps them. An editor may
+            // pad pasted code with invisible characters of its own.
+            let visible = |s: &str| s.chars().filter(|c| !is_invisible(*c)).collect::<String>();
+            let found = |full: &str| {
+                std::iter::once(text).chain(pasted).any(|t| full.contains(t) || visible(full).contains(&visible(t)))
+            };
+            if landed || found(&value) || element.web_text().is_some_and(|full| found(&full)) {
                 return true;
             }
         }
@@ -1016,7 +1268,11 @@ fn verify_replacement(element: &Element, capture: &Capture, before: Option<&str>
 fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMethod, PlatformError> {
     let before = element.string("AXValue");
     let snapshot = pasteboard::Snapshot::take();
-    let ours = pasteboard::write_transient_string(text);
+    // Code the app formatted is pasted as code again: a plain-text paste would turn it into prose.
+    let code = supereditr_core::diff::carry_ranges(&capture.text, text, &capture.code);
+    let html = (!code.is_empty()).then(|| html_with_code(text, &code));
+    let plain = if code.is_empty() { text.to_string() } else { markdown_with_code(text, &code) };
+    let ours = pasteboard::write_transient_string(&plain, html.as_deref());
     let window = key_window_state(capture.pid);
     let started = Instant::now();
     // The app's own Paste menu item first. The app can be left without a key window (after the
@@ -1054,7 +1310,8 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
         }
         how = press();
         attempts += 1;
-        landed = verify_replacement(element, capture, before.as_deref(), text, Duration::from_millis(*wait));
+        landed =
+            verify_replacement(element, capture, before.as_deref(), text, Some(&plain), Duration::from_millis(*wait));
         if landed {
             break;
         }
@@ -1068,6 +1325,16 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
         started.elapsed(),
         if element.string("AXValue") == before { "unchanged" } else { "changed" },
     ));
+    if html.is_some() {
+        // Whether the editor kept the code as code: the walk logs what the field now has.
+        trace(format_args!(
+            "{}: pasted {} of {} code spans as HTML",
+            capture.bundle_id,
+            code.len(),
+            capture.code.len()
+        ));
+        code_in(element);
+    }
     if !landed {
         // The paste may still land late. Leave the suggestion on the clipboard rather than
         // restoring, so a late paste can't insert the user's old clipboard instead.
@@ -1657,12 +1924,16 @@ mod pasteboard {
         pb.changeCount()
     }
 
-    /// Writes text marked transient so clipboard managers skip it (nspasteboard.org convention).
-    pub fn write_transient_string(text: &str) -> isize {
+    /// Writes text marked transient so clipboard managers skip it (nspasteboard.org convention),
+    /// with an HTML version when given one, which rich editors paste with its formatting.
+    pub fn write_transient_string(text: &str, html: Option<&str>) -> isize {
         let pb = general();
         pb.clearContents();
         let item = NSPasteboardItem::new();
         item.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString });
+        if let Some(html) = html {
+            item.setString_forType(&NSString::from_str(html), &NSString::from_str("public.html"));
+        }
         for marker in ["org.nspasteboard.TransientType", "org.nspasteboard.AutoGeneratedType"] {
             item.setData_forType(&NSData::new(), &NSString::from_str(marker));
         }
@@ -1727,6 +1998,67 @@ mod pasteboard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn places_code_by_position() {
+        let piece = |text: &str, start| CodePiece { text: text.into(), start };
+        // The field reads "Fix teh bug in teh parser"; only the second "teh" is code.
+        let text = "Fix teh bug in teh parser";
+        assert_eq!(code_ranges(text, Some(0), &[piece("teh", 15)]), vec![(15, 18)]);
+        // Selected from "bug": the selection starts 8 characters into the field.
+        assert_eq!(code_ranges("bug in teh parser", Some(8), &[piece("teh", 15)]), vec![(7, 10)]);
+        // Code against prose, as in "foo" formatted and "bar" not.
+        assert_eq!(code_ranges("run foobar", Some(0), &[piece("foo", 4)]), vec![(4, 7)]);
+        // Line breaks don't count: the field's second paragraph starts after one.
+        assert_eq!(code_ranges("one\ntwo teh", Some(0), &[piece("teh", 7)]), vec![(8, 11)]);
+        // Code that runs past the selection is protected where it overlaps.
+        assert_eq!(code_ranges("run wrangler", Some(0), &[piece("wrangler deploy", 4)]), vec![(4, 12)]);
+        // Code at the very start and end of the selection.
+        let text = "teh fix and run their going";
+        let pieces = [piece("teh fix", 0), piece("their going", 16)];
+        assert_eq!(code_ranges(text, Some(0), &pieces), vec![(0, 7), (16, 27)]);
+        // Code outside the selection protects nothing.
+        assert!(code_ranges("Fix teh bug", Some(0), &[piece("teh", 15)]).is_empty());
+    }
+
+    #[test]
+    fn marks_code_in_pasted_markdown() {
+        // Claude's composer pads its code with zero-width spaces.
+        let text = "This is a test for the \u{200B}code\u{200B} block.";
+        assert_eq!(markdown_with_code(text, &[(24, 28)]), "This is a test for the `code` block.");
+        assert_eq!(markdown_with_code("run a`b now", &[(4, 7)]), "run ``a`b`` now");
+        assert_eq!(markdown_with_code("use `x` here", &[(4, 7)]), "use `` `x` `` here");
+        // Code across a line break is closed and reopened on each line.
+        assert_eq!(markdown_with_code("one\ntwo", &[(0, 7)]), "`one`\n`two`");
+        assert_eq!(markdown_with_code("no code", &[]), "no code");
+        // A zero-width joiner holds an emoji together, in prose and in code; a zero-width space
+        // away from code is the author's.
+        let coder = "👩\u{200D}💻";
+        assert_eq!(markdown_with_code(&format!("{coder} a b"), &[(4, 5)]), format!("{coder} `a` b"));
+        assert_eq!(markdown_with_code(&format!("x {coder} y"), &[(2, 5)]), format!("x `{coder}` y"));
+        assert_eq!(markdown_with_code("a\u{200B}b c", &[(4, 5)]), "a\u{200B}b `c`");
+    }
+
+    #[test]
+    fn marks_code_in_pasted_html() {
+        assert_eq!(
+            html_with_code("Does this code block <work>?", &[(10, 14)]),
+            "<meta charset=\"utf-8\">Does this <code>code</code> block &lt;work&gt;?"
+        );
+        assert_eq!(
+            html_with_code("run npm\n\nthen ci", &[(4, 7), (14, 16)]),
+            "<meta charset=\"utf-8\"><p>run <code>npm</code></p><p><br></p><p>then <code>ci</code></p>"
+        );
+    }
+
+    #[test]
+    fn places_code_by_text_when_its_position_is_unknown_or_wrong() {
+        let piece = |text: &str, start| CodePiece { text: text.into(), start };
+        assert_eq!(code_ranges("Fix teh bug", None, &[piece("teh", 4)]), vec![(4, 7)]);
+        assert_eq!(code_ranges("Fix teh bug", Some(0), &[piece("teh", 0)]), vec![(4, 7)]);
+        assert_eq!(visible_before("a\nb😀c", 5), Some(3));
+        assert_eq!(visible_before("ab", 5), None);
+    }
 
     /// The sentence `sentence_before` picks with the caret at `|`.
     fn pick(marked: &str) -> Option<String> {

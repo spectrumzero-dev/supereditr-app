@@ -40,6 +40,72 @@ pub fn protected_tokens(text: &str) -> Vec<String> {
     out
 }
 
+/// Character ranges of code in `text`, delimiters included: fenced blocks (a line starting with
+/// three or more backticks, to a closing fence or the end of the text) and inline spans (a run of
+/// backticks to the next run of the same length, as in Markdown). Edits never change them.
+pub fn code_spans(text: &str) -> Vec<(usize, usize)> {
+    let chars: Vec<char> = text.chars().collect();
+    let run_at = |i: usize| chars[i..].iter().take_while(|&&c| c == '`').count();
+    let line_end = |i: usize| chars[i..].iter().position(|&c| c == '\n').map_or(chars.len(), |n| i + n);
+    // A fence: up to three spaces, then three or more backticks. Returns their count, and whether
+    // only spaces follow them on the line, as a closing fence needs (an opening one may name a
+    // language).
+    let fence_at = |line: usize| {
+        let indent = chars[line..].iter().take(4).take_while(|&&c| c == ' ').count();
+        let run = if indent < 4 && line + indent < chars.len() { run_at(line + indent) } else { 0 };
+        let bare = chars[line + indent + run..line_end(line)].iter().all(|c| c.is_whitespace());
+        (run >= 3).then_some((run, bare))
+    };
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let at_line_start = i == 0 || chars[i - 1] == '\n';
+        if at_line_start && let Some((open, _)) = fence_at(i) {
+            let mut end = chars.len();
+            let mut line = line_end(i);
+            while line < chars.len() {
+                let next = line + 1;
+                if next < chars.len() && fence_at(next).is_some_and(|(close, bare)| close >= open && bare) {
+                    end = line_end(next);
+                    break;
+                }
+                line = line_end(next);
+            }
+            spans.push((i, end));
+            i = end;
+            continue;
+        }
+        if chars[i] != '`' {
+            i += 1;
+            continue;
+        }
+        let open = run_at(i);
+        let mut j = i + open;
+        let mut close = None;
+        while j < chars.len() {
+            if chars[j] == '`' {
+                let run = run_at(j);
+                if run == open {
+                    close = Some(j + run);
+                    break;
+                }
+                j += run;
+            } else {
+                j += 1;
+            }
+        }
+        match close {
+            Some(end) => {
+                spans.push((i, end));
+                i = end;
+            }
+            // An unmatched run is plain text.
+            None => i += open,
+        }
+    }
+    spans
+}
+
 /// Protected tokens from `original` that no longer appear in `revised`.
 pub fn missing_tokens(original: &str, revised: &str) -> Vec<String> {
     protected_tokens(original).into_iter().filter(|t| !revised.contains(t.as_str())).collect()
@@ -86,6 +152,32 @@ mod tests {
         let original = "See https://example.com and ask @sam.";
         assert!(missing_tokens(original, "See https://example.com and ask @sam!").is_empty());
         assert_eq!(missing_tokens(original, "See the site and ask Sam."), vec!["@sam", "https://example.com"]);
+    }
+
+    /// The text of each code span.
+    fn code(text: &str) -> Vec<String> {
+        let chars: Vec<char> = text.chars().collect();
+        code_spans(text).into_iter().map(|(s, e)| chars[s..e].iter().collect()).collect()
+    }
+
+    #[test]
+    fn finds_inline_code() {
+        assert_eq!(code("should i run `wrangler deploy` or `npm  i`?"), vec!["`wrangler deploy`", "`npm  i`"]);
+        assert_eq!(code("a ``span with ` inside`` here"), vec!["``span with ` inside``"]);
+        assert!(code("it's a lone ` backtick").is_empty());
+        assert_eq!(code("Café `teh`"), vec!["`teh`"]);
+    }
+
+    #[test]
+    fn finds_fenced_blocks() {
+        let text = "Run this:\n```sh\nnpm i teh pakage\n```\nthen `check`.";
+        assert_eq!(code(text), vec!["```sh\nnpm i teh pakage\n```", "`check`"]);
+        // An unclosed fence runs to the end; a shorter run doesn't close a longer fence.
+        assert_eq!(code("see\n````\nfoo\n```\nbar"), vec!["````\nfoo\n```\nbar"]);
+        // A line with more after its backticks is content, not a closing fence.
+        assert_eq!(code("```md\n```js\nteh\n```\nafter"), vec!["```md\n```js\nteh\n```"]);
+        // A fence only starts a line.
+        assert_eq!(code("say ```x``` here"), vec!["```x```"]);
     }
 
     #[test]

@@ -56,9 +56,10 @@ impl LocalChecker {
             Ok(mut linter) => linter.lint(&document),
             Err(_) => return diff::diff(text, text),
         };
-        // Leave commands, paths, identifiers, and addresses alone: "fixing" `frobnix-try` or
+        // Leave code, commands, paths, identifiers, and addresses alone: "fixing" `frobnix-try` or
         // `org/repo` as English breaks them.
-        let technical = technical_spans(text, dictionary);
+        let mut technical = technical_spans(text, dictionary);
+        technical.extend(crate::guard::code_spans(text));
         let chars_in: Vec<char> = text.chars().collect();
         lints.retain(|lint| {
             !lint.suggestions.is_empty()
@@ -292,6 +293,10 @@ mod tests {
         // Ordinary prose around them is still checked.
         let fixed = diff::apply(&checker.check("Open config.json and fix teh well-known bug."), &Default::default());
         assert!(fixed.contains("config.json") && fixed.contains("the well-known"), "{fixed}");
+        // Nor is anything in a code span or fenced block.
+        let text = "Run `npm i teh pakage` then:\n```\nteh pakage\n```\nfix teh docs.";
+        let fixed = diff::apply(&checker.check(text), &Default::default());
+        assert_eq!(fixed, "Run `npm i teh pakage` then:\n```\nteh pakage\n```\nfix the docs.");
         let dictionary = FstDictionary::curated();
         for prose in ["4th", "1990s", "10am", "well-known"] {
             assert!(!looks_technical(prose, dictionary.as_ref()), "{prose}");

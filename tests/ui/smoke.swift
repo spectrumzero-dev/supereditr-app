@@ -637,6 +637,15 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
     <div id="rich" contenteditable="true" style="border:1px solid; width:30em; min-height:3em">\(typo)</div>
     <div id="paragraphs" contenteditable="true" style="border:1px solid; width:30em"><p>\(typo)</p><p><br></p><p>See you soon.</p></div>
     <div id="code" contenteditable="true" style="border:1px solid; width:30em"><p><code>teh fix</code> first. \(typo) Then run <code>their going to work</code></p></div>
+    <div id="markdown" contenteditable="true" style="border:1px solid; width:30em"><p><code>teh fix</code> first. \(typo) Then run <code>their going to work</code></p></div>
+    <script>
+    // Pastes as Claude's composer does: from the plain text only, with `backticks` made code.
+    document.getElementById("markdown").addEventListener("paste", e => {
+      e.preventDefault()
+      const text = e.clipboardData.getData("text/plain").replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      document.execCommand("insertHTML", false, text.replace(/`([^`]+)`/g, "<code>$1</code>"))
+    })
+    </script>
     """.write(toFile: page, atomically: true, encoding: .utf8)
     let chromeOpened = openFront(chromeApp, bundleID: chrome, file: page, newInstance: true,
                                  launchArguments: ["--user-data-dir=\(work)/chrome", "--no-first-run", "--no-default-browser-check"])
@@ -803,43 +812,47 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         // backticks left, so SuperEditr finds the spans in the field and leaves them as written
         // while the sentence between them is fixed. One starts the field and one ends it, and the
         // first holds a typo the rule-based checker would otherwise fix.
+        // The second field pastes as Claude's composer does, from the plain text alone, so the code
+        // comes back as code only from the Markdown SuperEditr puts there.
         let codes = ["teh fix", "their going to work"]
-        if let ours = launchedSinceStart(chrome).last,
-           let field = byDOMIdentifier(AXUIElementCreateApplication(ours.processIdentifier), "code") {
-            AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-            pump(0.5)
-            check(selectAll(), "the code field's text is selected")
-            press(keyE, .maskCommand)
-            pump(0.1)
-            press(keyE, .maskCommand)
-            let panel = waitFor(5) { overlay() }
-            check(panel != nil, "⌘E E reviews the field with code", "no overlay within 5 s")
-            if panel != nil {
-                pump(1.5)  // the rule-based checker's result
-                let lines = ((try? String(contentsOfFile: captureLog, encoding: .utf8)) ?? "").split(separator: "\n")
-                let found = lines.last { $0.contains("code in the field") }.map(String.init) ?? "none"
-                check(found.contains("2 pieces"), "both code spans are found", "last code line: \(found)")
-                log("NOTE \(lines.last { $0.contains("code placed") }.map(String.init) ?? "no code placed")")
-                screenshot(window: overlay(), to: outDir + "/web-code-review.png")
-                press(keyReturn)
-                _ = waitFor(3) { overlay() == nil ? true : nil }
-                pump(1)
-                let value = attribute(field, kAXValueAttribute) as? String ?? ""
-                check(codes.allSatisfy(value.contains) && !value.contains(typo), "the fix leaves the code spans as written",
-                      "the field reads \(String(reflecting: value))")
-                // The fix is pasted with the spans marked as code, so they stay formatted as code.
-                func codeTexts(_ element: AXUIElement, depth: Int = 0) -> [String] {
-                    if (attribute(element, "AXSubrole") as? String) == "AXCodeStyleGroup" { return [allText(element, levels: 4)] }
-                    guard depth < 8, let children = attribute(element, kAXChildrenAttribute) as? [AXUIElement] else { return [] }
-                    return children.flatMap { codeTexts($0, depth: depth + 1) }
+        for (id, name) in [("code", "the code field"), ("markdown", "the Markdown field")] {
+            if let ours = launchedSinceStart(chrome).last,
+               let field = byDOMIdentifier(AXUIElementCreateApplication(ours.processIdentifier), id) {
+                AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+                pump(0.5)
+                check(selectAll(), "\(name)'s text is selected")
+                press(keyE, .maskCommand)
+                pump(0.1)
+                press(keyE, .maskCommand)
+                let panel = waitFor(5) { overlay() }
+                check(panel != nil, "⌘E E reviews \(name)", "no overlay within 5 s")
+                if panel != nil {
+                    pump(1.5)  // the rule-based checker's result
+                    let lines = ((try? String(contentsOfFile: captureLog, encoding: .utf8)) ?? "").split(separator: "\n")
+                    let found = lines.last { $0.contains("code in the field") }.map(String.init) ?? "none"
+                    check(found.contains("2 pieces"), "both code spans are found in \(name)", "last code line: \(found)")
+                    log("NOTE \(lines.last { $0.contains("code placed") }.map(String.init) ?? "no code placed")")
+                    screenshot(window: overlay(), to: outDir + "/web-\(id)-review.png")
+                    press(keyReturn)
+                    _ = waitFor(3) { overlay() == nil ? true : nil }
+                    pump(1)
+                    let value = attribute(field, kAXValueAttribute) as? String ?? ""
+                    check(codes.allSatisfy(value.contains) && !value.contains(typo), "the fix leaves the code spans in \(name) as written",
+                          "the field reads \(String(reflecting: value))")
+                    // The fix is pasted with the spans marked as code, so they stay formatted as code.
+                    func codeTexts(_ element: AXUIElement, depth: Int = 0) -> [String] {
+                        if (attribute(element, "AXSubrole") as? String) == "AXCodeStyleGroup" { return [allText(element, levels: 4)] }
+                        guard depth < 8, let children = attribute(element, kAXChildrenAttribute) as? [AXUIElement] else { return [] }
+                        return children.flatMap { codeTexts($0, depth: depth + 1) }
+                    }
+                    let formatted = codeTexts(field)
+                    check(codes.allSatisfy { code in formatted.contains { $0.contains(code) } },
+                          "the code spans in \(name) are still code after the fix", "code in the field: \(formatted)")
+                    screenshot(window: nil, rect: windows(bundleID: chrome).first?.frame, to: outDir + "/web-\(id)-applied.png")
                 }
-                let formatted = codeTexts(field)
-                check(codes.allSatisfy { code in formatted.contains { $0.contains(code) } },
-                      "the code spans are still formatted as code after the fix", "code in the field: \(formatted)")
-                screenshot(window: nil, rect: windows(bundleID: chrome).first?.frame, to: outDir + "/web-code-applied.png")
+            } else {
+                check(false, "\(name) is found", "no element with DOM id \"\(id)\"")
             }
-        } else {
-            check(false, "the code field is found", "no element with DOM id \"code\"")
         }
         // ⌥↩ pressed again while the first one applies used to hang SuperEditr: applying turns the
         // panel's shortcuts off while the main thread handles the next press. Press it three times

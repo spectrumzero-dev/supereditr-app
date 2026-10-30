@@ -434,6 +434,40 @@ fn is_invisible(c: char) -> bool {
     matches!(c, '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}' | '\u{FFFC}')
 }
 
+/// `text` as Markdown for pasting, with `code` (character ranges) in backticks: editors that build
+/// what is pasted from the plain text, as Claude's composer does, turn it back into code. Invisible
+/// characters are left out, since editors pad code with their own.
+fn markdown_with_code(text: &str, code: &[(usize, usize)]) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let in_code = |i: usize| code.iter().any(|&(s, e)| s <= i && i < e);
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if !in_code(i) || chars[i] == '\n' {
+            if !is_invisible(chars[i]) {
+                out.push(chars[i]);
+            }
+            i += 1;
+            continue;
+        }
+        // The code up to the end of its span or line: Markdown code doesn't cross paragraphs.
+        let start = i;
+        while i < chars.len() && in_code(i) && chars[i] != '\n' {
+            i += 1;
+        }
+        let piece: String = chars[start..i].iter().filter(|c| !is_invisible(**c)).collect();
+        if piece.is_empty() {
+            continue;
+        }
+        // One backtick more than the longest run inside, and a space against a backtick at an end.
+        let longest = piece.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+        let fence = "`".repeat(longest + 1);
+        let pad = if piece.starts_with('`') || piece.ends_with('`') { " " } else { "" };
+        out.push_str(&format!("{fence}{pad}{piece}{pad}{fence}"));
+    }
+    out
+}
+
 /// `text` as HTML for pasting, with `code` (character ranges) marked as `<code>`. Each line is a
 /// paragraph, as a plain-text paste into a rich editor makes it, an empty one included.
 fn html_with_code(text: &str, code: &[(usize, usize)]) -> String {
@@ -1135,7 +1169,7 @@ pub fn replace(capture: &Capture, text: &str) -> Result<ReplaceMethod, PlatformE
             let before = element.string("AXValue");
             let value = CFString::new(text);
             if element.set("AXSelectedText", value.as_CFTypeRef()) {
-                if verify_replacement(element, capture, before.as_deref(), text, Duration::from_millis(150)) {
+                if verify_replacement(element, capture, before.as_deref(), text, None, Duration::from_millis(150)) {
                     return Ok(ReplaceMethod::Accessibility);
                 }
                 // The write may have been applied without being verifiable; never paste on top of it.
@@ -1179,7 +1213,16 @@ fn is_same_or_descendant(candidate: &Element, ancestor: &Element) -> bool {
 /// Confirms by reading the field back that it now contains `text`: at the captured position when
 /// the range is known, anywhere in a changed value otherwise. A field whose text can't be read is
 /// never treated as verified.
-fn verify_replacement(element: &Element, capture: &Capture, before: Option<&str>, text: &str, wait: Duration) -> bool {
+/// `pasted`, when given, is what was put on the clipboard if it differs from `text`: an editor that
+/// keeps the Markdown for code as written shows it with its backticks.
+fn verify_replacement(
+    element: &Element,
+    capture: &Capture,
+    before: Option<&str>,
+    text: &str,
+    pasted: Option<&str>,
+    wait: Duration,
+) -> bool {
     let deadline = Instant::now() + wait;
     loop {
         if let Some(value) = element.string("AXValue").filter(|value| Some(value.as_str()) != before) {
@@ -1195,7 +1238,9 @@ fn verify_replacement(element: &Element, capture: &Capture, before: Option<&str>
             // Chromium's value drops empty paragraphs; its rebuilt text keeps them. An editor may
             // pad pasted code with invisible characters of its own.
             let visible = |s: &str| s.chars().filter(|c| !is_invisible(*c)).collect::<String>();
-            let found = |full: &str| full.contains(text) || visible(full).contains(&visible(text));
+            let found = |full: &str| {
+                std::iter::once(text).chain(pasted).any(|t| full.contains(t) || visible(full).contains(&visible(t)))
+            };
             if landed || found(&value) || element.web_text().is_some_and(|full| found(&full)) {
                 return true;
             }
@@ -1211,10 +1256,10 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
     let before = element.string("AXValue");
     let snapshot = pasteboard::Snapshot::take();
     // Code the app formatted is pasted as code again: a plain-text paste would turn it into prose.
-    let html = Some(supereditr_core::diff::carry_ranges(&capture.text, text, &capture.code))
-        .filter(|code| !code.is_empty())
-        .map(|code| html_with_code(text, &code));
-    let ours = pasteboard::write_transient_string(text, html.as_deref());
+    let code = supereditr_core::diff::carry_ranges(&capture.text, text, &capture.code);
+    let html = (!code.is_empty()).then(|| html_with_code(text, &code));
+    let plain = if code.is_empty() { text.to_string() } else { markdown_with_code(text, &code) };
+    let ours = pasteboard::write_transient_string(&plain, html.as_deref());
     let window = key_window_state(capture.pid);
     let started = Instant::now();
     // The app's own Paste menu item first. The app can be left without a key window (after the
@@ -1252,7 +1297,8 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
         }
         how = press();
         attempts += 1;
-        landed = verify_replacement(element, capture, before.as_deref(), text, Duration::from_millis(*wait));
+        landed =
+            verify_replacement(element, capture, before.as_deref(), text, Some(&plain), Duration::from_millis(*wait));
         if landed {
             break;
         }
@@ -1266,6 +1312,16 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
         started.elapsed(),
         if element.string("AXValue") == before { "unchanged" } else { "changed" },
     ));
+    if html.is_some() {
+        // Whether the editor kept the code as code: the walk logs what the field now has.
+        trace(format_args!(
+            "{}: pasted {} of {} code spans as HTML",
+            capture.bundle_id,
+            code.len(),
+            capture.code.len()
+        ));
+        code_in(element);
+    }
     if !landed {
         // The paste may still land late. Leave the suggestion on the clipboard rather than
         // restoring, so a late paste can't insert the user's old clipboard instead.
@@ -1950,6 +2006,18 @@ mod tests {
         assert_eq!(code_ranges(text, Some(0), &pieces), vec![(0, 7), (16, 27)]);
         // Code outside the selection protects nothing.
         assert!(code_ranges("Fix teh bug", Some(0), &[piece("teh", 15)]).is_empty());
+    }
+
+    #[test]
+    fn marks_code_in_pasted_markdown() {
+        // Claude's composer pads its code with zero-width spaces.
+        let text = "This is a test for the \u{200B}code\u{200B} block.";
+        assert_eq!(markdown_with_code(text, &[(24, 28)]), "This is a test for the `code` block.");
+        assert_eq!(markdown_with_code("run a`b now", &[(4, 7)]), "run ``a`b`` now");
+        assert_eq!(markdown_with_code("use `x` here", &[(4, 7)]), "use `` `x` `` here");
+        // Code across a line break is closed and reopened on each line.
+        assert_eq!(markdown_with_code("one\ntwo", &[(0, 7)]), "`one`\n`two`");
+        assert_eq!(markdown_with_code("no code", &[]), "no code");
     }
 
     #[test]

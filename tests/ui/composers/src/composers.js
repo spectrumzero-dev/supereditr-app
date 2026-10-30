@@ -50,11 +50,13 @@ function html({ pad = false, br = false } = {}) {
 
 // The formats document: every common structure a composer holds, with typos in prose the
 // rule-based checker fixes ("teh", "Secend", "realy") and the same typo in code it must leave alone.
-// A field must be read with one line per block or list item (and no list markers), fixed, and keep
-// every structure; the smoke test compares the page's description before and after.
+// An empty paragraph sits before the list. A field must be read with one line per block or list
+// item, fixed, and keep every structure; the smoke test compares the page's description before and
+// after.
 const FORMATS = [
   "<h3>Weekly notes</h3>",
   `<p>We fixed teh <strong>bold</strong> and <em>italic</em> text, the <a href="https://example.com/notes">notes</a> and <code>make teh</code> too.</p>`,
+  "<p></p>",
   "<ul><li><p>Apples</p></li><li><p>Pears</p><ul><li><p>Ripe ones</p></li></ul></li><li><p>Plums</p></li></ul>",
   "<ol><li><p>First step</p></li><li><p>Secend step</p></li></ol>",
   "<blockquote><p>Quoted line with realy good news.</p></blockquote>",
@@ -68,7 +70,7 @@ const FORMATS = [
 function structure(root) {
   const count = (selector) => root.querySelectorAll(selector).length;
   const code = [...root.querySelectorAll("code")].map((e) => e.textContent.replace(/[\u200B\u2060\uFEFF]/g, "")).join("|");
-  return `headings=${count("h1,h2,h3,h4")} items=${count("ul > li")} nested=${count("li ul > li, li ol > li")} numbered=${count("ol > li")} quotes=${count("blockquote")} blocks=${count("pre")} breaks=${count("br:not(.ProseMirror-trailingBreak)")} bold=${count("strong,b")} italic=${count("em,i")} links=${count("a[href]")} code=${code}`;
+  return `headings=${count("h1,h2,h3,h4")} items=${count("ul > li")} nested=${count("li ul > li, li ol > li")} numbered=${count("ol > li")} quotes=${count("blockquote")} empty=${[...root.children].filter((e) => e.tagName === "P" && !e.textContent.trim()).length} blocks=${count("pre")} breaks=${count("br:not(.ProseMirror-trailingBreak)")} bold=${count("strong,b")} italic=${count("em,i")} links=${count("a[href]")} code=${code}`;
 }
 
 /** What the editor's DOM holds: how many times the typo appears (so a reader can tell the fix has

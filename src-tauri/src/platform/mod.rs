@@ -95,4 +95,7 @@ impl std::fmt::Display for SelectionGesture {
 pub enum ReplaceMethod {
     Accessibility,
     Paste,
+    /// Typed as key events, for a proofread applied in place in a web field.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Typing,
 }

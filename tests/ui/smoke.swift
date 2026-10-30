@@ -968,9 +968,11 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             }
             let read = lastChromeRead()
             try? "\(read)\n\n\(panelText())".write(toFile: outDir + "/formats-\(id)-review.txt", atomically: true, encoding: .utf8)
-            // Every line break read: the selection is the whole field, so as long as its text.
-            let counts = read.range(of: #"read (\d+) characters of (\d+)"#, options: .regularExpression).map { String(read[$0]).split(separator: " ") }
-            check(counts.map { $0[1] == $0[4] } ?? false, "\(name): it is read with every line break", "last read: \(read)")
+            // Every line break read: the whole field, plus the empty paragraph Chrome's own text leaves out.
+            let counts = read.range(of: #"read (\d+) characters of (\d+)"#, options: .regularExpression)
+                .map { String(read[$0]).split(separator: " ").compactMap { Int($0) } }
+            check(counts.map { $0[0] == $0[1] + 1 } ?? false, "\(name): it is read with every line break, the empty one included",
+                  "last read: \(read)")
             screenshot(window: overlay(), to: outDir + "/formats-\(id)-review.png")
             press(keyReturn)
             _ = waitFor(3) { overlay() == nil ? true : nil }

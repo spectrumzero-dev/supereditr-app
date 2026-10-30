@@ -162,8 +162,10 @@ pub fn register_from_config(app: &AppHandle) -> Vec<String> {
     let shortcuts = app.global_shortcut();
     let _ = shortcuts.unregister_all();
     *registry.overlay_active.lock().unwrap() = false;
-    let mut actions = registry.actions.lock().unwrap();
-    actions.clear();
+    registry.actions.lock().unwrap().clear();
+    // Filled while registering and stored after: see `set_overlay_shortcuts` for why no lock is
+    // held across a call to the plugin.
+    let mut actions = HashMap::new();
 
     let mut wanted =
         vec![(config.hotkeys.review.clone(), Action::Review), (config.hotkeys.quick_fix.clone(), Action::QuickFix)];
@@ -205,34 +207,47 @@ pub fn register_from_config(app: &AppHandle) -> Vec<String> {
             Err(e) => problems.push(format!("{accelerator}: {e}")),
         }
     }
+    registry.actions.lock().unwrap().extend(actions);
     *registry.double_actions.lock().unwrap() = double_actions;
     platform::set_double_presses(doubles);
     problems
 }
 
-/// Adds or removes the overlay-only shortcuts.
+/// Adds or removes the overlay-only shortcuts, on the main thread.
+///
+/// The plugin registers and unregisters a shortcut on the main thread and waits for it, and the
+/// shortcut handler runs on the main thread and takes `actions`. A worker that held `actions` (or
+/// any lock the main thread may want) while registering waited for the main thread while the main
+/// thread waited for it, and every shortcut stopped. So the change runs on the main thread, in
+/// order, and no lock is held across a call to the plugin.
 pub fn set_overlay_shortcuts(app: &AppHandle, active: bool) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || set_overlay_shortcuts_now(&handle, active));
+}
+
+fn set_overlay_shortcuts_now(app: &AppHandle, active: bool) {
     let registry = app.state::<Registry>();
-    let mut current = registry.overlay_active.lock().unwrap();
-    if *current == active {
-        return;
+    {
+        let mut current = registry.overlay_active.lock().unwrap();
+        if *current == active {
+            return;
+        }
+        *current = active;
     }
-    *current = active;
     // While paused, only the state is kept; `pause` registers them on resuming.
     if *registry.paused.lock().unwrap() {
         return;
     }
     let shortcuts = app.global_shortcut();
-    let mut actions = registry.actions.lock().unwrap();
     for (accelerator, action) in [(OVERLAY_APPLY, Action::OverlayApply), (OVERLAY_DISMISS, Action::OverlayDismiss)] {
         let Ok(shortcut) = Shortcut::from_str(accelerator) else { continue };
         if active {
             if shortcuts.register(shortcut).is_ok() {
-                actions.insert(shortcut.id(), action);
+                registry.actions.lock().unwrap().insert(shortcut.id(), action);
             }
         } else {
             let _ = shortcuts.unregister(shortcut);
-            actions.remove(&shortcut.id());
+            registry.actions.lock().unwrap().remove(&shortcut.id());
         }
     }
 }

@@ -841,6 +841,31 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         } else {
             check(false, "the code field is found", "no element with DOM id \"code\"")
         }
+        // ⌥↩ pressed again while the first one applies used to hang SuperEditr: applying turns the
+        // panel's shortcuts off while the main thread handles the next press. Press it three times
+        // in a row, then check that ⌘E E still opens a review.
+        _ = selectAll()
+        press(keyE, .maskCommand)
+        pump(0.1)
+        press(keyE, .maskCommand)
+        if waitFor(5, { overlay() }) != nil {
+            pump(1.5)
+            for _ in 0..<3 {
+                press(keyReturn, .maskAlternate)
+                usleep(15_000)
+            }
+            pump(1.5)
+            _ = selectAll()
+            press(keyE, .maskCommand)
+            pump(0.1)
+            press(keyE, .maskCommand)
+            check(waitFor(5, { overlay() }) != nil, "⌘E E still opens a review after ⌥↩ pressed three times quickly",
+                  "no overlay within 5 s: SuperEditr may be stuck")
+            press(keyEscape)
+            _ = waitFor(3) { overlay() == nil ? true : nil }
+        } else {
+            check(false, "⌘E E reviews the field before the ⌥↩ presses", "no overlay within 5 s")
+        }
         // How many tries each paste needed, from SuperEditr's log, to show how often the retry helps.
         let pastes = ((try? String(contentsOfFile: captureLog, encoding: .utf8)) ?? "").split(separator: "\n")
             .filter { $0.contains("com.google.Chrome: pasted") }

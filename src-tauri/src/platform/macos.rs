@@ -331,6 +331,7 @@ fn visible_count(text: &str) -> usize {
 /// text, so a field whose code goes unnoticed can be diagnosed.
 fn code_in(field: &Element) -> Vec<CodePiece> {
     struct Walk {
+        started: Instant,
         budget: usize,
         seen: usize,
         subroles: BTreeSet<String>,
@@ -338,7 +339,8 @@ fn code_in(field: &Element) -> Vec<CodePiece> {
     }
     fn walk(element: &Element, depth: usize, state: &mut Walk) {
         for child in element.children() {
-            if state.budget == 0 {
+            if state.budget == 0 || state.started.elapsed() > Duration::from_millis(150) {
+                state.budget = 0;
                 return;
             }
             state.budget -= 1;
@@ -358,14 +360,16 @@ fn code_in(field: &Element) -> Vec<CodePiece> {
             state.subroles.extend(subrole);
         }
     }
-    // A composer has a few dozen elements; a whole page can have thousands, each a slow call.
+    // A composer has a few dozen elements. A bigger field stops after 1,500 or 150 ms: each is a
+    // call to the app, which can be slow while it is busy.
     let started = Instant::now();
-    let mut state = Walk { budget: 1500, seen: 0, subroles: BTreeSet::new(), code: Vec::new() };
+    let mut state = Walk { started, budget: 1500, seen: 0, subroles: BTreeSet::new(), code: Vec::new() };
     walk(field, 0, &mut state);
     trace(format_args!(
-        "code in the field: {} pieces in {:?}; subroles {}",
+        "code in the field: {} pieces in {:?}{}; subroles {}",
         state.code.len(),
         started.elapsed(),
+        if state.budget == 0 { " (stopped early)" } else { "" },
         state.subroles.into_iter().collect::<Vec<_>>().join(", ")
     ));
     state.code
@@ -841,7 +845,10 @@ fn capture_ax(app: &Element, pid: i32, bundle_id: &str, app_name: &str) -> Resul
     let editable = element.settable("AXValue") || element.attr("AXEditableAncestor").is_some();
     let range = element.range("AXSelectedTextRange");
     let web = is_browser_or_electron(bundle_id, pid) || in_web_area(&element);
-    let code = if web {
+    // Only a text field is searched for code: when the selection is read from a whole page, the
+    // page can have thousands of elements.
+    let field = matches!(element.string("AXRole").as_deref(), Some("AXTextArea" | "AXTextField"));
+    let code = if web && field {
         let selection_start =
             range.and_then(|r| element.string("AXValue").and_then(|value| visible_before(&value, r.location)));
         code_ranges(&text, selection_start, &code_in(&element))

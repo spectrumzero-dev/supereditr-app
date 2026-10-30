@@ -45,13 +45,15 @@ function html({ pad = false, br = false } = {}) {
   return DOC.map((p) => `<p>${p.length ? p.map(inline).join("") : br ? "<br>" : ""}</p>`).join("");
 }
 
-/** What the editor's DOM holds: code, bold and link text, and how many paragraphs, empty or not. */
+/** What the editor's DOM holds: how many times the typo appears (so a reader can tell the fix has
+ * landed), code, bold and link text, and how many paragraphs, empty or not. */
 function describe(root) {
   const clean = (s) => s.replace(/[​⁠﻿]/g, "");
   const texts = (selector) => [...root.querySelectorAll(selector)].map((e) => clean(e.textContent)).join("|");
   const blocks = [...root.children].filter((e) => /^(P|DIV|H\d|LI|BLOCKQUOTE|PRE)$/.test(e.tagName));
   const empty = blocks.filter((b) => clean(b.textContent).trim() === "").length;
-  return `code=${texts("code")}; bold=${texts("strong, b")}; links=${texts("a[href]")}; paragraphs=${blocks.length}; empty=${empty}`;
+  const typos = clean(root.textContent).split("Their going to love").length - 1;
+  return `typo=${typos}; code=${texts("code")}; bold=${texts("strong, b")}; links=${texts("a[href]")}; paragraphs=${blocks.length}; empty=${empty}`;
 }
 
 const fields = [];

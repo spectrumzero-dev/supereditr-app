@@ -829,10 +829,17 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 return (parts[0].trimmingCharacters(in: .whitespaces), parts[1].trimmingCharacters(in: .whitespaces))
             }, uniquingKeysWith: { $1 })
         }
-        // Selects the field's text and opens a review, waiting until the review has a fix to apply.
+        // Selects all of the field's text and opens a review, waiting until the review has a fix to
+        // apply. A partial selection fails: ⌘E E would then review the sentence alone, and the code and
+        // the empty paragraph around it would pass untouched.
         func reviewField(_ field: AXUIElement) -> Bool {
             AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
             _ = selectAll() || selectAll()
+            let selected = visible(focusedElement().flatMap { attribute($0, kAXSelectedTextAttribute) as? String } ?? "")
+            guard ([composerTypo, "See you soon."] + codes).allSatisfy(selected.contains) else {
+                log("     the whole field isn't selected: \(String(reflecting: selected))")
+                return false
+            }
             press(keyE, .maskCommand)
             pump(0.1)
             press(keyE, .maskCommand)
@@ -858,7 +865,8 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 row.append("\(short) \(ok ? "ok" : "gap")")
             }
             let opened = reviewField(field)
-            expect(opened, "review", "⌘E E opens a review with a fix", "no review with a fix within 9 s; panel text: \(panelText())")
+            expect(opened, "review", "⌘E E opens a review of the whole field with a fix",
+                   "no review of the whole field with a fix within 9 s; panel text: \(panelText())")
             if opened {
                 let read = lastChromeRead()
                 expect(read.contains("via Accessibility"), "read", "it is read through Accessibility", "last read: \(read)")
@@ -874,7 +882,11 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                     let value = attribute(field, kAXValueAttribute) as? String ?? ""
                     return !value.isEmpty && !value.contains(composerTypo) ? value : nil
                 }
-                let state = composerState(id)
+                // The page describes the field a frame after it changes: wait until it no longer has the typo.
+                let state = waitFor(3) { () -> [String: String]? in
+                    let state = composerState(id)
+                    return state["typo"] == "0" ? state : nil
+                } ?? composerState(id)
                 expect(value != nil, "fixed", "↩ writes the fix", "the field reads \(String(reflecting: attribute(field, kAXValueAttribute) as? String ?? ""))")
                 expect(codes.allSatisfy(visible(value ?? "").contains), "code kept", "the code is left as written",
                        "the field reads \(String(reflecting: value ?? ""))")
@@ -916,7 +928,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             press(keyEscape)
             _ = waitFor(3) { overlay() == nil ? true : nil }
         } else {
-            check(false, "⌘E E reviews the field before the ⌥↩ presses", "no review with a fix within 9 s")
+            check(false, "⌘E E reviews the field before the ⌥↩ presses", "no review of the whole field with a fix within 9 s")
         }
         // How many tries each paste needed, from SuperEditr's log, to show how often the retry helps.
         let pastes = ((try? String(contentsOfFile: captureLog, encoding: .utf8)) ?? "").split(separator: "\n")

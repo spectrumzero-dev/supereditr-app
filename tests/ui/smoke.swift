@@ -947,6 +947,23 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             }
             let before = formatsState(id)
             try? axDump(field).write(toFile: outDir + "/formats-\(id)-accessibility.txt", atomically: true, encoding: .utf8)
+            // How Chrome's selection offsets line up with its text: select each word where it is in
+            // the field's value and record what Chrome selects. SuperEditr places edits this way.
+            AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            let fieldValue = (attribute(field, kAXValueAttribute) as? String ?? "") as NSString
+            var probes: [String] = []
+            for word in ["Weekly", "teh", "Apples", "Ripe", "Plums", "First", "Secend", "realy", "let", "two", "See"] {
+                let at = fieldValue.range(of: word)
+                guard at.location != NSNotFound else { probes.append("\(word): not in the value"); continue }
+                var range = CFRange(location: at.location, length: at.length)
+                if let value = AXValueCreate(.cfRange, &range) {
+                    AXUIElementSetAttributeValue(field, kAXSelectedTextRangeAttribute as CFString, value)
+                }
+                pump(0.1)
+                let got = attribute(field, kAXSelectedTextAttribute) as? String ?? "nil"
+                probes.append("\(word)@\(at.location): \(got == word ? "ok" : "got \(String(reflecting: got))")")
+            }
+            log("NOTE \(name) selection offsets: \(probes.joined(separator: ", "))")
             AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
             _ = selectAll() || selectAll()
             let selected = visible(focusedElement().flatMap { attribute($0, kAXSelectedTextAttribute) as? String } ?? "")

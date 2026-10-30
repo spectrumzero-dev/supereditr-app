@@ -55,8 +55,9 @@ impl fmt::Display for Whole {
 /// The edits that turn `original` into `revised`, last first, so applying them in order leaves
 /// the positions of those still to come unchanged. `proofread` is whether the revision is a plain
 /// proofread; `code` holds character ranges of `original` the app formats as code. An insertion
-/// takes in the word before it (or after it, at the start or next to code), so every edit replaces
-/// text that can be read back first.
+/// takes in a neighbouring token, so every edit replaces text that can be read back first: a space
+/// or punctuation mark next to it where there is one, since a word beside it may be formatted (a
+/// link, bold) and replacing it could drop the formatting; otherwise the word before or after it.
 pub fn plan(original: &str, revised: &str, proofread: bool, code: &[(usize, usize)]) -> Result<Vec<Edit>, Whole> {
     if !proofread {
         return Err(Whole::Rewrite);
@@ -84,10 +85,13 @@ pub fn plan(original: &str, revised: &str, proofread: bool, code: &[(usize, usiz
     let mut edits = Vec::with_capacity(changes.len());
     for (start, old, new) in changes {
         let (start, old, new) = if old.is_empty() {
-            // The token before the insertion, or the one after it.
+            // The token before the insertion or the one after it, a space or punctuation first.
             let before = bounds.iter().rev().find(|&&b| b < start).map(|&b| (b, start));
             let after = bounds.iter().find(|&&b| b > start).map(|&b| (start, b));
-            match [before, after].into_iter().flatten().find(|&(s, e)| !in_code(s, e)) {
+            let word = |&(s, e): &(usize, usize)| chars[s..e].iter().any(|c| c.is_alphanumeric());
+            let mut candidates: Vec<(usize, usize)> = [before, after].into_iter().flatten().collect();
+            candidates.sort_by_key(word);
+            match candidates.into_iter().find(|&(s, e)| !in_code(s, e)) {
                 Some((s, e)) if s < start => (s, slice(s, e), format!("{}{new}", slice(s, e))),
                 Some((s, e)) => (s, slice(s, e), format!("{new}{}", slice(s, e))),
                 None => return Err(Whole::Code),
@@ -142,11 +146,21 @@ mod tests {
     }
 
     #[test]
-    fn an_insertion_takes_in_the_word_before_it() {
-        let original = "Thanks for the notes see you soon.";
-        let revised = "Thanks for the notes; see you soon.";
+    fn an_insertion_takes_in_the_space_next_to_it() {
+        // "notes" may be a link: the comma goes in by replacing the space after it.
+        let original = "Read the notes and go.";
+        let revised = "Read the notes, and go.";
         let edits = plan(original, revised, true, &[]).unwrap();
-        assert_eq!(pairs(&edits), vec![(15, "notes", "notes;")]);
+        assert_eq!(pairs(&edits), vec![(14, " ", ", ")]);
+        assert_eq!(apply(original, &edits), revised);
+    }
+
+    #[test]
+    fn an_insertion_between_words_takes_in_a_word() {
+        let original = "Thanks.Bye";
+        let revised = "Thanks.So bye";
+        let edits = plan(original, revised, true, &[]).unwrap();
+        assert!(edits.iter().all(|e| !e.old.is_empty()));
         assert_eq!(apply(original, &edits), revised);
     }
 

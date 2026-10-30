@@ -821,10 +821,8 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         // code with zero-width spaces), and two open-source editors chat and issue-tracker composers are
         // built on (tests/ui/composers). Each field holds two typos to fix, code at both ends of its
         // first paragraph (one with a typo of its own), bold, a link and an empty paragraph, and is
-        // reviewed once. A proofread is applied in place, one edit per change, where the field lets
-        // SuperEditr move its selection; the log says which way it went, and a field that took the
-        // whole replace is a NOTE. Bold and links don't survive the whole replace: those log a NOTE
-        // rather than fail.
+        // reviewed once. The proofread must be applied in place, one edit per change, and keep the
+        // code, bold and link as they were.
         let composerFields = [("code", "editable div"), ("markdown", "Markdown composer"), ("tiptap", "TipTap"), ("lexical", "Lexical")]
         let codes = ["teh fix", "their going to work"], composerTypo = "Their going to love"
         let composerFixes = ["They're going to love", "really run"]
@@ -872,11 +870,6 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 check(ok, "\(name): \(what)", detail())
                 row.append("\(short) \(ok ? "ok" : "FAIL")")
             }
-            // Behaviour SuperEditr doesn't have yet: shown in the log and the summary, never a failure.
-            func gap(_ ok: Bool, _ short: String, _ what: String, _ detail: String) {
-                log("NOTE \(name): \(what) \(ok ? "survives the fix" : "is lost in the fix (\(detail))")")
-                row.append("\(short) \(ok ? "ok" : "gap")")
-            }
             let opened = reviewField(field)
             expect(opened, "review", "⌘E E opens a review of the whole field with a fix",
                    "no review of the whole field with a fix within 9 s; panel text: \(panelText())")
@@ -904,16 +897,15 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 expect(composerFixes.allSatisfy(visible(value ?? "").contains), "both fixes", "both changes are applied",
                        "the field reads \(String(reflecting: value ?? ""))")
                 let path = appliedPath("com.google.Chrome")
-                log("NOTE \(name): \(path)")
-                row.append(path.contains("applied in place:") ? "in place" : "whole")
+                expect(path.contains("applied in place: 2 edits"), "in place", "the proofread is applied in place", "the log says: \(path)")
                 expect(codes.allSatisfy(visible(value ?? "").contains), "code kept", "the code is left as written",
                        "the field reads \(String(reflecting: value ?? ""))")
                 expect(state["code"] == codes.joined(separator: "|"), "code format", "the code is still formatted as code",
                        "the page reports \(state)")
                 expect(state["paragraphs"] == "3" && state["empty"] == "1", "empty paragraph", "the empty paragraph survives",
                        "the page reports \(state)")
-                gap(state["bold"] == "today", "bold", "bold", "the page reports bold=\(state["bold"] ?? "?")")
-                gap(state["links"] == "the notes", "link", "the link", "the page reports links=\(state["links"] ?? "?")")
+                expect(state["bold"] == "today", "bold", "bold survives the fix", "the page reports \(state)")
+                expect(state["links"] == "the notes", "link", "the link survives the fix", "the page reports \(state)")
                 screenshot(window: nil, rect: windows(bundleID: chrome).first?.frame, to: outDir + "/composer-\(id)-applied.png")
                 if overlay() != nil {
                     press(keyEscape)

@@ -509,6 +509,24 @@ if let settings {
     }
     screenshot(window: nil, rect: frame(of: settings), to: outDir + "/shortcut-recorder.png")
 
+    // Open at login writes a Launch Agent that starts this copy of SuperEditr, in the throwaway
+    // HOME, and turning it off removes it.
+    let agent = home + "/Library/LaunchAgents/SuperEditr.plist"
+    let loginSwitch = waitFor(5) {
+        findElement(settings) { (attribute($0, kAXRoleAttribute) as? String) == kAXCheckBoxRole && ownText($0).contains("Open at login") }
+    }
+    check(loginSwitch != nil, "Settings → Behavior shows Open at login")
+    if let loginSwitch {
+        AXUIElementPerformAction(loginSwitch, kAXPressAction as CFString)
+        let written = waitFor(4) { try? String(contentsOfFile: agent, encoding: .utf8) }
+        let binary = URL(fileURLWithPath: appPath + "/Contents/MacOS/supereditr").resolvingSymlinksInPath().path
+        check(written?.contains(binary) == true && written?.contains("RunAtLoad") == true,
+              "Open at login adds a Launch Agent for this app", written ?? "no \(agent)")
+        AXUIElementPerformAction(loginSwitch, kAXPressAction as CFString)
+        let removed = waitFor(4) { FileManager.default.fileExists(atPath: agent) ? nil : true }
+        check(removed != nil, "turning Open at login off removes the Launch Agent", "\(agent) still exists")
+    }
+
     // Get Started's "Find my AI accounts" opens Models and scans there: one place finds AIs.
     let started = waitFor(5) { button(in: settings, containing: "Get Started") }
     if let started { AXUIElementPerformAction(started, kAXPressAction as CFString) }

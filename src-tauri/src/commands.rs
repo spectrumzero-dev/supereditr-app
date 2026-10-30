@@ -508,6 +508,23 @@ pub fn pause_shortcuts(app: AppHandle, paused: bool) {
     hotkeys::pause(&app, paused);
 }
 
+/// Whether macOS opens SuperEditr when the user logs in, including after a restart.
+#[tauri::command]
+pub fn launch_at_login(app: AppHandle) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+/// Turns opening at login on or off and returns the state macOS now reports.
+#[tauri::command]
+pub fn set_launch_at_login(app: AppHandle, enabled: bool) -> CmdResult<bool> {
+    use tauri_plugin_autostart::ManagerExt;
+    let launcher = app.autolaunch();
+    let result = if enabled { launcher.enable() } else { launcher.disable() };
+    result.map_err(|e| format!("Couldn't change opening at login: {e}"))?;
+    launcher.is_enabled().map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn accessibility_status(prompt: bool) -> bool {
     platform::accessibility_trusted(prompt)

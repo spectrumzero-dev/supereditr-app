@@ -272,6 +272,8 @@ pub fn run() {
             commands::fit_settings_height,
             commands::pause_shortcuts,
             commands::open_apple_intelligence_settings,
+            commands::launch_at_login,
+            commands::set_launch_at_login,
             commands::accessibility_status,
             commands::open_accessibility_settings,
             commands::guide_accessibility,

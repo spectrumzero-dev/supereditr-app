@@ -339,12 +339,15 @@ func frame(of element: AXUIElement) -> CGRect {
 }
 
 /// Clicks the middle of `element` with the mouse, for an item Accessibility can't press, such as a
-/// file in an open panel.
+/// file in an open panel. With no modifier keys: an event otherwise takes on modifiers from earlier
+/// key events, and a Shift- or Control-click selects differently or opens a menu.
 func click(_ element: AXUIElement) {
     let box = frame(of: element)
     for type in [CGEventType.leftMouseDown, .leftMouseUp] {
-        CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: CGPoint(x: box.midX, y: box.midY), mouseButton: .left)?
-            .post(tap: .cghidEventTap)
+        guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: CGPoint(x: box.midX, y: box.midY),
+                                  mouseButton: .left) else { continue }
+        event.flags = []
+        event.post(tap: .cghidEventTap)
         usleep(50_000)
     }
 }
@@ -678,6 +681,8 @@ if let settings {
                 }
             }
             if let item { click(item) }
+            pump(0.5)
+            screenshot(window: nil, rect: frame(of: settings), to: outDir + "/add-app-chosen.png")
             let add = waitFor(5) { () -> AXUIElement? in
                 findElement(sheet) {
                     (attribute($0, kAXRoleAttribute) as? String) == kAXButtonRole && attribute($0, kAXTitleAttribute) as? String == "Add"

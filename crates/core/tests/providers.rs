@@ -200,6 +200,34 @@ async fn engine_leaves_the_offline_checker_out_while_an_ai_answers() {
     assert_eq!(outcome.view.change_count, 2);
 }
 
+/// The offline checker's final pass over the AI's revision keeps a name the dictionary also lists
+/// as an acronym ("Sam", "SAM").
+#[tokio::test]
+async fn engine_final_pass_keeps_names() {
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"<text>Hi Sam, there are a few typos.</text>\"}}]}\n\n\
+                data: [DONE]\n\n";
+    let (url, _) = mock_server(vec![(200, "text/event-stream", body.into())]).await;
+    let engine = Engine::new("American English");
+    let config = supereditr_core::Config::default();
+    let job = Job {
+        text: "Hi Sam, their are a few typos.".into(),
+        preset: config.default_preset().clone(),
+        steer: None,
+        profile: Some(profile(ProviderKind::OpenAiCompatible, &url, "local-model")),
+        style_notes: String::new(),
+        dialect: "American English".into(),
+        words: Vec::new(),
+        code: Vec::new(),
+        local_checks: true,
+        builtin_ai: false,
+    };
+    let mut events = Vec::new();
+    engine.run(job, &mut |e| events.push(e)).await;
+    let Some(Event::Done(outcome)) = events.last() else { panic!("{events:?}") };
+    assert_eq!(outcome.text, "Hi Sam, there are a few typos.");
+    assert_eq!(outcome.view.change_count, 1);
+}
+
 #[tokio::test]
 async fn engine_leaves_code_as_written() {
     let body = "data: {\"choices\":[{\"delta\":{\"content\":\"<text>Should I update? `Wrangler 4.150.0` \"}}]}\n\n\

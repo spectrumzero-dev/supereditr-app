@@ -504,11 +504,11 @@ let settings = waitFor(8) { settingsWindow() }
 check(settings != nil, "a second launch opens Settings", "SuperEditr windows: \(describeWindows())")
 if let settings {
     running(superEditr).first?.activate()
-    let general = waitFor(5) { button(in: settings, containing: "Behavior") }
-    check(general != nil, "Settings shows its sidebar")
-    if let general { AXUIElementPerformAction(general, kAXPressAction as CFString) }
+    let shortcuts = waitFor(5) { button(in: settings, containing: "Shortcuts") }
+    check(shortcuts != nil, "Settings shows its sidebar")
+    if let shortcuts { AXUIElementPerformAction(shortcuts, kAXPressAction as CFString) }
     let recorder = waitFor(5) { button(in: settings, containing: "⌘E E") }
-    check(recorder != nil, "Settings → Behavior shows the review shortcut")
+    check(recorder != nil, "Settings → Shortcuts shows the review shortcut")
     if let recorder {
         AXUIElementPerformAction(recorder, kAXPressAction as CFString)
         pump(0.5)
@@ -527,10 +527,12 @@ if let settings {
         return plist.contains(binary) && plist.contains("RunAtLoad") ? true : nil
     }
     check(agentStartsThisApp() != nil, "Open at login is on by default", (try? String(contentsOfFile: agent, encoding: .utf8)) ?? "no \(agent)")
+    let general = waitFor(5) { button(in: settings, containing: "General") }
+    if let general { AXUIElementPerformAction(general, kAXPressAction as CFString) }
     let loginSwitch = waitFor(5) {
         findElement(settings) { (attribute($0, kAXRoleAttribute) as? String) == kAXCheckBoxRole && ownText($0).contains("Open at login") }
     }
-    check(loginSwitch != nil, "Settings → Behavior shows Open at login")
+    check(loginSwitch != nil, "Settings → General shows Open at login")
     if let loginSwitch {
         AXUIElementPerformAction(loginSwitch, kAXPressAction as CFString)
         let removed = waitFor(4) { FileManager.default.fileExists(atPath: agent) ? nil : true }
@@ -538,6 +540,16 @@ if let settings {
         AXUIElementPerformAction(loginSwitch, kAXPressAction as CFString)
         check(waitFor(4) { agentStartsThisApp() } != nil, "turning Open at login on adds the Launch Agent again", "no Launch Agent for \(binary)")
     }
+
+    // The apps SuperEditr never reads are listed on Privacy, beside the Accessibility permission.
+    let privacy = waitFor(5) { button(in: settings, containing: "Privacy") }
+    if let privacy { AXUIElementPerformAction(privacy, kAXPressAction as CFString) }
+    let excluded = waitFor(5) { () -> Bool? in
+        let text = allText(settings, levels: 40)
+        return text.contains("com.1password.1password") && text.contains("Password fields are never read") ? true : nil
+    }
+    check(excluded != nil, "Settings → Privacy lists the apps SuperEditr never reads", "no com.1password.1password beside the Accessibility permission")
+    screenshot(window: nil, rect: frame(of: settings), to: outDir + "/settings-privacy.png")
 
     // Get Started's "Find my AI accounts" opens Models and scans there: one place finds AIs.
     let started = waitFor(5) { button(in: settings, containing: "Get Started") }
@@ -556,7 +568,7 @@ if let settings {
         check(panelText().contains("Early access"), "Models labels the cloud AIs Early access")
         screenshot(window: nil, rect: frame(of: settings), to: outDir + "/find-accounts.png")
     }
-    if general == nil || recorder == nil {
+    if shortcuts == nil || recorder == nil {
         try? dumpTree(settings).write(toFile: outDir + "/settings-accessibility.txt", atomically: true, encoding: .utf8)
         log("     Settings' Accessibility tree: \(outDir)/settings-accessibility.txt")
     }

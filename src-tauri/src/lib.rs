@@ -283,7 +283,7 @@ pub fn run() {
             }
             let first_run = !handle.state::<AppState>().config().onboarded;
             if first_run || !platform::accessibility_trusted(false) {
-                show_settings(&handle, Some(if first_run { "welcome".into() } else { "permissions".into() }));
+                show_settings(&handle, Some(if first_run { "welcome".into() } else { "privacy".into() }));
             }
             Ok(())
         })

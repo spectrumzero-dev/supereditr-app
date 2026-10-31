@@ -8,6 +8,8 @@
   let { config = $bindable(), onchange }: Props = $props();
   let newWord = $state("");
 
+  const dialects = ["American English", "British English", "Canadian English", "Australian English", "Indian English"];
+
   function addWord() {
     const word = newWord.trim();
     if (word && !config.words.some((w) => w.toLowerCase() === word.toLowerCase())) {
@@ -24,13 +26,14 @@
 </script>
 
 <div class="page">
-  <h1>Your words</h1>
+  <h1>Dictionary</h1>
   <p class="lede">
     Names, places, products, and addresses that SuperEditr keeps exactly as written. The rule-based checker treats them as
     correctly spelled, and your AI is told to keep the ones in the text you select. Add one here, or press <kbd>A</kbd> (Always
     keep) in the suggestion panel.
   </p>
 
+  <div class="group-title">Words to keep</div>
   <div class="group">
     <div class="row column">
       <form class="add-word" onsubmit={(e) => { e.preventDefault(); addWord(); }}>
@@ -46,6 +49,19 @@
       {:else}
         <p class="empty">No words yet.</p>
       {/if}
+    </div>
+  </div>
+
+  <div class="group-title">Spelling</div>
+  <div class="group">
+    <div class="row">
+      <div>
+        <div class="label">English spelling</div>
+        <div class="hint">The rule-based checker and your AI both follow it.</div>
+      </div>
+      <select bind:value={config.dialect} onchange={onchange}>
+        {#each dialects as d (d)}<option>{d}</option>{/each}
+      </select>
     </div>
   </div>
 </div>

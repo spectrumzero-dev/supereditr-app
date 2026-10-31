@@ -1,22 +1,25 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type { Config, SettingsPayload } from "../lib/types";
+  import Dictionary from "./Dictionary.svelte";
   import General from "./General.svelte";
   import Models from "./Models.svelte";
-  import Permissions from "./Permissions.svelte";
+  import Privacy from "./Privacy.svelte";
+  import Shortcuts from "./Shortcuts.svelte";
   import Styles from "./Styles.svelte";
   import Welcome from "./Welcome.svelte";
-  import Words from "./Words.svelte";
   import { api } from "./ipc";
 
-  type Section = "welcome" | "models" | "styles" | "words" | "general" | "permissions" | "about";
-  const nav: { id: Section; name: string; icon: string }[] = [
+  type Section = "welcome" | "models" | "styles" | "dictionary" | "general" | "shortcuts" | "privacy" | "about";
+  // The pages about the writing, then a gap, then the app's own.
+  const nav: { id: Section; name: string; icon: string; gap?: boolean }[] = [
     { id: "welcome", name: "Get Started", icon: "✦" },
     { id: "models", name: "Models", icon: "◎" },
     { id: "styles", name: "Styles", icon: "¶" },
-    { id: "words", name: "Your words", icon: "✎" },
-    { id: "general", name: "Behavior", icon: "⌘" },
-    { id: "permissions", name: "Permissions", icon: "⚿" },
+    { id: "dictionary", name: "Dictionary", icon: "Aa" },
+    { id: "general", name: "General", icon: "⚙", gap: true },
+    { id: "shortcuts", name: "Shortcuts", icon: "⌘" },
+    { id: "privacy", name: "Privacy", icon: "⚿" },
     { id: "about", name: "About", icon: "ⓘ" },
   ];
 
@@ -62,7 +65,7 @@
     });
     let stop: (() => void) | undefined;
     api.on<string>("settings:section", (s) => {
-      if (s === "permissions") section = payload?.config.onboarded ? "permissions" : "welcome";
+      if (s === "privacy") section = payload?.config.onboarded ? "privacy" : "welcome";
       else if (nav.some((n) => n.id === s)) section = s as Section;
       reload();
     }).then((s) => (stop = s));
@@ -87,14 +90,14 @@
     </div>
     <nav>
       {#each nav as item (item.id)}
-        <button class:active={section === item.id} onclick={() => (section = item.id)}>
+        <button class:active={section === item.id} class:gap={item.gap} onclick={() => (section = item.id)}>
           <span class="icon" aria-hidden="true">{item.icon}</span>{item.name}
         </button>
       {/each}
     </nav>
     <div class="foot">
       {#if payload && !payload.accessibility}
-        <button class="warn" onclick={() => (section = payload?.config.onboarded ? "permissions" : "welcome")}>Accessibility access needed</button>
+        <button class="warn" onclick={() => (section = payload?.config.onboarded ? "privacy" : "welcome")}>Accessibility access needed</button>
       {/if}
       {#if saved}<span class="saved">Saved</span>{/if}
     </div>
@@ -115,18 +118,19 @@
         />
       {:else if section === "styles"}
         <Styles bind:config {onchange} />
-      {:else if section === "words"}
-        <Words bind:config {onchange} />
+      {:else if section === "dictionary"}
+        <Dictionary bind:config {onchange} />
       {:else if section === "general"}
-        <General bind:config {problems} {onchange} />
-      {:else if section === "permissions"}
-        <Permissions accessibility={payload.accessibility} />
+        <General bind:config {onchange} />
+      {:else if section === "shortcuts"}
+        <Shortcuts bind:config {problems} {onchange} />
+      {:else if section === "privacy"}
+        <Privacy bind:config accessibility={payload.accessibility} {onchange} />
       {:else}
         <div class="page">
           <h1>About SuperEditr</h1>
           <p class="lede">Version {payload.version}. Fast, private, keyboard-first proofreading that works in any app, with the AI you choose.</p>
           <div class="group">
-            <div class="row"><span>Your text goes only to the provider you pick, directly from this Mac. SuperEditr collects no analytics, and its only server counts update checks.</span></div>
             <div class="row"><span>The rule-based checker is <button class="linklike" onclick={() => api.openUrl("https://writewithharper.com")}>Harper</button> (Apache-2.0).</span></div>
           </div>
         </div>
@@ -172,6 +176,9 @@
   }
   nav button:hover {
     background: var(--bg-hover);
+  }
+  nav button.gap {
+    margin-top: 12px;
   }
   nav button.active {
     background: var(--accent-soft);

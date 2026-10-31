@@ -110,7 +110,7 @@ fn check_target(app: &AppHandle) -> Target {
 }
 
 fn excluded_message(name: &str) -> String {
-    format!("SuperEditr is turned off in {name}. Change this in Settings → Behavior.")
+    format!("SuperEditr is turned off in {name}. Change this in Settings → Privacy.")
 }
 
 fn warm_connection(app: &AppHandle) {

@@ -1,4 +1,4 @@
-import type { BuiltinAi, Candidate, ProviderCheck, Config, EngineEvent, Preset, ProviderKind, ProviderProfile, Saved, SettingsPayload } from "../lib/types";
+import type { AppInfo, BuiltinAi, Candidate, ProviderCheck, Config, EngineEvent, Preset, ProviderKind, PickedApps, ProviderProfile, Saved, SettingsPayload } from "../lib/types";
 
 export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -62,6 +62,12 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
     default_presets: () => demoConfig.presets.map((p) => ({ ...p })),
     builtin_ai: () => ({ supported: true, available: true, message: null }),
     check_provider: () => ({ ready: false, problem: "Add an API key", models: [] }),
+    app_info: () => {
+      const names: Record<string, string> = { "com.1password.1password": "1Password", "com.apple.Terminal": "Terminal", "com.apple.Notes": "Notes" };
+      const ids = (args?.bundleIds as string[]).filter((id) => id in names);
+      return Object.fromEntries(ids.map((id) => [id, { bundleId: id, name: names[id], icon: null }]));
+    },
+    pick_apps: () => ({ apps: [{ bundleId: "com.apple.Notes", name: "Notes", icon: null }], skipped: [] }),
   };
   return (demo[cmd]?.() ?? null) as T;
 }
@@ -95,6 +101,10 @@ export const api = {
   /** Returns whether opening at login is on afterwards. */
   setLaunchAtLogin: (enabled: boolean) => invoke<boolean>("set_launch_at_login", { enabled }),
   openAccessibility: () => invoke<void>("open_accessibility_settings"),
+  /** Names and icons of the installed apps among `bundleIds`, by bundle ID. */
+  appInfo: (bundleIds: string[]) => invoke<Record<string, AppInfo>>("app_info", { bundleIds }),
+  /** Opens a panel on /Applications and returns the apps chosen there. */
+  pickApps: () => invoke<PickedApps>("pick_apps"),
   /** Opens System Settings → Accessibility with the drag-and-drop guide beside it. */
   guideAccessibility: () => invoke<void>("guide_accessibility"),
   preview: (id: number, text: string, presetId: string) => invoke<void>("preview_review", { id, text, presetId }),

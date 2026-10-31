@@ -35,8 +35,10 @@ core-graphics = { version = "0.25", features = ["elcapitan"] }
 # The raw event pointer, for Core Graphics calls the core-graphics crate doesn't wrap.
 foreign-types = "0.5"
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSString", "NSData", "NSArray", "NSURL", "NSGeometry", "NSNotification", "NSDictionary", "NSOperation", "block2"] }
-objc2-app-kit = { version = "0.3", features = ["NSPasteboard", "NSPasteboardItem", "NSRunningApplication", "NSEvent", "NSResponder", "NSApplication", "NSWindow", "NSGraphics", "NSWorkspace", "NSScreen", "block2"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSData", "NSArray", "NSURL", "NSGeometry", "NSNotification", "NSDictionary", "NSOperation", "NSBundle", "NSFileManager", "block2"] }
+objc2-app-kit = { version = "0.3", features = ["NSPasteboard", "NSPasteboardItem", "NSRunningApplication", "NSEvent", "NSResponder", "NSApplication", "NSWindow", "NSGraphics", "NSWorkspace", "NSScreen", "NSOpenPanel", "NSImage", "NSBitmapImageRep", "NSGraphicsContext", "objc2-uniform-type-identifiers", "block2"] }
+# The Privacy page's app picker shows only apps.
+objc2-uniform-type-identifiers = { version = "0.3", features = ["UTType", "UTCoreTypes"] }
 block2 = "0.6"
 # Drags SuperEditr.app out of the permission guide into System Settings.
 drag = "2.1.1"

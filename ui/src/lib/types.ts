@@ -116,6 +116,21 @@ export interface Config {
   onboarded: boolean;
 }
 
+/** An installed app, as Settings → Privacy lists it (see `apps.rs`). */
+export interface AppInfo {
+  bundleId: string;
+  name: string;
+  /** A PNG data URL, or null if the icon couldn't be drawn. */
+  icon: string | null;
+}
+
+/** The apps chosen in Settings → Privacy's open panel: none if the user cancelled. */
+export interface PickedApps {
+  apps: AppInfo[];
+  /** Names of chosen apps without a bundle ID, which SuperEditr can't recognize. */
+  skipped: string[];
+}
+
 export interface SettingsPayload {
   config: Config;
   keys: Record<string, boolean>;

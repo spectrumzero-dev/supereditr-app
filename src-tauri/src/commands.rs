@@ -1,7 +1,7 @@
 //! Commands invoked by the overlay and settings windows.
 
 use crate::state::AppState;
-use crate::{hotkeys, overlay, platform, review, secrets};
+use crate::{apps, hotkeys, overlay, platform, review, secrets};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::time::Instant;
@@ -558,6 +558,27 @@ pub fn accessibility_status(prompt: bool) -> bool {
 #[tauri::command]
 pub fn open_accessibility_settings() {
     platform::open_accessibility_settings();
+}
+
+/// Names and icons for the installed apps among `bundle_ids`, keyed by bundle ID; an app that
+/// isn't installed is left out. Synchronous, so it runs on the main thread, where AppKit draws.
+#[tauri::command]
+pub fn app_info(bundle_ids: Vec<String>) -> HashMap<String, apps::AppInfo> {
+    bundle_ids.into_iter().filter_map(|id| Some((id.clone(), apps::find(&id)?))).collect()
+}
+
+/// Opens a panel on /Applications as a sheet on the calling window and returns the apps the user
+/// chose there.
+#[tauri::command]
+pub async fn pick_apps(window: tauri::WebviewWindow) -> apps::Picked {
+    let (sender, chosen) = tokio::sync::oneshot::channel();
+    let target = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        apps::pick(&target, move |picked| {
+            let _ = sender.send(picked);
+        })
+    });
+    chosen.await.unwrap_or_default()
 }
 
 /// Opens the Accessibility pane with the drag-and-drop guide beside it.

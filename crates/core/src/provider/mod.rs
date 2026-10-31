@@ -38,6 +38,15 @@ impl ProviderKind {
         matches!(self, Self::Anthropic | Self::OpenAi | Self::Gemini)
     }
 
+    /// Whether the offline checker goes over this AI's revision as a final pass. Apple's on-device
+    /// model and local models can miss mistakes its rules catch ("should of"), and an
+    /// OpenAI-compatible server may be running one. The cloud AIs catch those themselves, and read
+    /// context the rules can't: a name the dictionary also lists as an acronym ("Sam", "SAM") stays
+    /// a name.
+    pub fn needs_final_pass(self) -> bool {
+        matches!(self, Self::AppleIntelligence | Self::Ollama | Self::OpenAiCompatible)
+    }
+
     pub fn default_base_url(self) -> &'static str {
         match self {
             Self::Anthropic => "https://api.anthropic.com",

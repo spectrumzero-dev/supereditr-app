@@ -36,6 +36,9 @@ pub enum Segment {
         old_start: usize,
         #[serde(skip_serializing_if = "Option::is_none")]
         note: Option<String>,
+        /// Made by the offline checker's final pass over an AI's revision, not by the AI.
+        #[serde(rename = "ruleBased", skip_serializing_if = "std::ops::Not::not")]
+        rule_based: bool,
     },
 }
 
@@ -103,6 +106,7 @@ fn build_segments(old: &[&str], new: &[&str], ops: &[DiffOp]) -> Vec<Segment> {
             kind,
             old_start: start,
             note: None,
+            rule_based: false,
         });
         id += 1;
     };
@@ -165,9 +169,9 @@ pub fn without_changes_in(view: DiffView, spans: &[(usize, usize)]) -> DiffView 
             {
                 Segment::Equal { text: old }
             }
-            Segment::Change { id: _, old, new, kind, old_start, note } => {
+            Segment::Change { id: _, old, new, kind, old_start, note, rule_based } => {
                 next_id += 1;
-                Segment::Change { id: next_id - 1, old, new, kind, old_start, note }
+                Segment::Change { id: next_id - 1, old, new, kind, old_start, note, rule_based }
             }
             equal => equal,
         };
@@ -178,6 +182,43 @@ pub fn without_changes_in(view: DiffView, spans: &[(usize, usize)]) -> DiffView 
         }
     }
     finish(segments, view.pending)
+}
+
+/// Marks each change in `view` that holds one of `pass`'s changes as rule-based, with that change's
+/// note. `pass` revises `view`'s revised text, as the offline checker does an AI's; the two are
+/// matched by where their new text sits in the final text.
+pub fn mark_rule_based(view: &mut DiffView, pass: &DiffView) {
+    let fixes: Vec<(usize, usize, Option<String>)> = placed(&pass.segments)
+        .filter_map(|(start, end, segment)| match segment {
+            Segment::Change { note, .. } => Some((start, end, note.clone())),
+            Segment::Equal { .. } => None,
+        })
+        .collect();
+    let ranges: Vec<(usize, usize)> = placed(&view.segments).map(|(start, end, _)| (start, end)).collect();
+    for (segment, (start, end)) in view.segments.iter_mut().zip(ranges) {
+        let Segment::Change { note, rule_based, .. } = segment else { continue };
+        if let Some((_, _, fix_note)) = fixes.iter().find(|&&(s, e, _)| meet((start, end), (s, e))) {
+            *rule_based = true;
+            *note = fix_note.clone();
+        }
+    }
+}
+
+/// Whether two ranges share text. An empty range, where a removal was, meets a range it touches.
+fn meet((a, b): (usize, usize), (c, d): (usize, usize)) -> bool {
+    if a == b || c == d { a <= d && c <= b } else { a < d && c < b }
+}
+
+/// Each segment with the character range its text takes up in the revised text.
+fn placed(segments: &[Segment]) -> impl Iterator<Item = (usize, usize, &Segment)> {
+    segments.iter().scan(0, |pos, segment| {
+        let start = *pos;
+        *pos += match segment {
+            Segment::Equal { text } => text.chars().count(),
+            Segment::Change { new, .. } => new.chars().count(),
+        };
+        Some((start, *pos, segment))
+    })
 }
 
 fn touches(start: usize, len: usize, spans: &[(usize, usize)]) -> bool {
@@ -395,6 +436,31 @@ mod tests {
         assert_eq!(carry_ranges(original, "Does this code block work now?", &[(10, 14)]), vec![(10, 14)]);
         assert_eq!(carry_ranges(original, "So does this code block work now?", &[(10, 14)]), vec![(13, 17)]);
         assert!(carry_ranges(original, "does this snippet block work", &[(10, 14)]).is_empty());
+    }
+
+    #[test]
+    fn marks_the_checkers_fixes() {
+        let original = "Their are typos we should of seen in the the draft.";
+        let revised = "There are typos we should of seen in the the draft.";
+        let checked = "There are typos we should have seen in the draft.";
+        let mut pass = diff(revised, checked);
+        for segment in &mut pass.segments {
+            if let Segment::Change { note, .. } = segment {
+                *note = Some("A rule".into());
+            }
+        }
+        let mut view = diff(original, checked);
+        mark_rule_based(&mut view, &pass);
+        let marked: Vec<(&str, bool, Option<&str>)> = view
+            .segments
+            .iter()
+            .filter_map(|s| match s {
+                Segment::Change { old, rule_based, note, .. } => Some((old.as_str(), *rule_based, note.as_deref())),
+                _ => None,
+            })
+            .collect();
+        // The AI's fix stays its own; a replacement and a removal are the checker's.
+        assert_eq!(marked, vec![("Their", false, None), ("of", true, Some("A rule")), ("the ", true, Some("A rule"))]);
     }
 
     #[test]

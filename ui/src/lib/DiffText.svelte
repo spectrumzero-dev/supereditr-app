@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { DiffView } from "./types";
-  import { kindLabel } from "./diff";
+  import { changeLabel } from "./diff";
 
   interface Props {
     view: DiffView;
@@ -19,7 +19,7 @@
         class="change {segment.kind}"
         class:rejected={rejected.has(segment.id)}
         class:focused={focused === segment.id}
-        title={`${kindLabel[segment.kind]}${segment.note ? ` — ${segment.note}` : ""} (click to ${rejected.has(segment.id) ? "restore" : "keep original"})`}
+        title={`${changeLabel(segment)}${segment.note ? ` — ${segment.note}` : ""} (click to ${rejected.has(segment.id) ? "restore" : "keep original"})`}
         tabindex="-1"
         onclick={() => ontoggle?.(segment.id)}
         >{#if rejected.has(segment.id)}<span class="kept">{segment.old}</span>{:else}{#if segment.old.trim()}<del>{segment.old}</del>{/if}{#if segment.new}<ins>{segment.new}</ins>{/if}{/if}</button

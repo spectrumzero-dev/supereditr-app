@@ -330,15 +330,18 @@ impl Engine {
             Ok(text) => {
                 // A small model can miss rule-level mistakes ("Their going" on some Macs' Apple
                 // model). The offline checker's confident fixes (wrong-word rules, near-miss typos,
-                // never guesses at unknown words) run over its result as a final pass.
-                let text = if can_check_locally {
-                    let pass = self.local(&job.words).check(&text);
-                    if pass.change_count > 0 { diff::apply(&pass, &Default::default()) } else { text }
-                } else {
-                    text
-                };
+                // never guesses at unknown words) run over its result as a final pass, and the panel
+                // shows them as the checker's. Cloud AIs get none: see `needs_final_pass`.
+                let pass = (can_check_locally && profile.kind.needs_final_pass())
+                    .then(|| self.local(&job.words).check(&text))
+                    .filter(|pass| pass.change_count > 0);
+                let text = pass.as_ref().map_or(text, |pass| diff::apply(pass, &Default::default()));
+                let mut view = diff::diff(&original, &text);
+                if let Some(pass) = &pass {
+                    diff::mark_rule_based(&mut view, pass);
+                }
                 // Code stays exactly as written, whatever the model or the final pass did to it.
-                let view = diff::without_changes_in(diff::diff(&original, &text), &code);
+                let view = diff::without_changes_in(view, &code);
                 let text = diff::apply(&view, &Default::default());
                 let total = started.elapsed().as_millis() as u64;
                 let mut outcome = Outcome::new(&original, view, text, source, first_token, total);

@@ -25,6 +25,17 @@ export const kindLabel: Record<string, string> = {
   style: "Rewrite",
 };
 
+/** "Grammar", or "Grammar · Rule-based checker" for a fix the offline checker made on top of an AI's. */
+export function changeLabel(change: Change): string {
+  const kind = kindLabel[change.kind] ?? change.kind;
+  return change.ruleBased ? `${kind} · Rule-based checker` : kind;
+}
+
+/** Who made the changes: the AI, and the offline checker when its final pass added some. */
+export function sourceLabel(source: string, view: DiffView | null): string {
+  return changes(view).some((c) => c.ruleBased) ? `${source} + rule-based checker` : source;
+}
+
 /** Plain-language summary like "2 spelling, 1 grammar". */
 export function summarize(view: DiffView | null): string {
   const counts = new Map<string, number>();

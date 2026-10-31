@@ -65,6 +65,7 @@ impl LocalChecker {
             !lint.suggestions.is_empty()
                 && !technical.iter().any(|&(start, end)| lint.span.start < end && start < lint.span.end)
                 && confident_spelling(lint, &chars_in, dictionary)
+                && !recases_a_known_capital(lint, &chars_in, dictionary)
         });
         lints.sort_by_key(|lint| std::cmp::Reverse(lint.span.start));
 
@@ -174,6 +175,20 @@ fn confident_spelling(lint: &Lint, text: &[char], dictionary: &dyn Dictionary) -
     let lower = |w: &[char]| w.iter().flat_map(|c| c.to_lowercase()).collect::<Vec<char>>();
     let allowed = if word.len() >= 8 { 2 } else { 1 };
     edit_distance(&lower(word), &lower(fix)) <= allowed
+}
+
+/// Whether a fix only changes the case of a capitalized word the dictionary lists exactly as
+/// written. The dictionary has both "Sam" and the acronym "SAM", and Harper's casing rule turns
+/// every such word into the acronym ("Hi SAM"); the author's own capitals are the better guess.
+/// Lowercase words still get case fixes: "i" → "I", "nasa" → "NASA", a sentence's first word.
+fn recases_a_known_capital(lint: &Lint, text: &[char], dictionary: &dyn Dictionary) -> bool {
+    let Some(word) = text.get(lint.span.start..lint.span.end) else { return false };
+    let Some(Suggestion::ReplaceWith(fix)) = lint.suggestions.first() else { return false };
+    let lower = |w: &[char]| w.iter().flat_map(|c| c.to_lowercase()).collect::<Vec<char>>();
+    word.first().is_some_and(|c| c.is_uppercase())
+        && fix.as_slice() != word
+        && lower(fix) == lower(word)
+        && dictionary.contains_exact_word(word)
 }
 
 /// Whether the word at `start` begins a sentence, line, or list item.
@@ -329,6 +344,20 @@ mod tests {
         // At the start of a sentence a capitalized word may be a typo, so Harper's fix stands.
         assert_eq!(fixed("Teh lesson is today."), "The lesson is today.");
         assert_eq!(fixed("Rhyan has tennis today."), "Ryan has tennis today.");
+    }
+
+    #[test]
+    fn keeps_names_that_are_also_acronyms() {
+        let checker = LocalChecker::new(Dialect::American, &[]);
+        let fixed = |text: &str| diff::apply(&checker.check(text), &Default::default());
+        // The dictionary lists "Sam" and "SAM", "Mia" and "MIA", "Dec" and "DEC".
+        assert_eq!(fixed("Hi Sam, thanks for the draft!"), "Hi Sam, thanks for the draft!");
+        assert_eq!(fixed("Thanks, Mia! I took Sam to tennis."), "Thanks, Mia! I took Sam to tennis.");
+        assert_eq!(fixed("Sam has tennis on Dec 3."), "Sam has tennis on Dec 3.");
+        // Real capitalization fixes still apply.
+        assert_eq!(fixed("i need it by Friday."), "I need it by Friday.");
+        assert_eq!(fixed("Done. the lesson is today."), "Done. The lesson is today.");
+        assert_eq!(fixed("She works at nasa."), "She works at NASA.");
     }
 
     #[test]

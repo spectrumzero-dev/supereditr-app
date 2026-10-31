@@ -44,7 +44,6 @@ func skipEnvironment(_ reason: String) -> Never {
 let replayMark: Int64 = 0x5345_4454  // SuperEditr's marker on keys it replays ("SEDT")
 let keyE: CGKeyCode = 14, keyA: CGKeyCode = 0, keyEscape: CGKeyCode = 53, keyTab: CGKeyCode = 48, keySpace: CGKeyCode = 49
 let keyShift: CGKeyCode = 56, keyCommand: CGKeyCode = 55, keyRight: CGKeyCode = 124, keyUp: CGKeyCode = 126, keyReturn: CGKeyCode = 36, keyV: CGKeyCode = 9, keyR: CGKeyCode = 15, keyDown: CGKeyCode = 125
-let keyG: CGKeyCode = 5
 
 /// Holds Shift down (true) or lets it go (false), as a separate key, the way a person does.
 func shift(_ down: Bool) {
@@ -72,19 +71,6 @@ func press(_ code: CGKeyCode, _ flags: CGEventFlags = []) {
         event.flags = flags
         event.post(tap: .cghidEventTap)
         usleep(25_000)
-    }
-}
-
-/// Types `text` as key events that carry their characters, whatever the keyboard layout.
-func typeText(_ text: String) {
-    for unit in text.utf16 {
-        for down in [true, false] {
-            guard let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down) else { continue }
-            var character = unit
-            event.keyboardSetUnicodeString(stringLength: 1, unicodeString: &character)
-            event.post(tap: .cghidEventTap)
-            usleep(10_000)
-        }
     }
 }
 
@@ -350,6 +336,17 @@ func frame(of element: AXUIElement) -> CGRect {
         AXValueGetValue(s as! AXValue, .cgSize, &size)
     }
     return CGRect(origin: point, size: size)
+}
+
+/// Clicks the middle of `element` with the mouse, for an item Accessibility can't press, such as a
+/// file in an open panel.
+func click(_ element: AXUIElement) {
+    let box = frame(of: element)
+    for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+        CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: CGPoint(x: box.midX, y: box.midY), mouseButton: .left)?
+            .post(tap: .cghidEventTap)
+        usleep(50_000)
+    }
 }
 
 func button(in root: AXUIElement, containing label: String) -> AXUIElement? {
@@ -657,8 +654,8 @@ if let settings {
     let unnamed = listed.filter { $0.shown != $0.id && privacyText.contains($0.id) }.map(\.id)
     check(unnamed.isEmpty, "Privacy names installed apps instead of showing bundle IDs", "still showing \(unnamed)")
 
-    // Add app… opens a panel on /Applications. Going to a system app there and choosing it adds
-    // its bundle ID to settings.json and lists it by name.
+    // Add app… opens a panel on /Applications. Choosing a system app there adds its bundle ID to
+    // settings.json and lists it by name.
     let pickPath = ["/System/Applications/Chess.app", "/System/Applications/Calculator.app"].first {
         FileManager.default.fileExists(atPath: $0)
     }
@@ -667,17 +664,20 @@ if let settings {
     if let addApp, let pickPath, let pickID = Bundle(path: pickPath)?.bundleIdentifier {
         running(superEditr).first?.activate()
         AXUIElementPerformAction(addApp, kAXPressAction as CFString)
-        let sheet = waitFor(5) { findElement(settings) { (attribute($0, kAXRoleAttribute) as? String) == kAXSheetRole } }
+        func openSheet() -> AXUIElement? { findElement(settings) { (attribute($0, kAXRoleAttribute) as? String) == kAXSheetRole } }
+        let sheet = waitFor(5) { openSheet() }
         check(sheet != nil, "Add app… opens a panel over Settings", "no sheet on the Settings window")
         if let sheet {
             pump(0.5)
             screenshot(window: nil, rect: frame(of: settings), to: outDir + "/add-app-panel.png")
-            press(keyG, [.maskCommand, .maskShift])  // Go to Folder
-            pump(1)
-            typeText(pickPath)
-            pump(0.5)
-            press(keyReturn)
-            // Going to an app's path selects it, which enables Add; some macOS versions choose it at once.
+            // Click the app in the panel's list, as a person does, which enables Add.
+            let item = waitFor(3) {
+                findElement(sheet) {
+                    (attribute($0, kAXRoleAttribute) as? String) == kAXTextFieldRole
+                        && ownText($0).trimmingCharacters(in: .whitespaces) == appName(pickPath)
+                }
+            }
+            if let item { click(item) }
             let add = waitFor(5) { () -> AXUIElement? in
                 findElement(sheet) {
                     (attribute($0, kAXRoleAttribute) as? String) == kAXButtonRole && attribute($0, kAXTitleAttribute) as? String == "Add"
@@ -685,18 +685,22 @@ if let settings {
                 }
             }
             if let add { AXUIElementPerformAction(add, kAXPressAction as CFString) }
+            // The panel lists the app too, so the name counts only once the panel has closed.
             let saved = waitFor(5) { () -> Bool? in
                 let json = (try? String(contentsOfFile: support + "/settings.json", encoding: .utf8)) ?? ""
-                return json.contains("\"\(pickID)\"") && allText(settings, levels: 40).contains(appName(pickPath)) ? true : nil
+                return json.contains("\"\(pickID)\"") && openSheet() == nil
+                    && allText(settings, levels: 40).contains(appName(pickPath)) ? true : nil
             }
             check(saved != nil, "choosing \(appName(pickPath)) in the panel excludes it and lists it by name",
-                  "settings.json has no \(pickID), or Privacy doesn't show \(appName(pickPath))")
+                  item == nil ? "the panel doesn't list \(appName(pickPath))"
+                      : add == nil ? "clicking \(appName(pickPath)) didn't enable Add"
+                      : "settings.json has no \(pickID), or Privacy doesn't show \(appName(pickPath))")
             if saved == nil {
                 try? dumpTree(settings).write(toFile: outDir + "/add-app-accessibility.txt", atomically: true, encoding: .utf8)
                 log("     Settings' Accessibility tree: \(outDir)/add-app-accessibility.txt")
             }
-            // Never leave the panel up over the checks that follow: Escape closes Go to Folder, then the panel.
-            for _ in 0..<3 where findElement(settings, { (attribute($0, kAXRoleAttribute) as? String) == kAXSheetRole }) != nil {
+            // Never leave the panel up over the checks that follow.
+            for _ in 0..<2 where openSheet() != nil {
                 press(keyEscape)
                 pump(0.5)
             }

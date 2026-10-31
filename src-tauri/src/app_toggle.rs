@@ -109,7 +109,7 @@ pub fn on_menu(app: &AppHandle) {
     }
     let excluding = !config.is_excluded(&target.bundle_id);
     config.set_excluded(&target.bundle_id, excluding);
-    if let Err(e) = crate::commands::save_settings(app.clone(), state, config) {
+    if let Err(e) = crate::commands::save_settings(app.clone(), state, config, None) {
         eprintln!("SuperEditr: couldn't save settings: {e}");
         return crate::review::show_error(app, failure_message(&target, excluding, &e));
     }

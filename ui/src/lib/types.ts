@@ -112,6 +112,14 @@ export interface SettingsPayload {
   accessibility: boolean;
   version: string;
   platform: string;
+  /** The revision `config` was saved at; see `save_settings` in commands.rs. */
+  revision: number;
+}
+
+/** What became of a save: the new revision, or null when the app refused a save based on an older one. */
+export interface Saved {
+  revision: number | null;
+  problems: string[];
 }
 
 /** Whether an AI is ready: key saved and server answering (see `check` in commands.rs). */

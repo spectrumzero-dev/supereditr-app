@@ -338,8 +338,28 @@ func frame(of element: AXUIElement) -> CGRect {
     return CGRect(origin: point, size: size)
 }
 
+/// Clicks the middle of `element` with the mouse, for an item Accessibility can't press, such as a
+/// file in an open panel. With no modifier keys: an event otherwise takes on modifiers from earlier
+/// key events, and a Shift- or Control-click selects differently or opens a menu.
+func click(_ element: AXUIElement) {
+    let box = frame(of: element)
+    for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+        guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: CGPoint(x: box.midX, y: box.midY),
+                                  mouseButton: .left) else { continue }
+        event.flags = []
+        event.post(tap: .cghidEventTap)
+        usleep(50_000)
+    }
+}
+
 func button(in root: AXUIElement, containing label: String) -> AXUIElement? {
     findElement(root) { (attribute($0, kAXRoleAttribute) as? String) == kAXButtonRole && allText($0).contains(label) }
+}
+
+/// The name Finder shows for the app at `path`, as Settings → Privacy lists it.
+func appName(_ path: String) -> String {
+    let name = FileManager.default.displayName(atPath: path)
+    return name.hasSuffix(".app") ? String(name.dropLast(4)) : name
 }
 
 func focusedValueSettable() -> Bool? {
@@ -619,14 +639,78 @@ if let settings {
         check(waitFor(4) { agentStartsThisApp() } != nil, "turning Open at login on adds the Launch Agent again", "no Launch Agent for \(binary)")
     }
 
-    // The apps SuperEditr never reads are listed on Privacy, beside the Accessibility permission.
+    // The apps SuperEditr never reads are listed on Privacy, beside the Accessibility permission:
+    // by name where the app is installed, by bundle ID where it isn't. Passwords, which comes with
+    // macOS 15 and later, joined the list as a later default when SuperEditr loaded settings.json.
     let privacy = waitFor(5) { button(in: settings, containing: "Privacy") }
     if let privacy { AXUIElementPerformAction(privacy, kAXPressAction as CFString) }
+    let listed = ["com.1password.1password", "com.apple.Passwords"].map { id in
+        (id: id, shown: NSWorkspace.shared.urlForApplication(withBundleIdentifier: id).map { appName($0.path) } ?? id)
+    }
     let excluded = waitFor(5) { () -> Bool? in
         let text = allText(settings, levels: 40)
-        return text.contains("com.1password.1password") && text.contains("Password fields are never read") ? true : nil
+        return text.contains("Password fields are never read") && listed.allSatisfy { text.contains($0.shown) } ? true : nil
     }
-    check(excluded != nil, "Settings → Privacy lists the apps SuperEditr never reads", "no com.1password.1password beside the Accessibility permission")
+    check(excluded != nil, "Settings → Privacy lists the apps SuperEditr never reads",
+          "no \(listed.map(\.shown)) beside the Accessibility permission")
+    let privacyText = allText(settings, levels: 40)
+    let unnamed = listed.filter { $0.shown != $0.id && privacyText.contains($0.id) }.map(\.id)
+    check(unnamed.isEmpty, "Privacy names installed apps instead of showing bundle IDs", "still showing \(unnamed)")
+
+    // Add app… opens a panel on /Applications. Choosing a system app there adds its bundle ID to
+    // settings.json and lists it by name.
+    let pickPath = ["/System/Applications/Chess.app", "/System/Applications/Calculator.app"].first {
+        FileManager.default.fileExists(atPath: $0)
+    }
+    let addApp = waitFor(3) { button(in: settings, containing: "Add app") }
+    check(addApp != nil, "Settings → Privacy offers Add app…")
+    if let addApp, let pickPath, let pickID = Bundle(path: pickPath)?.bundleIdentifier {
+        running(superEditr).first?.activate()
+        AXUIElementPerformAction(addApp, kAXPressAction as CFString)
+        func openSheet() -> AXUIElement? { findElement(settings) { (attribute($0, kAXRoleAttribute) as? String) == kAXSheetRole } }
+        let sheet = waitFor(5) { openSheet() }
+        check(sheet != nil, "Add app… opens a panel over Settings", "no sheet on the Settings window")
+        if let sheet {
+            pump(0.5)
+            screenshot(window: nil, rect: frame(of: settings), to: outDir + "/add-app-panel.png")
+            // Click the app in the panel's list, as a person does, which enables Add.
+            let item = waitFor(3) {
+                findElement(sheet) {
+                    (attribute($0, kAXRoleAttribute) as? String) == kAXTextFieldRole
+                        && ownText($0).trimmingCharacters(in: .whitespaces) == appName(pickPath)
+                }
+            }
+            if let item { click(item) }
+            pump(0.5)
+            screenshot(window: nil, rect: frame(of: settings), to: outDir + "/add-app-chosen.png")
+            let add = waitFor(5) { () -> AXUIElement? in
+                findElement(sheet) {
+                    (attribute($0, kAXRoleAttribute) as? String) == kAXButtonRole && attribute($0, kAXTitleAttribute) as? String == "Add"
+                        && attribute($0, kAXEnabledAttribute) as? Bool == true
+                }
+            }
+            if let add { AXUIElementPerformAction(add, kAXPressAction as CFString) }
+            // The panel lists the app too, so the name counts only once the panel has closed.
+            let saved = waitFor(5) { () -> Bool? in
+                let json = (try? String(contentsOfFile: support + "/settings.json", encoding: .utf8)) ?? ""
+                return json.contains("\"\(pickID)\"") && openSheet() == nil
+                    && allText(settings, levels: 40).contains(appName(pickPath)) ? true : nil
+            }
+            check(saved != nil, "choosing \(appName(pickPath)) in the panel excludes it and lists it by name",
+                  item == nil ? "the panel doesn't list \(appName(pickPath))"
+                      : add == nil ? "clicking \(appName(pickPath)) didn't enable Add"
+                      : "settings.json has no \(pickID), or Privacy doesn't show \(appName(pickPath))")
+            if saved == nil {
+                try? dumpTree(settings).write(toFile: outDir + "/add-app-accessibility.txt", atomically: true, encoding: .utf8)
+                log("     Settings' Accessibility tree: \(outDir)/add-app-accessibility.txt")
+            }
+            // Never leave the panel up over the checks that follow.
+            for _ in 0..<2 where openSheet() != nil {
+                press(keyEscape)
+                pump(0.5)
+            }
+        }
+    }
     screenshot(window: nil, rect: frame(of: settings), to: outDir + "/settings-privacy.png")
 
     // Get Started's "Find my AI accounts" opens Models and scans there: one place finds AIs.

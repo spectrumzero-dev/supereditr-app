@@ -1,6 +1,7 @@
 //! SuperEditr desktop shell: menu-bar app, global shortcuts, overlay, and settings.
 
 mod app_toggle;
+mod apps;
 mod commands;
 mod double_press;
 mod hotkeys;
@@ -329,6 +330,8 @@ pub fn run() {
             commands::set_launch_at_login,
             commands::accessibility_status,
             commands::open_accessibility_settings,
+            commands::app_info,
+            commands::pick_apps,
             commands::guide_accessibility,
             commands::close_guide,
             commands::drag_app,

@@ -65,6 +65,7 @@ pub fn init(app: &AppHandle, menu: &Menu<Wry>, item: MenuItem<Wry>) -> tauri::Re
 }
 
 /// Another app came to the front.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn on_app_switch(app: &AppHandle, pid: i32) {
     let Some(target) = target_for(pid) else { return };
     let Some(toggle) = app.try_state::<AppToggle>() else { return };

@@ -196,6 +196,7 @@ fn modifiers_from_flags(flags: u64) -> Option<u8> {
 
 /// Reads the system shortcuts the user has changed or turned on (an XML property list from
 /// `defaults export com.apple.symbolichotkeys -`).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn parse_symbolic_hotkeys(xml: &[u8]) -> Vec<UserHotkey> {
     let Ok(root) = plist::Value::from_reader_xml(xml) else { return Vec::new() };
     let Some(keys) = root.as_dictionary().and_then(|d| d.get("AppleSymbolicHotKeys")).and_then(|v| v.as_dictionary())

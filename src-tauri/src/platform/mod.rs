@@ -30,12 +30,15 @@ pub struct Rect {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlatformError {
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     #[error("SuperEditr needs Accessibility permission to read and replace text.")]
     NotTrusted,
     #[error("Select some text first.")]
     NoSelection,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     #[error("SuperEditr doesn’t read password fields.")]
     SecureField,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     #[error("The text changed since it was checked. Select it again.")]
     Stale,
     #[cfg_attr(target_os = "macos", allow(dead_code))]
@@ -59,6 +62,7 @@ pub enum PlatformError {
 }
 
 /// Something the selection watcher noticed in another app.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WatchEvent {
     /// A selection may be finished: review it if nothing else happens within `settle`.
@@ -70,6 +74,7 @@ pub enum WatchEvent {
 }
 
 /// How the user made a selection, for capture.log.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectionGesture {
     Drag,
@@ -93,7 +98,9 @@ impl std::fmt::Display for SelectionGesture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReplaceMethod {
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Accessibility,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Paste,
     /// Typed as key events, for a proofread applied in place in a web field.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]

@@ -8,8 +8,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
+#[cfg(target_os = "macos")]
 const WIDTH: f64 = 380.0;
+#[cfg(target_os = "macos")]
 const HEIGHT: f64 = 152.0;
+#[cfg(target_os = "macos")]
 const INSET: f64 = 18.0;
 /// Give up if System Settings stays closed this long, or the user never finishes.
 const CLOSED_GRACE: Duration = Duration::from_secs(4);
@@ -63,6 +66,8 @@ pub fn init(app: &AppHandle) {
             panel.set_opaque(false);
         }
     }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
 }
 
 fn set_visible(app: &AppHandle, visible: bool) {

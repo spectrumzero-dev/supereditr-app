@@ -489,6 +489,7 @@ pub fn open_apple_intelligence_settings() {
 /// (window.screenX/screenY) is wrong in this app. Synchronous, so it runs on the main thread.
 #[tauri::command]
 pub fn review_playground(app: AppHandle, window: tauri::WebviewWindow, text: String, rect: platform::Rect) {
+    #[cfg(target_os = "macos")]
     let mut bounds = rect;
     #[cfg(target_os = "macos")]
     if let Ok(ptr) = window.ns_window() {
@@ -501,7 +502,10 @@ pub fn review_playground(app: AppHandle, window: tauri::WebviewWindow, text: Str
         bounds.y += primary - (frame.origin.y + frame.size.height);
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = window;
+    let bounds = {
+        let _ = window;
+        rect
+    };
     review::review_playground(&app, text, bounds);
 }
 

@@ -2,7 +2,7 @@
 //! implemented with UI Automation (TextPattern2 for selection and bounds, ValuePattern or
 //! SendInput Ctrl+V for replacement, and a WinEvent hook for selection changes).
 
-use super::{PlatformError, Rect, ReplaceMethod, WatchEvent};
+use super::{PlatformError, Rect, ReplaceMethod};
 
 #[derive(Debug, Clone)]
 pub struct Capture {
@@ -41,8 +41,11 @@ pub fn accessibility_trusted(_prompt: bool) -> bool {
 
 pub fn open_accessibility_settings() {}
 
+/// System Settings is macOS's; this platform only ever reports it closed.
 pub enum SettingsWindow {
+    #[allow(dead_code)]
     Front(Rect, i64),
+    #[allow(dead_code)]
     Behind,
     Closed,
 }
@@ -71,8 +74,6 @@ pub fn take_review_keys(_take: bool) -> bool {
 
 pub fn return_focus(_pid: i32) {}
 
-pub fn refresh_keyboard_layout() {}
-
 pub fn own_pid() -> i32 {
     std::process::id() as i32
 }
@@ -89,10 +90,6 @@ pub fn focused_app_identity() -> Option<(i32, String, String)> {
     None
 }
 
-pub fn selection_unchanged(_capture: &Capture) -> bool {
-    false
-}
-
 pub fn replace(_capture: &Capture, _text: &str, _proofread: bool) -> Result<ReplaceMethod, PlatformError> {
     Err(PlatformError::ReplaceFailed)
 }
@@ -103,8 +100,6 @@ pub fn mouse_location() -> (f64, f64) {
     (0.0, 0.0)
 }
 
-pub fn start_app_switch_watcher(_on_switch: impl Fn(i32) + 'static) {}
-
 pub fn frontmost_pid() -> Option<i32> {
     None
 }
@@ -112,7 +107,5 @@ pub fn frontmost_pid() -> Option<i32> {
 pub fn app_identity(_pid: i32) -> (String, String) {
     (String::new(), "this app".into())
 }
-
-pub fn start_selection_watcher(_on_event: impl Fn(WatchEvent) + Send + Sync + 'static) {}
 
 pub fn selection_app_switched() {}

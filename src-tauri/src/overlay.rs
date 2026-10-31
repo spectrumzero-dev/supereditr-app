@@ -55,6 +55,8 @@ pub fn init(app: &AppHandle) {
             panel.set_opaque(false);
         }
     }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
 }
 
 /// Places the overlay just below the selection, or above it when there's no room below.

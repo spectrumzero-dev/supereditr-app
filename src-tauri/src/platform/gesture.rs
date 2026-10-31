@@ -11,13 +11,17 @@ use std::time::Duration;
 
 /// After a mouse selection or ⌘A: time for the app to settle its selection (and for a double-click
 /// to become a word).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const AFTER_MOUSE: Duration = Duration::from_millis(70);
 /// After Shift comes up: time to press it again and keep adjusting before the review starts.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const AFTER_RELEASE: Duration = Duration::from_millis(150);
 /// While Shift is still held: how long the selection must stay unchanged to count as finished.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const HELD: Duration = Duration::from_millis(1500);
 
 /// What the watcher saw, reduced to what matters here.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Input {
     MouseDown,
@@ -46,6 +50,7 @@ pub enum Input {
     AppSwitched,
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Default)]
 pub struct Gesture {
     /// A Shift selection is under way and will finish when Shift comes up.
@@ -54,6 +59,7 @@ pub struct Gesture {
     shift_held: bool,
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 impl Gesture {
     pub const fn new() -> Self {
         Self { adjusting: false, shift_held: false }

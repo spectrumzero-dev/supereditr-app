@@ -445,6 +445,7 @@ pub async fn quick_fix(app: &AppHandle) {
 /// Another app came to the front (⌘Tab, the Dock): the panel belongs to the app whose text it
 /// reviews, so it closes. ⌘Tab never reaches the selection watcher, which only sees the user's
 /// typing and clicks.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn on_app_switch(app: &AppHandle, pid: i32) {
     let state = state(app);
     if pid == platform::own_pid() {
@@ -461,6 +462,7 @@ pub fn on_app_switch(app: &AppHandle, pid: i32) {
 }
 
 /// Reacts to activity in other apps: dismiss transient overlays, start automatic reviews.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
     let state = state(app);
     match event {

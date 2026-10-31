@@ -93,11 +93,23 @@ pub struct SettingsPayload {
     version: &'static str,
     platform: &'static str,
     hotkey_problems: Vec<String>,
+    /// The revision `config` was saved at, for `save_settings`.
+    revision: u64,
+}
+
+/// What became of a save from Settings.
+#[derive(Serialize)]
+pub struct Saved {
+    /// The settings' revision after this save, or None when the save was refused because they were
+    /// saved elsewhere after the revision Settings sent. Settings then reloads and tries again.
+    revision: Option<u64>,
+    /// Shortcuts that couldn't be registered.
+    problems: Vec<String>,
 }
 
 #[tauri::command]
 pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> SettingsPayload {
-    let config = state.config();
+    let (config, revision) = state.config_at_revision();
     let started = std::time::Instant::now();
     let keys = config.providers.iter().map(|p| (p.id.clone(), state.key_for(&p.id).is_some())).collect();
     // A slow key read means macOS asked for the keychain password (a new build's first read).
@@ -114,29 +126,42 @@ pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> SettingsPaylo
         version: env!("SUPEREDITR_VERSION_LABEL"),
         platform: std::env::consts::OS,
         hotkey_problems: Vec::new(),
+        revision,
     }
 }
 
+/// Saves the whole config. With `revision`, only if nothing else has saved since that revision.
 #[tauri::command]
-pub fn save_settings(app: AppHandle, state: State<'_, AppState>, config: Config) -> CmdResult<Vec<String>> {
+pub fn save_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    config: Config,
+    revision: Option<u64>,
+) -> CmdResult<Saved> {
     if config.presets.is_empty() {
         return Err("Keep at least one style.".into());
     }
     let previous = state.config();
-    state.save_config(config.clone()).map_err(|e| e.to_string())?;
+    let Some(revision) = state.save_config_based_on(config.clone(), revision).map_err(|e| e.to_string())? else {
+        return Ok(Saved { revision: None, problems: Vec::new() });
+    };
+    let revision = Some(revision);
     if previous.active_provider != config.active_provider {
         crate::show_ai_status(&app);
     }
     if previous.words != config.words {
         prepare_words(&state, config.words.clone());
     }
+    if previous.excluded_apps != config.excluded_apps {
+        crate::app_toggle::refresh(&app);
+    }
     if previous.hotkeys.review != config.hotkeys.review
         || previous.hotkeys.quick_fix != config.hotkeys.quick_fix
         || previous.presets.iter().map(|p| &p.shortcut).ne(config.presets.iter().map(|p| &p.shortcut))
     {
-        return Ok(hotkeys::register_from_config(&app));
+        return Ok(Saved { revision, problems: hotkeys::register_from_config(&app) });
     }
-    Ok(Vec::new())
+    Ok(Saved { revision, problems: Vec::new() })
 }
 
 #[tauri::command]

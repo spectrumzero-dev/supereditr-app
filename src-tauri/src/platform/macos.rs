@@ -763,7 +763,8 @@ fn app_bundle_path(pid: i32) -> Option<String> {
     url.path().map(|p| p.to_string())
 }
 
-fn app_identity(pid: i32) -> (String, String) {
+/// A running app's (bundle ID, name). Reads nothing from the app, so it needs no permission.
+pub fn app_identity(pid: i32) -> (String, String) {
     match running_app(pid) {
         Some(app) => (
             app.bundleIdentifier().map(|s| s.to_string()).unwrap_or_default(),
@@ -784,6 +785,12 @@ fn focused_app() -> Option<(Element, i32)> {
     // element without a focused application. The front app still owns the keyboard.
     let pid = objc2_app_kit::NSWorkspace::sharedWorkspace().frontmostApplication()?.processIdentifier();
     Some((Element::from_create(unsafe { AXUIElementCreateApplication(pid) })?, pid))
+}
+
+/// The app in front, from NSWorkspace rather than Accessibility, which macOS counts as asking for
+/// permission.
+pub fn frontmost_pid() -> Option<i32> {
+    Some(objc2_app_kit::NSWorkspace::sharedWorkspace().frontmostApplication()?.processIdentifier())
 }
 
 /// The app that owns keyboard focus: (pid, bundle ID, name). Reads no text.

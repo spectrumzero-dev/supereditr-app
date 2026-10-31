@@ -5,6 +5,7 @@
 //! start when the selection watcher sees a new selection in an editable field; their overlay
 //! leaves the keys alone and any typing or clicking elsewhere dismisses it.
 
+use crate::app_toggle;
 use crate::overlay;
 use crate::platform::{self, Capture, PlatformError, SelectionGesture, WatchEvent};
 use crate::state::{AppState, Session};
@@ -12,7 +13,7 @@ use serde::Serialize;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use supereditr_core::provider::{ProviderKind, ProviderProfile};
-use supereditr_core::{Event, Job, sensitive};
+use supereditr_core::{Config, Event, Job, sensitive};
 use tauri::{AppHandle, Emitter, Manager};
 
 const INITIAL_HEIGHT: f64 = 210.0;
@@ -83,6 +84,7 @@ async fn capture(app: &AppHandle, allow_clipboard: bool, select_sentence: bool) 
 enum Target {
     Allowed,
     Ignored,
+    /// The message to show.
     Excluded(String),
     /// Accessibility isn't granted yet. SuperEditr then never touches other apps' text: macOS
     /// lists an app in Accessibility (switched off) the first time it tries, which would undo the
@@ -104,13 +106,21 @@ fn check_target(app: &AppHandle) -> Target {
     let config = state(app).config();
     match platform::focused_app_identity() {
         Some((pid, _, _)) if pid == platform::own_pid() => Target::Ignored,
-        Some((_, bundle_id, name)) if config.is_excluded(&bundle_id) => Target::Excluded(name),
+        Some((_, bundle_id, name)) if config.is_excluded(&bundle_id) => {
+            Target::Excluded(excluded_message(&config, &bundle_id, &name))
+        }
         _ => Target::Allowed,
     }
 }
 
-fn excluded_message(name: &str) -> String {
-    format!("SuperEditr is turned off in {name}. Change this in Settings → Privacy.")
+fn excluded_message(config: &Config, bundle_id: &str, name: &str) -> String {
+    if app_toggle::offered(config, bundle_id) {
+        format!(
+            "SuperEditr is turned off in {name}. Turn it on from the pen icon in the menu bar, or in Settings → Privacy."
+        )
+    } else {
+        format!("SuperEditr is turned off in {name}. Change this in Settings → Privacy.")
+    }
 }
 
 fn warm_connection(app: &AppHandle) {
@@ -145,7 +155,7 @@ pub async fn start_manual(app: &AppHandle, preset_id: Option<String>) {
             let _ = app.emit_to("settings", "settings:review-shortcut", ());
             return;
         }
-        Target::Excluded(name) => return show_error(app, excluded_message(&name)),
+        Target::Excluded(message) => return show_error(app, message),
         Target::NotTrusted => return show_error(app, NOT_TRUSTED.into()),
     }
     warm_connection(app);
@@ -159,7 +169,7 @@ pub async fn start_manual(app: &AppHandle, preset_id: Option<String>) {
 }
 
 /// Shows a standalone message (no selection to work on) near the pointer.
-fn show_error(app: &AppHandle, message: String) {
+pub fn show_error(app: &AppHandle, message: String) {
     let state = state(app);
     let id = state.next_session_id();
     if let Some(mut old) = state.session.lock().unwrap().take() {
@@ -187,7 +197,7 @@ fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<Strin
     }
     if config.is_excluded(&captured.bundle_id) {
         if !auto {
-            show_error(app, excluded_message(&captured.app_name));
+            show_error(app, excluded_message(&config, &captured.bundle_id, &captured.app_name));
         }
         return Err(AutoOutcome::Excluded);
     }
@@ -373,7 +383,7 @@ pub async fn quick_fix(app: &AppHandle) {
     match check_target(app) {
         Target::Allowed => {}
         Target::Ignored => return,
-        Target::Excluded(name) => return show_error(app, excluded_message(&name)),
+        Target::Excluded(message) => return show_error(app, message),
         Target::NotTrusted => return show_error(app, NOT_TRUSTED.into()),
     }
     warm_connection(app);
@@ -642,6 +652,21 @@ fn trace_auto(gesture: SelectionGesture, app_id: Option<&str>, outcome: &AutoOut
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_excluded_message_points_to_the_menu_where_it_can_turn_the_app_on() {
+        let mut config = Config::default();
+        config.set_excluded("com.apple.Notes", true);
+        assert_eq!(
+            excluded_message(&config, "com.apple.Notes", "Notes"),
+            "SuperEditr is turned off in Notes. Turn it on from the pen icon in the menu bar, or in Settings → Privacy."
+        );
+        assert_eq!(
+            excluded_message(&config, "com.apple.Terminal", "Terminal"),
+            "SuperEditr is turned off in Terminal. Change this in Settings → Privacy.",
+            "the menu doesn't offer to turn a terminal on"
+        );
+    }
 
     fn reason(text: &str, editable: bool, min_chars: usize) -> Option<String> {
         check_selection(text, editable, min_chars).map(|outcome| outcome.to_string())

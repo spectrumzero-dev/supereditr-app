@@ -1,4 +1,4 @@
-import type { BuiltinAi, Candidate, ProviderCheck, Config, EngineEvent, Preset, ProviderKind, ProviderProfile, SettingsPayload } from "../lib/types";
+import type { BuiltinAi, Candidate, ProviderCheck, Config, EngineEvent, Preset, ProviderKind, ProviderProfile, Saved, SettingsPayload } from "../lib/types";
 
 export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -33,6 +33,7 @@ let demoConfig: Config = {
 };
 
 let demoLaunchAtLogin = true;
+let demoRevision = 0;
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (inTauri) {
@@ -41,10 +42,11 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
   }
   // Browser preview: just enough behavior to design the screens.
   const demo: Record<string, () => unknown> = {
-    get_settings: () => ({ config: demoConfig, keys: { anthropic: true }, accessibility: false, version: "0.1.0", platform: "macos" }),
+    get_settings: () => ({ config: demoConfig, keys: { anthropic: true }, accessibility: false, version: "0.1.0", platform: "macos", revision: demoRevision }),
     save_settings: () => {
+      if (args?.revision != null && args.revision !== demoRevision) return { revision: null, problems: [] };
       demoConfig = args?.config as Config;
-      return [];
+      return { revision: ++demoRevision, problems: [] };
     },
     scan_accounts: () => [
       { index: 0, kind: "anthropic", label: "Claude (Anthropic API)", source: "ANTHROPIC_API_KEY in your shell profile", keyHint: "sk-…9f2c", baseUrl: "", models: [], note: null, ready: true, profileId: null },
@@ -66,7 +68,8 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 
 export const api = {
   get: () => invoke<SettingsPayload>("get_settings"),
-  save: (config: Config) => invoke<string[]>("save_settings", { config }),
+  /** Saves the whole config; with `revision`, only if the app hasn't saved it since. */
+  save: (config: Config, revision?: number) => invoke<Saved>("save_settings", { config, revision: revision ?? null }),
   setKey: (profileId: string, key: string | null) => invoke<void>("set_api_key", { profileId, key }),
   /** Why a shortcut can't be used for `slot` ("review", "quick_fix", "preset:<id>"), or null. */
   checkShortcut: (accelerator: string, slot: string) => invoke<string | null>("check_shortcut", { accelerator, slot }),

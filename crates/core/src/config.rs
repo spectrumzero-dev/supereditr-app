@@ -34,6 +34,23 @@ const DEFAULT_EXCLUSIONS: &[&str] = &[
     "org.keepassxc.keepassxc",
 ];
 
+/// The terminals among the default exclusions.
+const TERMINALS: &[&str] = &[
+    "com.apple.Terminal",
+    "com.googlecode.iterm2",
+    "com.mitchellh.ghostty",
+    "com.cmuxterm.app",
+    "dev.warp.Warp-Stable",
+    "net.kovidgoyal.kitty",
+    "org.alacritty",
+    "com.github.wez.wezterm",
+];
+
+/// True for a terminal SuperEditr excludes by default.
+pub fn is_terminal(bundle_id: &str) -> bool {
+    TERMINALS.iter().any(|t| t.eq_ignore_ascii_case(bundle_id))
+}
+
 /// The defaults in the first release, before `offered_exclusions` was recorded.
 fn first_default_exclusions() -> Vec<String> {
     DEFAULT_EXCLUSIONS[..6].iter().map(|s| s.to_string()).collect()
@@ -193,6 +210,20 @@ impl Config {
         !bundle_id.is_empty() && self.excluded_apps.iter().any(|b| b.eq_ignore_ascii_case(bundle_id))
     }
 
+    /// Adds an app to `excluded_apps`, or removes it however its ID is capitalized there. Returns
+    /// false when there was nothing to change.
+    pub fn set_excluded(&mut self, bundle_id: &str, excluded: bool) -> bool {
+        if bundle_id.is_empty() || self.is_excluded(bundle_id) == excluded {
+            return false;
+        }
+        if excluded {
+            self.excluded_apps.push(bundle_id.to_string());
+        } else {
+            self.excluded_apps.retain(|b| !b.eq_ignore_ascii_case(bundle_id));
+        }
+        true
+    }
+
     pub fn active_profile(&self) -> Option<&ProviderProfile> {
         let id = self.active_provider.as_ref()?;
         self.providers.iter().find(|p| &p.id == id)
@@ -321,6 +352,33 @@ mod tests {
         assert!(config.is_excluded("com.cmuxterm.app"));
         assert!(!config.is_excluded("com.apple.TextEdit"));
         assert!(!config.is_excluded(""));
+    }
+
+    #[test]
+    fn every_terminal_is_excluded_by_default() {
+        let config = Config::default();
+        assert!(TERMINALS.iter().all(|t| config.is_excluded(t)));
+        assert!(is_terminal("COM.APPLE.TERMINAL"));
+        assert!(!is_terminal("com.1password.1password"), "a password manager isn't a terminal");
+        assert!(!is_terminal(""));
+    }
+
+    #[test]
+    fn set_excluded_adds_and_removes_an_app() {
+        let mut config = Config::default();
+        assert!(config.set_excluded("com.apple.TextEdit", true));
+        assert!(config.is_excluded("com.apple.TextEdit"));
+        assert!(!config.set_excluded("com.apple.textedit", true), "already excluded, whatever the case");
+        assert_eq!(config.excluded_apps.iter().filter(|a| a.eq_ignore_ascii_case("com.apple.TextEdit")).count(), 1);
+
+        config.excluded_apps.push("COM.APPLE.TEXTEDIT".into());
+        assert!(config.set_excluded("com.apple.TextEdit", false));
+        assert!(!config.is_excluded("com.apple.TextEdit"), "every spelling is removed");
+        assert!(!config.set_excluded("com.apple.TextEdit", false));
+        assert!(config.is_excluded("com.1password.1password"), "other apps stay excluded");
+
+        assert!(!config.set_excluded("", true), "an app without a bundle ID can't be listed");
+        assert!(!config.excluded_apps.iter().any(String::is_empty));
     }
 
     #[test]

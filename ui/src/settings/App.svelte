@@ -9,6 +9,7 @@
   import Styles from "./Styles.svelte";
   import Welcome from "./Welcome.svelte";
   import { api } from "./ipc";
+  import { mergeUnsaved, saveUntilCurrent } from "./merge";
 
   type Section = "welcome" | "models" | "styles" | "dictionary" | "general" | "shortcuts" | "privacy" | "about";
   // The pages about the writing, then a gap, then the app's own.
@@ -29,6 +30,15 @@
   let problems = $state<string[]>([]);
   let saved = $state(false);
   let timer: ReturnType<typeof setTimeout> | undefined;
+  /** The config as Settings last loaded or saved it: what the user's unsaved changes are measured from. */
+  let base: Config | null = null;
+  /** The revision `base` was saved at: a save based on an older one is refused. */
+  let revision = 0;
+  /** Changes made here, and how many of them a finished save has reached. */
+  let edits = 0;
+  let savedEdits = 0;
+  /** Saves run one at a time, each based on the revision the one before it made. */
+  let saving: Promise<void> = Promise.resolve();
   /** Set by Get Started's "Find my AI accounts": Models scans as soon as it opens. */
   let scanOnOpen = $state(false);
 
@@ -38,18 +48,42 @@
   }
 
   async function reload() {
-    payload = await api.get();
+    const fresh = await api.get();
+    const latest = structuredClone(fresh.config);
+    // Changes waiting to be saved, or still being saved, survive a reload.
+    if (config && base && edits !== savedEdits) {
+      fresh.config = mergeUnsaved(base, $state.snapshot(config) as Config, fresh.config);
+    }
+    base = latest;
+    revision = fresh.revision;
+    payload = fresh;
     config = payload.config;
   }
 
   function onchange() {
+    edits++;
     clearTimeout(timer);
-    timer = setTimeout(async () => {
-      if (!config) return;
-      problems = (await api.save($state.snapshot(config) as Config)) ?? [];
+    timer = setTimeout(() => (saving = saving.then(() => save()).catch(console.error)), 250);
+  }
+
+  /** Saves the whole config. When the app has saved it since Settings loaded or saved it, the app
+   * refuses, and Settings reloads, keeping its unsaved changes, and tries again. If the app keeps
+   * refusing, the changes stay unsaved until the next one. */
+  async function save(): Promise<void> {
+    await saveUntilCurrent(async () => {
+      if (!config || edits === savedEdits) return true;
+      const reached = edits;
+      const snapshot = $state.snapshot(config) as Config;
+      const result = await api.save(snapshot, revision);
+      if (result.revision === null) return false;
+      problems = result.problems;
+      revision = result.revision;
+      base = snapshot;
+      savedEdits = reached;
       saved = true;
       setTimeout(() => (saved = false), 1200);
-    }, 250);
+      return true;
+    }, reload);
   }
 
   function finish() {

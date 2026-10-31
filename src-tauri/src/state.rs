@@ -24,6 +24,9 @@ pub struct AppState {
     pub watch_generation: AtomicU64,
     /// Selection events are ignored until this moment (just after we replaced text).
     pub quiet_until: Mutex<Instant>,
+    /// Counts saves of the settings, so Settings' save of a copy read before another save (the menu
+    /// bar's "Turn off in …", the panel's "Always keep") can be refused instead of undoing it.
+    revision: AtomicU64,
 }
 
 pub struct Session {
@@ -67,6 +70,7 @@ impl AppState {
             notice_visible: AtomicBool::new(false),
             watch_generation: AtomicU64::new(0),
             quiet_until: Mutex::new(Instant::now()),
+            revision: AtomicU64::new(0),
         }
     }
 
@@ -100,10 +104,54 @@ impl AppState {
         Some(profile)
     }
 
+    /// The settings, and the revision they were saved at.
+    pub fn config_at_revision(&self) -> (Config, u64) {
+        let config = self.config.read().unwrap();
+        (config.clone(), self.revision.load(Ordering::Relaxed))
+    }
+
     pub fn save_config(&self, config: Config) -> std::io::Result<()> {
+        self.save_config_based_on(config, None).map(|_| ())
+    }
+
+    /// Saves, unless `revision` is given and the settings have been saved since then. Returns the
+    /// new revision, or None when the save was refused.
+    pub fn save_config_based_on(&self, config: Config, revision: Option<u64>) -> std::io::Result<Option<u64>> {
+        // The revision changes only under this lock, so nothing can save between check and write.
+        let mut current = self.config.write().unwrap();
+        if revision.is_some_and(|r| r != self.revision.load(Ordering::Relaxed)) {
+            return Ok(None);
+        }
         config.save(&self.config_path)?;
         crate::platform::set_trace(config.diagnostic_log || !crate::updater::ENABLED);
-        *self.config.write().unwrap() = config;
-        Ok(())
+        *current = config;
+        Ok(Some(self.revision.fetch_add(1, Ordering::Relaxed) + 1))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_save_based_on_settings_read_before_another_save_is_refused() {
+        let dir = std::env::temp_dir().join(format!("supereditr-revision-{}", std::process::id()));
+        let state = AppState::new(dir.join("settings.json"));
+        let (settings_copy, read_at) = state.config_at_revision();
+        // The menu bar turns SuperEditr off in Notes while Settings has its copy.
+        let mut menu = state.config();
+        menu.set_excluded("com.apple.Notes", true);
+        state.save_config(menu).unwrap();
+        // Settings' save of its older copy is refused, so Notes stays excluded.
+        let mut edited = settings_copy;
+        edited.style_notes = "Short sentences.".into();
+        assert_eq!(state.save_config_based_on(edited.clone(), Some(read_at)).unwrap(), None);
+        assert!(state.config().is_excluded("com.apple.Notes"));
+        assert!(Config::load(&dir.join("settings.json")).is_excluded("com.apple.Notes"));
+        // Based on the current revision, the same save goes through.
+        let (_, now) = state.config_at_revision();
+        assert_eq!(state.save_config_based_on(edited, Some(now)).unwrap(), Some(now + 1));
+        assert_eq!(state.config().style_notes, "Short sentences.");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

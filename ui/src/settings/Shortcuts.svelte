@@ -1,87 +1,84 @@
 <script lang="ts">
-  // The keys for reviewing, as large keycaps: a reference. The panel's own keys are learned in
-  // the panel (it shows tips for the first few reviews), and Try it now tests ⌘E E for real.
-  import { keycaps } from "../lib/accelerator";
-  import { keySymbols } from "../lib/diff";
+  import type { Config } from "../lib/types";
+  import ShortcutInput from "./ShortcutInput.svelte";
 
   interface Props {
-    review: string;
-    /** Suggestions also appear on their own after a selection. */
-    auto: boolean;
+    config: Config;
+    problems: string[];
+    onchange: () => void;
   }
-  let { review, auto }: Props = $props();
-
-  const items = $derived([
-    { id: "review", caps: keycaps(review), label: "Review selection" },
-    { id: "apply", caps: ["↩"], label: "Apply" },
-    // Spelled out: the ⇥ symbol reads as an arrow.
-    { id: "next", caps: ["tab"], label: "Next change" },
-    { id: "styles", caps: ["1–7"], label: "Switch style" },
-    { id: "close", caps: ["esc"], label: "Close" },
-  ]);
+  let { config = $bindable(), problems, onchange }: Props = $props();
 </script>
 
-<div class="shortcuts">
-  <p class="intro">
-    Select text anywhere, then press {keySymbols(review)} to review it with these keys.{#if auto}{" "}Or just wait
-      a moment: a suggestion appears on its own, and <kbd>⌥↩</kbd> applies it (↩ stays with your app).{/if}
-  </p>
-  <div class="keys">
-    {#each items as item (item.id)}
-      <div class="item">
-        <div class="caps">{#each item.caps as cap, i (i)}<kbd class="cap">{cap}</kbd>{/each}</div>
-        <div class="what">{item.label}</div>
+<div class="page">
+  <h1>Shortcuts</h1>
+  <p class="lede">Review the text you select from any app. Each style can also have a shortcut of its own, in Styles.</p>
+
+  <div class="group">
+    <div class="row">
+      <div>
+        <div class="label">Review selection</div>
+        <div class="hint">Opens suggestions for the selected text. Press again to bring an automatic suggestion into focus. Use a key combination such as ⌃⌥E or F6, or a double press like ⌘E E (press it twice quickly). Shortcuts macOS or other apps already use are refused.</div>
       </div>
-    {/each}
+      <ShortcutInput slot="review" value={config.hotkeys.review} onchange={(v) => { config.hotkeys.review = v; onchange(); }} />
+    </div>
+    <div class="row">
+      <div>
+        <div class="label">Quick fix</div>
+        <div class="hint">Applies your default style to the selection immediately, without showing suggestions.</div>
+      </div>
+      <ShortcutInput slot="quick_fix" value={config.hotkeys.quick_fix} onchange={(v) => { config.hotkeys.quick_fix = v; onchange(); }} />
+    </div>
+    <div class="row">
+      <div>
+        <div class="label">With nothing selected, use the sentence before the cursor</div>
+        <div class="hint">The shortcuts select the sentence you just wrote, so you see what they’ll change, and review it. In an app that hides its text, select it yourself. Automatic suggestions never do this.</div>
+      </div>
+      <input type="checkbox" class="switch" bind:checked={config.select_sentence} onchange={onchange} />
+    </div>
+    <div class="row keys">
+      <div class="label">In the suggestion panel</div>
+      <div class="cheats">
+        <span><kbd>⌥↩</kbd> or <kbd>↩</kbd> replace</span>
+        <span><kbd>tab</kbd> next change</span>
+        <span><kbd>␣</kbd> keep original</span>
+        <span><kbd>1</kbd>–<kbd>7</kbd> style</span>
+        <span><kbd>/</kbd> instruct</span>
+        <span><kbd>R</kbd> retry</span>
+        <span><kbd>⌘C</kbd> copy</span>
+      </div>
+    </div>
+    {#if problems.length}
+      <div class="row warn">Some shortcuts are taken by another app: {problems.join("; ")}</div>
+    {/if}
   </div>
 </div>
 
 <style>
-  /* Tiles share the row but never shrink below their keycaps and label. */
+  .hint {
+    color: var(--text-3);
+    font-size: 12px;
+    margin-top: 2px;
+    max-width: 480px;
+    line-height: 1.4;
+  }
+  .label {
+    font-weight: 500;
+  }
   .keys {
+    align-items: flex-start;
+  }
+  .cheats {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
-  }
-  .keys > .item {
-    flex: 1 0 max-content;
-    max-width: 170px;
-  }
-  .item {
-    display: grid;
-    justify-items: center;
-    gap: 6px;
-    padding: 8px 10px;
-    border-radius: 12px;
-    border: 1px solid var(--border);
-    background: var(--bg-sunken);
-  }
-  .caps {
-    display: flex;
-    gap: 4px;
-  }
-  .cap {
-    min-width: 30px;
-    height: 30px;
-    padding: 0 8px;
-    display: grid;
-    place-items: center;
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--text);
-    background: var(--bg-raised);
-    border: 1px solid var(--border-strong);
-    border-bottom-width: 3px;
-    border-radius: 7px;
-  }
-  .what {
+    gap: 6px 14px;
+    justify-content: flex-end;
+    max-width: 420px;
+    color: var(--text-2);
     font-size: 12px;
-    color: var(--text-2);
-    white-space: nowrap;
   }
-  .intro {
-    margin: 0 0 8px;
-    font-size: 12.5px;
-    color: var(--text-2);
+  .warn {
+    color: var(--warn);
+    background: var(--warn-bg);
   }
 </style>

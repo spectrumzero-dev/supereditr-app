@@ -869,7 +869,7 @@ fn log_dir() -> Option<std::path::PathBuf> {
     Some(std::path::Path::new(&std::env::var_os("HOME")?).join("Library/Logs/SuperEditr"))
 }
 
-/// Turns capture.log on or off (Settings → Behavior → Keep a diagnostic log). Turning it off
+/// Turns capture.log on or off (Settings → General → Keep a diagnostic log). Turning it off
 /// deletes the log, so nothing is left behind once a problem has been diagnosed.
 pub fn set_trace(on: bool) {
     TRACE_ON.store(on, Ordering::Relaxed);

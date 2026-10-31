@@ -92,6 +92,12 @@ pub fn refresh(app: &AppHandle) {
     }
 }
 
+/// What to say when saving the change failed, so SuperEditr is still on, or still off, in the app.
+fn failure_message(app: &TargetApp, excluding: bool, error: &str) -> String {
+    let (turn, still) = if excluding { ("off", "on") } else { ("on", "off") };
+    format!("Couldn’t turn SuperEditr {turn} in {}, so it’s still {still} there: {error}", app.name)
+}
+
 /// The item was chosen: saves the change as Settings does, and shows it there.
 pub fn on_menu(app: &AppHandle) {
     let Some(toggle) = app.try_state::<AppToggle>() else { return };
@@ -101,11 +107,11 @@ pub fn on_menu(app: &AppHandle) {
     if !offered(&config, &target.bundle_id) {
         return;
     }
-    let excluded = config.is_excluded(&target.bundle_id);
-    config.set_excluded(&target.bundle_id, !excluded);
+    let excluding = !config.is_excluded(&target.bundle_id);
+    config.set_excluded(&target.bundle_id, excluding);
     if let Err(e) = crate::commands::save_settings(app.clone(), state, config) {
         eprintln!("SuperEditr: couldn't save settings: {e}");
-        return;
+        return crate::review::show_error(app, failure_message(&target, excluding, &e));
     }
     let _ = app.emit_to("settings", "settings:reload", ());
 }
@@ -166,6 +172,19 @@ mod tests {
     fn keeps_an_ampersand_in_the_name() {
         let label = label(&Config::default(), &app("com.example.quillpoint", "Quill & Point"));
         assert_eq!(label.as_deref(), Some("Turn off in Quill && Point"));
+    }
+
+    #[test]
+    fn a_failed_save_says_supereditr_is_unchanged() {
+        let notes = app("com.apple.Notes", "Notes");
+        assert_eq!(
+            failure_message(&notes, true, "Permission denied"),
+            "Couldn’t turn SuperEditr off in Notes, so it’s still on there: Permission denied"
+        );
+        assert_eq!(
+            failure_message(&notes, false, "Permission denied"),
+            "Couldn’t turn SuperEditr on in Notes, so it’s still off there: Permission denied"
+        );
     }
 
     #[test]

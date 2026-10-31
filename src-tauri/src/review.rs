@@ -169,7 +169,7 @@ pub async fn start_manual(app: &AppHandle, preset_id: Option<String>) {
 }
 
 /// Shows a standalone message (no selection to work on) near the pointer.
-fn show_error(app: &AppHandle, message: String) {
+pub fn show_error(app: &AppHandle, message: String) {
     let state = state(app);
     let id = state.next_session_id();
     if let Some(mut old) = state.session.lock().unwrap().take() {

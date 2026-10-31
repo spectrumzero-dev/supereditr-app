@@ -9,6 +9,7 @@
   import Styles from "./Styles.svelte";
   import Welcome from "./Welcome.svelte";
   import { api } from "./ipc";
+  import { mergeUnsaved } from "./merge";
 
   type Section = "welcome" | "models" | "styles" | "dictionary" | "general" | "shortcuts" | "privacy" | "about";
   // The pages about the writing, then a gap, then the app's own.
@@ -29,6 +30,11 @@
   let problems = $state<string[]>([]);
   let saved = $state(false);
   let timer: ReturnType<typeof setTimeout> | undefined;
+  /** The config as Settings last loaded or saved it: what the user's unsaved changes are measured from. */
+  let base: Config | null = null;
+  /** Changes made here, and how many of them a finished save has reached. */
+  let edits = 0;
+  let savedEdits = 0;
   /** Set by Get Started's "Find my AI accounts": Models scans as soon as it opens. */
   let scanOnOpen = $state(false);
 
@@ -38,15 +44,30 @@
   }
 
   async function reload() {
-    payload = await api.get();
+    const fresh = await api.get();
+    const latest = structuredClone(fresh.config);
+    // Changes waiting to be saved, or still being saved, survive a reload.
+    if (config && base && edits !== savedEdits) {
+      fresh.config = mergeUnsaved(base, $state.snapshot(config) as Config, fresh.config);
+    }
+    base = latest;
+    payload = fresh;
     config = payload.config;
   }
 
   function onchange() {
+    edits++;
     clearTimeout(timer);
     timer = setTimeout(async () => {
       if (!config) return;
-      problems = (await api.save($state.snapshot(config) as Config)) ?? [];
+      const reached = edits;
+      const snapshot = $state.snapshot(config) as Config;
+      problems = (await api.save(snapshot)) ?? [];
+      // A slow save can finish after a later one.
+      if (reached > savedEdits) {
+        base = snapshot;
+        savedEdits = reached;
+      }
       saved = true;
       setTimeout(() => (saved = false), 1200);
     }, 250);

@@ -2,6 +2,7 @@
 //! provider's streaming wire format. No network access or real keys are involved.
 
 use std::sync::{Arc, Mutex};
+use supereditr_core::diff::Segment;
 use supereditr_core::provider::{ChatRequest, ProviderKind, ProviderProfile, Providers};
 use supereditr_core::{Engine, Event, Job};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -198,6 +199,80 @@ async fn engine_leaves_the_offline_checker_out_while_an_ai_answers() {
     let Some(Event::Done(outcome)) = events.last() else { panic!("{events:?}") };
     assert_eq!(outcome.text, "This is the draft.\n", "tags stripped, trailing newline restored");
     assert_eq!(outcome.view.change_count, 2);
+}
+
+/// The offline checker's final pass over the AI's revision keeps a name the dictionary also lists
+/// as an acronym ("Sam", "SAM").
+#[tokio::test]
+async fn engine_final_pass_keeps_names() {
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"<text>Hi Sam, there are a few typos.</text>\"}}]}\n\n\
+                data: [DONE]\n\n";
+    let (url, _) = mock_server(vec![(200, "text/event-stream", body.into())]).await;
+    let engine = Engine::new("American English");
+    let config = supereditr_core::Config::default();
+    let job = Job {
+        text: "Hi Sam, their are a few typos.".into(),
+        preset: config.default_preset().clone(),
+        steer: None,
+        profile: Some(profile(ProviderKind::OpenAiCompatible, &url, "local-model")),
+        style_notes: String::new(),
+        dialect: "American English".into(),
+        words: Vec::new(),
+        code: Vec::new(),
+        local_checks: true,
+        builtin_ai: false,
+    };
+    let mut events = Vec::new();
+    engine.run(job, &mut |e| events.push(e)).await;
+    let Some(Event::Done(outcome)) = events.last() else { panic!("{events:?}") };
+    assert_eq!(outcome.text, "Hi Sam, there are a few typos.");
+    assert_eq!(outcome.view.change_count, 1);
+}
+
+/// A local model's revision gets the offline checker's final pass, its fixes marked as the
+/// checker's. A cloud AI's revision is the result as it is.
+#[tokio::test]
+async fn engine_final_pass_is_for_small_models_and_marked() {
+    for (kind, model, expected) in [
+        (ProviderKind::OpenAiCompatible, "local-model", "There are typos we should have caught."),
+        (ProviderKind::OpenAi, "gpt-4.1-mini", "There are typos we should of caught."),
+    ] {
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"<text>There are typos we should of caught.</text>\"}}]}\n\n\
+                    data: [DONE]\n\n";
+        let (url, _) = mock_server(vec![(200, "text/event-stream", body.into())]).await;
+        let engine = Engine::new("American English");
+        let config = supereditr_core::Config::default();
+        let job = Job {
+            text: "Their are typos we should of caught.".into(),
+            preset: config.default_preset().clone(),
+            steer: None,
+            profile: Some(profile(kind, &url, model)),
+            style_notes: String::new(),
+            dialect: "American English".into(),
+            words: Vec::new(),
+            code: Vec::new(),
+            local_checks: true,
+            builtin_ai: false,
+        };
+        let mut events = Vec::new();
+        engine.run(job, &mut |e| events.push(e)).await;
+        let Some(Event::Done(outcome)) = events.last() else { panic!("{events:?}") };
+        assert_eq!(outcome.text, expected, "{kind:?}");
+        let marked: Vec<(&str, bool, bool)> = outcome
+            .view
+            .segments
+            .iter()
+            .filter_map(|s| match s {
+                Segment::Change { old, rule_based, note, .. } => Some((old.as_str(), *rule_based, note.is_some())),
+                _ => None,
+            })
+            .collect();
+        let mut wanted = vec![("Their", false, false)];
+        if kind.needs_final_pass() {
+            wanted.push(("of", true, true));
+        }
+        assert_eq!(marked, wanted, "{kind:?}");
+    }
 }
 
 #[tokio::test]

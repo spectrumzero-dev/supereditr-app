@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyView, keySymbols, summarize } from "./diff";
+import { applyView, changeLabel, changes, keySymbols, sourceLabel, summarize } from "./diff";
 import type { DiffView } from "./types";
 
 const view: DiffView = {
@@ -25,6 +25,17 @@ describe("applyView", () => {
 describe("summaries and keys", () => {
   it("summarizes change kinds", () => {
     expect(summarize(view)).toBe("1 grammar, 1 spelling");
+  });
+  it("names the offline checker's fixes on top of an AI's", () => {
+    const checked: DiffView = {
+      ...view,
+      segments: view.segments.map((s) => (s.type === "change" && s.id === 1 ? { ...s, ruleBased: true } : s)),
+    };
+    const [ai, rule] = changes(checked);
+    expect(changeLabel(ai)).toBe("Grammar");
+    expect(changeLabel(rule)).toBe("Spelling · Rule-based checker");
+    expect(sourceLabel("gemma3:4b", checked)).toBe("gemma3:4b + rule-based checker");
+    expect(sourceLabel("gemma3:4b", view)).toBe("gemma3:4b");
   });
   it("formats accelerators", () => {
     expect(keySymbols("Control+Alt+E")).toBe("⌃⌥E");

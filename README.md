@@ -74,6 +74,8 @@ Signed, notarized builds are published on the [Releases page](https://github.com
 
 Settings → Models shows the exact model each option uses and lets you pick another.
 
+With Apple Intelligence, Ollama, LM Studio or another OpenAI-compatible server, the offline checker also goes over the AI's answer for mistakes small models can miss ("should of"), and the panel marks its fixes as the rule-based checker's. Answers from Claude, OpenAI and Gemini are used as they are.
+
 Consumer Claude, ChatGPT and Gemini plans don't give other apps API access. The Claude Code bridge is the supported way to use a subscription; for everyday speed, an API key is better.
 
 ## Privacy

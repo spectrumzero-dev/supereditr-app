@@ -4,7 +4,17 @@ export type ChangeKind = "spelling" | "grammar" | "punctuation" | "capitalizatio
 
 export type Segment =
   | { type: "equal"; text: string }
-  | { type: "change"; id: number; old: string; new: string; kind: ChangeKind; oldStart: number; note?: string };
+  | {
+      type: "change";
+      id: number;
+      old: string;
+      new: string;
+      kind: ChangeKind;
+      oldStart: number;
+      note?: string;
+      /** Made by the offline checker's final pass over an AI's revision, not by the AI. */
+      ruleBased?: boolean;
+    };
 
 export interface DiffView {
   segments: Segment[];

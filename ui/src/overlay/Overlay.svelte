@@ -2,7 +2,7 @@
   import { onMount, tick } from "svelte";
   import { slide } from "svelte/transition";
   import DiffText from "../lib/DiffText.svelte";
-  import { applyView, changes, kindLabel, summarize } from "../lib/diff";
+  import { applyView, changeLabel, changes, sourceLabel, summarize } from "../lib/diff";
   import type { EngineEvent, SessionPayload, StatusPayload } from "../lib/types";
   import { ipc } from "./ipc";
   import { canUse, emptyReview, offerToKeep, reduce, type Review } from "./review";
@@ -345,7 +345,7 @@
         {/if}
         {#if focusedChange}
           <p class="note">
-            <strong>{kindLabel[focusedChange.kind]}</strong>
+            <strong>{changeLabel(focusedChange)}</strong>
             {focusedChange.note ?? (rejected.has(focusedChange.id) ? "Keeping your original." : `“${focusedChange.old.trim()}” → “${focusedChange.new.trim()}”`)}
           </p>
         {/if}
@@ -368,7 +368,7 @@
         <p class="tips">Tip: <kbd>⌥↩</kbd> {session.canApply ? "replaces your text with" : "copies"} everything you see · <kbd>tab</kbd> steps through changes · <kbd>␣</kbd> switches a change between yours and the suggestion · <kbd>esc</kbd> closes</p>
       {/if}
       <footer>
-        <div class="status" title={[summarize(view), source, timing].filter(Boolean).join(" · ")}>
+        <div class="status" title={[summarize(view), sourceLabel(source, view), timing].filter(Boolean).join(" · ")}>
           {#if busy}
             <span class="dot pulsing" aria-hidden="true"></span>
             {phase === "streaming" && source ? `${source}…` : "Checking…"}
@@ -380,7 +380,7 @@
           {/if}
           <!-- The backup note above explains a stand-in, so the footer keeps the name short; the
                name may shorten with an ellipsis, the time never does. -->
-          {#if phase === "done" && source}<span class="muted source">· {source.replace(" (backup)", "")}</span>{/if}
+          {#if phase === "done" && source}<span class="muted source">· {sourceLabel(source.replace(" (backup)", ""), view)}</span>{/if}
           {#if session.showTiming && timing}<span class="muted time">· {timing}</span>{/if}
         </div>
         <!-- ⌥↩ works in every panel, so it is the one replace key shown; ↩ also works in a review

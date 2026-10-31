@@ -1270,7 +1270,6 @@ pub fn replace(capture: &Capture, text: &str, proofread: bool) -> Result<Replace
                         "{}: Accessibility write changed the field but didn't verify",
                         capture.bundle_id
                     ));
-                    copy_to_clipboard(text);
                     return Err(PlatformError::Unverified);
                 }
             }

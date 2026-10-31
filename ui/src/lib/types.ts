@@ -66,6 +66,8 @@ export interface StatusPayload {
   id: number;
   kind: "notice" | "applied" | "error";
   message: string;
+  /** A suggestion the notice offers to copy, when it couldn't be confirmed in the app. */
+  copy?: string | null;
 }
 
 export type ProviderKind = "anthropic" | "open_ai" | "gemini" | "ollama" | "open_ai_compatible" | "claude_cli" | "apple_intelligence";

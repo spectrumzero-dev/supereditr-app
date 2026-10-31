@@ -51,16 +51,25 @@ pub enum PlatformError {
     #[error("Couldn’t replace the text in this app. The suggestion is on your clipboard.")]
     ReplaceFailed,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    #[error(
-        "SuperEditr can’t confirm where text goes in this app, so the suggestion is on your clipboard. Paste it with ⌘V."
+    #[cfg_attr(
+        target_os = "macos",
+        error(
+            "SuperEditr can’t confirm where text goes in this app, so the suggestion is on your clipboard. Paste it with ⌘V."
+        )
+    )]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        error(
+            "SuperEditr can’t confirm where text goes in this app, so the suggestion is on your clipboard. Paste it with Ctrl+V."
+        )
     )]
     CopyOnly,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    #[error("SuperEditr couldn’t confirm the change. Check the text; the suggestion is on your clipboard.")]
+    #[error("SuperEditr couldn’t confirm the change. Check the text before copying the suggestion.")]
     Unverified,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     #[error(
-        "SuperEditr applied {applied} of {total} fixes, then stopped because the text no longer matched. Check the text; the full suggestion is on your clipboard."
+        "SuperEditr applied {applied} of {total} fixes, then stopped because the text no longer matched. Check the text before copying the full suggestion."
     )]
     Partial { applied: usize, total: usize },
     #[error("{0}")]
@@ -111,4 +120,59 @@ pub enum ReplaceMethod {
     /// Typed as key events, for a proofread applied in place in a web field.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Typing,
+}
+
+/// How an attempt to replace the selection ended. Every attempt ends in exactly one of these, and
+/// each tells the caller what to do with the suggestion.
+#[derive(Debug)]
+pub enum ReplaceOutcome {
+    /// The field now holds the new text.
+    Applied,
+    /// Nothing was written. The suggestion goes on the clipboard, and the message says so.
+    CopyOnly(PlatformError),
+    /// A write may have landed but couldn't be confirmed. The suggestion stays on screen to copy;
+    /// the clipboard is left alone and nothing is tried again, so the text is never written twice.
+    Uncertain(PlatformError),
+}
+
+impl From<Result<ReplaceMethod, PlatformError>> for ReplaceOutcome {
+    fn from(result: Result<ReplaceMethod, PlatformError>) -> Self {
+        match result {
+            Ok(_) => Self::Applied,
+            Err(error @ (PlatformError::Unverified | PlatformError::Partial { .. })) => Self::Uncertain(error),
+            Err(error) => Self::CopyOnly(error),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_write_that_may_have_landed_is_uncertain() {
+        assert!(matches!(ReplaceOutcome::from(Err(PlatformError::Unverified)), ReplaceOutcome::Uncertain(_)));
+        assert!(matches!(
+            ReplaceOutcome::from(Err(PlatformError::Partial { applied: 2, total: 3 })),
+            ReplaceOutcome::Uncertain(_)
+        ));
+    }
+
+    #[test]
+    fn a_refusal_before_writing_is_copy_only() {
+        for error in [
+            PlatformError::NotTrusted,
+            PlatformError::Stale,
+            PlatformError::CopyOnly,
+            PlatformError::ReplaceFailed,
+            PlatformError::Other("Brynlee’s editor closed.".into()),
+        ] {
+            assert!(matches!(ReplaceOutcome::from(Err(error)), ReplaceOutcome::CopyOnly(_)));
+        }
+    }
+
+    #[test]
+    fn a_verified_write_is_applied() {
+        assert!(matches!(ReplaceOutcome::from(Ok(ReplaceMethod::Paste)), ReplaceOutcome::Applied));
+    }
 }

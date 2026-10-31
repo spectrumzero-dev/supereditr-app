@@ -11,6 +11,8 @@
   let presetId = $state("proofread");
   let review = $state<Review>(emptyReview());
   let notice = $state("");
+  /** A suggestion the notice offers to copy: one that may or may not have gone into the app. */
+  let noticeCopy = $state<string | null>(null);
   let rejected = $state(new Set<number>());
   let focusedId = $state<number | null>(null);
   /** The panel takes the review keys: a review the user opened, or "use keyboard". */
@@ -60,6 +62,7 @@
     presetId = next.presetId;
     review = emptyReview();
     notice = "";
+    noticeCopy = null;
     rejected = new Set();
     focusedId = null;
     keyboard = !next.auto;
@@ -139,10 +142,16 @@
     showFlash("Copied", 1200);
   }
 
+  async function copyNotice() {
+    if (noticeCopy !== null) await ipc.copy(noticeCopy);
+    close();
+  }
+
   function close() {
     ipc.dismiss(session?.id ?? null);
     session = null;
     notice = "";
+    noticeCopy = null;
   }
 
   function useKeyboard() {
@@ -270,6 +279,7 @@
       status: (payload: StatusPayload) => {
         session = null;
         notice = payload.message;
+        noticeCopy = payload.copy ?? null;
         reportHeight();
       },
       focus: () => (keyboard = true),
@@ -296,7 +306,11 @@
         <div class="notice-icon" aria-hidden="true">!</div>
         <p>{notice}</p>
         <div class="notice-actions">
-          <button class="ghost" onclick={() => ipc.openSettings()}>Settings</button>
+          {#if noticeCopy !== null}
+            <button class="ghost" onclick={copyNotice}>Copy suggestion</button>
+          {:else}
+            <button class="ghost" onclick={() => ipc.openSettings()}>Settings</button>
+          {/if}
           <button class="primary" onclick={close}>OK</button>
         </div>
       </div>

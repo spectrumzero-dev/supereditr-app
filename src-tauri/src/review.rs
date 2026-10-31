@@ -7,7 +7,7 @@
 
 use crate::app_toggle;
 use crate::overlay;
-use crate::platform::{self, Capture, PlatformError, SelectionGesture, WatchEvent};
+use crate::platform::{self, Capture, PlatformError, ReplaceOutcome, SelectionGesture, WatchEvent};
 use crate::state::{AppState, Session};
 use serde::Serialize;
 use std::sync::atomic::Ordering;
@@ -53,6 +53,8 @@ pub struct StatusPayload {
     pub id: u64,
     pub kind: &'static str,
     pub message: String,
+    /// A suggestion the notice offers to copy, when it couldn't be confirmed in the app.
+    pub copy: Option<String>,
 }
 
 fn state(app: &AppHandle) -> tauri::State<'_, AppState> {
@@ -170,13 +172,34 @@ pub async fn start_manual(app: &AppHandle, preset_id: Option<String>) {
 
 /// Shows a standalone message (no selection to work on) near the pointer.
 pub fn show_error(app: &AppHandle, message: String) {
+    show_notice(app, message, None);
+}
+
+/// Says what became of a replacement that didn't apply: a copy-only one puts the suggestion on the
+/// clipboard; an uncertain one leaves the clipboard alone and offers the suggestion to copy.
+fn show_outcome(app: &AppHandle, outcome: ReplaceOutcome, suggestion: String) -> Option<String> {
+    match outcome {
+        ReplaceOutcome::Applied => None,
+        ReplaceOutcome::CopyOnly(error) => {
+            platform::copy_to_clipboard(&suggestion);
+            show_error(app, error.to_string());
+            Some(error.to_string())
+        }
+        ReplaceOutcome::Uncertain(error) => {
+            show_notice(app, error.to_string(), Some(suggestion));
+            Some(error.to_string())
+        }
+    }
+}
+
+fn show_notice(app: &AppHandle, message: String, copy: Option<String>) {
     let state = state(app);
     let id = state.next_session_id();
     if let Some(mut old) = state.session.lock().unwrap().take() {
         old.cancel();
     }
     state.notice_visible.store(true, Ordering::Relaxed);
-    let _ = app.emit_to("overlay", "overlay:status", StatusPayload { id, kind: "notice", message });
+    let _ = app.emit_to("overlay", "overlay:status", StatusPayload { id, kind: "notice", message, copy });
     overlay::position(app, None, 126.0);
     overlay::show(app, true);
 }
@@ -309,24 +332,19 @@ pub async fn apply(app: &AppHandle, id: u64, text: String) -> Result<String, Str
     }
     *state.quiet_until.lock().unwrap() = Instant::now() + Duration::from_millis(800);
     tokio::time::sleep(Duration::from_millis(40)).await;
+    let suggestion = text.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        if captured.text == text {
-            return Ok(None);
-        }
-        platform::replace(&captured, &text, proofread).map(Some).inspect_err(|_| {
-            platform::copy_to_clipboard(&text);
-        })
+        (captured.text != text).then(|| ReplaceOutcome::from(platform::replace(&captured, &text, proofread)))
     })
     .await
     .map_err(|e| e.to_string())?;
     state.session.lock().unwrap().take();
     match result {
-        Ok(None) => Ok("No changes needed.".into()),
-        Ok(Some(_)) => Ok("Replaced.".into()),
-        Err(error) => {
-            show_error(app, error.to_string());
-            Err(error.to_string())
-        }
+        None => Ok("No changes needed.".into()),
+        Some(outcome) => match show_outcome(app, outcome, suggestion) {
+            None => Ok("Replaced.".into()),
+            Some(error) => Err(error),
+        },
     }
 }
 
@@ -436,9 +454,11 @@ pub async fn quick_fix(app: &AppHandle) {
     let text = revised.clone();
     let proofread = config.keep_formatting && is_proofread(&config.default_preset().id, None);
     let result = tauri::async_runtime::spawn_blocking(move || platform::replace(&captured, &text, proofread)).await;
-    if let Ok(Err(error)) = result {
-        platform::copy_to_clipboard(&revised);
-        show_error(app, error.to_string());
+    match result {
+        Ok(result) => {
+            show_outcome(app, result.into(), revised);
+        }
+        Err(error) => show_error(app, error.to_string()),
     }
 }
 

@@ -912,17 +912,21 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         let runs: [(field: String, attempt: Int)] = [("text box", 1)] + (1...6).map { ("editable div", $0) }
         var load: [Process] = []
         defer { load.forEach { $0.terminate() } }
+        // Keeps every CPU core busy until `load` is terminated.
+        func loadCores() {
+            for _ in 0..<ProcessInfo.processInfo.activeProcessorCount {
+                let spin = Process()
+                spin.executableURL = URL(fileURLWithPath: "/usr/bin/yes")
+                spin.standardOutput = FileHandle.nullDevice
+                try? spin.run()
+                load.append(spin)
+            }
+            log("     loading \(load.count) CPU cores")
+        }
         for (index, run) in runs.enumerated() {
             let field = run.field == "editable div" ? "editable div (apply \(run.attempt)\(run.attempt > 3 ? ", busy CPU" : ""))" : run.field
             if run.field == "editable div" && run.attempt == 4 {
-                for _ in 0..<ProcessInfo.processInfo.activeProcessorCount {
-                    let spin = Process()
-                    spin.executableURL = URL(fileURLWithPath: "/usr/bin/yes")
-                    spin.standardOutput = FileHandle.nullDevice
-                    try? spin.run()
-                    load.append(spin)
-                }
-                log("     loading \(load.count) CPU cores")
+                loadCores()
             }
             if run.attempt == 1 {
                 press(keyTab)  // from the control field to the text box, then to the editable div
@@ -1017,7 +1021,9 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         // built on (tests/ui/composers). Each field holds two typos to fix, code at both ends of its
         // first paragraph (one with a typo of its own), bold, a link and an empty paragraph, and is
         // reviewed once. The proofread must be applied in place, one edit per change, and keep the
-        // code, bold and link as they were.
+        // code, bold and link as they were. The editable div is applied with every CPU core busy:
+        // Chrome then updates its accessibility tree late after each edit, and the next edit must
+        // wait for it (it failed whenever two test VMs ran at once).
         let composerFields = [("code", "editable div"), ("markdown", "Markdown composer"), ("tiptap", "TipTap"), ("lexical", "Lexical")]
         let codes = ["teh fix", "their going to work"], composerTypo = "Their going to love"
         let composerFixes = ["They're going to love", "really run"]
@@ -1076,6 +1082,9 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 expect(found.contains("2 pieces"), "code found", "both code spans are found", "last code line: \(found)")
                 log("NOTE \(name): \(lines.last { $0.contains("code placed") }.map(String.init) ?? "no code placed")")
                 screenshot(window: overlay(), to: outDir + "/composer-\(id)-review.png")
+                if id == "code" {
+                    loadCores()
+                }
                 press(keyReturn)
                 _ = waitFor(3) { overlay() == nil ? true : nil }
                 // The page describes the field once the editor has taken the paste.
@@ -1083,6 +1092,8 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                     let value = attribute(field, kAXValueAttribute) as? String ?? ""
                     return !value.isEmpty && !value.contains(composerTypo) ? value : nil
                 }
+                load.forEach { $0.terminate() }
+                load.removeAll()
                 // The page describes the field a frame after it changes: wait until it no longer has the typo.
                 let state = waitFor(3) { () -> [String: String]? in
                     let state = composerState(id)

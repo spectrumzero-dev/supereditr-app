@@ -82,6 +82,10 @@ pub fn capture(_allow_clipboard: bool, _select_sentence: bool) -> Result<Capture
     Err(PlatformError::Other("This platform isn’t supported yet.".into()))
 }
 
+pub fn log_path() -> Option<std::path::PathBuf> {
+    None
+}
+
 pub fn set_trace(_on: bool) {}
 
 pub fn trace(_message: std::fmt::Arguments) {}

@@ -1,8 +1,9 @@
 //! Operating-system integration: reading the user's selection, replacing it, and noticing new
 //! selections. Everything above this module is platform-independent.
 //!
-//! macOS is implemented with the Accessibility API, Core Graphics events and NSPasteboard. Another
-//! platform implements the same interface, for example with UI Automation's TextPattern on Windows.
+//! macOS is implemented with the Accessibility API, Core Graphics events and NSPasteboard, and
+//! Linux in `linux/`. Another platform implements the same interface, for example with UI
+//! Automation's TextPattern on Windows.
 
 use serde::Serialize;
 use std::time::Duration;
@@ -14,9 +15,14 @@ mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::*;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::*;
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 mod unsupported;
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub use unsupported::*;
 
 /// Screen rectangle in points, origin at the top-left of the primary display.

@@ -137,6 +137,8 @@ export interface SettingsPayload {
   accessibility: boolean;
   version: string;
   platform: string;
+  /** Where capture.log is written. */
+  logPath: string | null;
   /** The revision `config` was saved at; see `save_settings` in commands.rs. */
   revision: number;
 }

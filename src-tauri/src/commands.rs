@@ -92,6 +92,8 @@ pub struct SettingsPayload {
     accessibility: bool,
     version: &'static str,
     platform: &'static str,
+    /// Where capture.log is written.
+    log_path: Option<String>,
     hotkey_problems: Vec<String>,
     /// The revision `config` was saved at, for `save_settings`.
     revision: u64,
@@ -125,6 +127,7 @@ pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> SettingsPaylo
         accessibility: platform::accessibility_trusted(false),
         version: env!("SUPEREDITR_VERSION_LABEL"),
         platform: std::env::consts::OS,
+        log_path: platform::log_path().map(|path| path.display().to_string()),
         hotkey_problems: Vec::new(),
         revision,
     }

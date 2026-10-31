@@ -1590,20 +1590,37 @@ fn replace_in_place(
     else {
         return fallback("the field's text doesn't line up with the changes");
     };
-    // Selects `text` at `start` and confirms it by reading the selection back.
-    let select_text = |start: usize, text: &str| {
-        set_selection(element, start, text.encode_utf16().count())
-            && wait_until(Duration::from_millis(200), || element.string("AXSelectedText").as_deref() == Some(text))
+    // After an edit, Chrome's accessibility tree lags behind its text, more on a busy Mac: the field's
+    // value updates late, and a selection placed from the stale tree lands on other text. Each step
+    // after an edit waits up to this long. Before any edit a short wait is enough, so a field that
+    // doesn't move its selection falls back to the whole replace without delay.
+    const AFTER_EDIT: Duration = Duration::from_secs(1);
+    // Selects `text` at `start` and confirms it by reading the selection back, setting it again
+    // until it reads back or `wait` runs out.
+    let select_text = |start: usize, text: &str, wait: Duration| {
+        let deadline = Instant::now() + wait;
+        loop {
+            if !set_selection(element, start, text.encode_utf16().count()) {
+                return false;
+            }
+            if wait_until(Duration::from_millis(100), || element.string("AXSelectedText").as_deref() == Some(text)) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+        }
     };
     // Selects the text an edit checks; for an insertion, then puts the caret in place.
-    let select = |place: &Place| {
-        select_text(place.check, &place.text) && (place.start != place.end || set_selection(element, place.start, 0))
+    let select = |place: &Place, wait: Duration| {
+        select_text(place.check, &place.text, wait)
+            && (place.start != place.end || set_selection(element, place.start, 0))
     };
     let restore = || {
         set_selection(element, location, length)
             && wait_until(Duration::from_millis(200), || selection_unchanged(capture))
     };
-    if !select(&places[0]) {
+    if !select(&places[0], Duration::from_millis(200)) {
         if !restore() {
             trace(format_args!("{}: in place: the selection couldn't be put back", capture.bundle_id));
             return Err(PlatformError::Stale);
@@ -1612,7 +1629,10 @@ fn replace_in_place(
     }
     let native = !capture.web && element.settable("AXSelectedText");
     for (i, (edit, place)) in edits.iter().zip(&places).enumerate() {
-        if i > 0 && !(field_focused(capture, element) && select(place)) {
+        if i > 0 && !wait_until(AFTER_EDIT, || field_focused(capture, element)) {
+            return stopped(i, "focus left the field");
+        }
+        if i > 0 && !select(place, AFTER_EDIT) {
             return stopped(i, "the text to fix no longer matched");
         }
         let value = element.string("AXValue");
@@ -1623,8 +1643,8 @@ fn replace_in_place(
         };
         // Landed once the field changes and what was written reads back where it should be.
         let landed = wrote
-            && wait_until(Duration::from_millis(250), || element.string("AXValue") != value)
-            && (edit.new.is_empty() || select_text(place.start, &edit.new));
+            && wait_until(AFTER_EDIT, || element.string("AXValue") != value)
+            && (edit.new.is_empty() || select_text(place.start, &edit.new, AFTER_EDIT));
         if !landed {
             // Nothing written yet: the whole replace can still go ahead, once the selection is back.
             if i == 0 && element.string("AXValue").as_deref() == Some(before.as_str()) && restore() {
@@ -1637,7 +1657,7 @@ fn replace_in_place(
     let grown: isize =
         edits.iter().map(|e| e.new.encode_utf16().count() as isize - e.old.encode_utf16().count() as isize).sum();
     set_selection(element, (location + length).saturating_add_signed(grown), 0);
-    let verified = verify_replacement(element, capture, Some(&before), text, None, Duration::from_millis(150));
+    let verified = verify_replacement(element, capture, Some(&before), text, None, AFTER_EDIT);
     let code = if capture.code.is_empty() {
         String::new()
     } else {

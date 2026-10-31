@@ -1,8 +1,14 @@
-//! API keys live in the OS credential store (macOS Keychain, Windows Credential Manager).
+//! API keys live in the OS credential store (macOS Keychain, Windows Credential Manager, and on
+//! Linux the Secret Service, such as GNOME Keyring).
 
 const SERVICE: &str = "app.supereditr";
 /// Where versions before 0.1.2 kept keys.
 const OLD_SERVICE: &str = crate::OLD_IDENTIFIER;
+
+#[cfg(target_os = "macos")]
+const STORE: &str = "keychain";
+#[cfg(not(target_os = "macos"))]
+const STORE: &str = "keyring";
 
 pub fn get(profile_id: &str) -> Option<String> {
     read(SERVICE, profile_id)
@@ -29,7 +35,7 @@ pub fn copy_old<'a>(profile_ids: impl IntoIterator<Item = &'a str>) {
 pub fn set(profile_id: &str, key: &str) -> Result<(), String> {
     keyring::Entry::new(SERVICE, profile_id)
         .and_then(|entry| entry.set_password(key))
-        .map_err(|e| format!("Couldn’t save the key to the keychain: {e}"))
+        .map_err(|e| format!("Couldn’t save the key to the {STORE}: {e}"))
 }
 
 /// Removes the key, and the copy from before 0.1.2 if there is one.

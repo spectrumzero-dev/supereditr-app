@@ -24,7 +24,8 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-opener = "2"
 plist = "1"
-keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
+# On Linux, the Secret Service (GNOME Keyring, KWallet), which keeps keys across logins.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 tauri-plugin-updater = "2.14"
 semver = "1"
 

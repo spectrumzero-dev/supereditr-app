@@ -158,9 +158,34 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 /// Whether a Launch Agent pointing at this executable keeps working after a restart: it's inside an
 /// app bundle, and not on a mounted disk image or in the temporary copy macOS runs a downloaded app
 /// from until it's moved (App Translocation).
+#[cfg(target_os = "macos")]
 fn lasting_app_path(exe: &str) -> bool {
     exe.contains(".app/Contents/MacOS/") && !exe.starts_with("/Volumes/") && !exe.contains("/AppTranslocation/")
 }
+
+/// Whether an autostart entry pointing at this executable keeps working after a restart: it's
+/// installed, not in a temporary folder (where an AppImage is mounted while it runs) or a build
+/// folder. The entry's `Exec=` line holds the path unquoted, and systemd skips an entry it can't
+/// parse without saying so, so a path with characters that need quoting doesn't count either.
+#[cfg(not(target_os = "macos"))]
+fn lasting_app_path(exe: &str) -> bool {
+    let plain = exe.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+".contains(c));
+    let temporary = ["/tmp/", "/var/tmp/", "/run/", "/dev/shm/"].iter().any(|dir| exe.starts_with(dir));
+    let build = exe.contains("/target/debug/") || exe.contains("/target/release/");
+    exe.starts_with('/') && plain && !temporary && !build
+}
+
+/// The file that opens SuperEditr at login, as the autostart plugin writes it.
+fn login_item(app: &AppHandle) -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    return app.path().home_dir().ok().map(|home| home.join("Library/LaunchAgents/SuperEditr.plist"));
+    #[cfg(not(target_os = "macos"))]
+    return app.path().config_dir().ok().map(|config| config.join(format!("autostart/{AUTOSTART_NAME}.desktop")));
+}
+
+/// The autostart entry's name on Linux: `~/.config/autostart/supereditr.desktop`.
+#[cfg(not(target_os = "macos"))]
+const AUTOSTART_NAME: &str = "supereditr";
 
 /// The app's identifier before 0.1.2. It named the settings folder and the Keychain service.
 const OLD_IDENTIFIER: &str = "com.sghael.supereditr";
@@ -209,10 +234,11 @@ fn settings_file(config_dir: &std::path::Path) -> (std::path::PathBuf, bool) {
 
 /// Opening at login is on by default: turned on once, before Settings first reads the config, and
 /// then left to the user. Only a copy of the app that stays where it is gets added, and while it's
-/// on, each launch points the Launch Agent at the current copy, so moving the app doesn't break it.
+/// on, each launch points the login item (a Launch Agent on macOS, an XDG autostart entry on Linux)
+/// at the current copy, so moving the app doesn't break it.
 fn launch_at_login_by_default(app: &AppHandle) {
     use tauri_plugin_autostart::ManagerExt;
-    // The path the autostart plugin writes into the Launch Agent.
+    // The path the autostart plugin writes into the login item.
     let Some(exe) =
         std::env::current_exe().and_then(|exe| exe.canonicalize()).ok().map(|exe| exe.display().to_string())
     else {
@@ -226,8 +252,8 @@ fn launch_at_login_by_default(app: &AppHandle) {
     let mut config = state.config();
     if config.offered_launch_at_login {
         // Rewritten only when the app has moved: macOS announces every change to a login item.
-        let agent = app.path().home_dir().map(|home| home.join("Library/LaunchAgents/SuperEditr.plist"));
-        let moved = agent.is_ok_and(|agent| std::fs::read_to_string(agent).is_ok_and(|plist| !plist.contains(&exe)));
+        let moved =
+            login_item(app).is_some_and(|item| std::fs::read_to_string(item).is_ok_and(|text| !text.contains(&exe)));
         if moved && let Err(e) = launcher.enable() {
             eprintln!("SuperEditr: couldn't update opening at login: {e}");
         }
@@ -243,15 +269,37 @@ fn launch_at_login_by_default(app: &AppHandle) {
     }
 }
 
+/// SuperEditr was started again while running. `supereditr review` and `supereditr quick-fix` act as
+/// the shortcuts do, for a desktop's own key binding to run; anything else shows Settings.
+fn on_second_launch(app: &AppHandle, args: &[String]) {
+    match args.get(1).map(String::as_str) {
+        Some("review") => review::on_review_hotkey(app),
+        Some("quick-fix") => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move { review::quick_fix(&app).await });
+        }
+        _ => show_settings(app, None),
+    }
+}
+
+fn autostart() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    let builder = tauri_plugin_autostart::Builder::new();
+    #[cfg(target_os = "macos")]
+    let builder = builder.macos_launcher(tauri_plugin_autostart::MacosLauncher::LaunchAgent);
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.app_name(AUTOSTART_NAME);
+    builder.build()
+}
+
 pub fn run() {
     let mut builder = tauri::Builder::default();
     if updater::ENABLED {
         builder = builder.plugin(updater::plugin());
     }
     builder
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_settings(app, None)))
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| on_second_launch(app, &args)))
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
+        .plugin(autostart())
         .plugin(hotkeys::plugin())
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -341,8 +389,10 @@ pub fn run() {
                     }
                 });
             }
+            // Settings opens by itself on the first run, and on macOS while Accessibility isn't
+            // granted, since nothing works without it.
             let first_run = !handle.state::<AppState>().config().onboarded;
-            if first_run || !platform::accessibility_trusted(false) {
+            if first_run || (cfg!(target_os = "macos") && !platform::accessibility_trusted(false)) {
                 show_settings(&handle, Some(if first_run { "welcome".into() } else { "privacy".into() }));
             }
             Ok(())
@@ -470,6 +520,7 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn only_a_copy_that_stays_put_opens_at_login() {
         assert!(lasting_app_path("/Applications/SuperEditr.app/Contents/MacOS/supereditr"));
@@ -479,5 +530,18 @@ mod tests {
             "/private/var/folders/xy/T/AppTranslocation/0A1B2C/d/SuperEditr.app/Contents/MacOS/supereditr"
         ));
         assert!(!lasting_app_path("/Users/me/supereditr/target/debug/supereditr"));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn only_an_installed_copy_opens_at_login() {
+        assert!(lasting_app_path("/usr/bin/supereditr"));
+        assert!(lasting_app_path("/opt/supereditr/supereditr"));
+        assert!(lasting_app_path("/home/rhyan/.local/bin/supereditr"));
+        assert!(!lasting_app_path("/tmp/.mount_SuperEaBc12/usr/bin/supereditr"), "an AppImage's mount");
+        assert!(!lasting_app_path("/home/rhyan/supereditr/target/release/supereditr"));
+        assert!(!lasting_app_path("/home/rhyan/supereditr/target/debug/supereditr"));
+        assert!(!lasting_app_path("/home/rhyan/My Apps/supereditr"), "a space needs quoting in Exec=");
+        assert!(!lasting_app_path("supereditr"));
     }
 }

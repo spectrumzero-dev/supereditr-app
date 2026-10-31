@@ -462,6 +462,84 @@ check(commandFirst != nil, "a suggestion after ⌘A with ⌘ let go first", "no 
 press(keyEscape)
 check(waitFor(3) { overlay() == nil ? true : nil } != nil, "Escape dismisses that one too", "overlay still showing")
 
+// 1d. The menu-bar menu turns SuperEditr off in the app in front, and back on. The menu opens over
+// TextEdit without bringing SuperEditr forward, so its item names TextEdit. Turned off, TextEdit's
+// selections get no suggestion and ⌘E E says how to turn it back on.
+let settingsFile = support + "/settings.json"
+func excludedApps() -> [String] {
+    guard let data = FileManager.default.contents(atPath: settingsFile),
+          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+    return json["excluded_apps"] as? [String] ?? []
+}
+/// Clicks SuperEditr's menu-bar icon and chooses the item whose title starts with `prefix`. Returns
+/// the item's title, or nil, with the menu closed again, when the icon or the item isn't there.
+func chooseFromMenu(_ prefix: String, screenshotTo path: String? = nil) -> String? {
+    guard let app = running(superEditr).first,
+          let bar = attribute(AXUIElementCreateApplication(app.processIdentifier), "AXExtrasMenuBar"),
+          let icon = (attribute(bar as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement])?.first else {
+        log("     SuperEditr has no menu-bar icon in Accessibility")
+        return nil
+    }
+    // The icon attaches its menu only while handling a real click, so pressing it through
+    // Accessibility opens nothing. The pointer goes back where it was afterwards.
+    let pointer = CGEvent(source: nil)?.location
+    let spot = frame(of: icon)
+    for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+        CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: CGPoint(x: spot.midX, y: spot.midY), mouseButton: .left)?
+            .post(tap: .cghidEventTap)
+        usleep(50_000)
+    }
+    defer {
+        if let pointer {
+            CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: pointer, mouseButton: .left)?.post(tap: .cghidEventTap)
+        }
+    }
+    let item = waitFor(3) {
+        findElement(icon) { (attribute($0, kAXRoleAttribute) as? String) == kAXMenuItemRole
+            && (attribute($0, kAXTitleAttribute) as? String ?? "").hasPrefix(prefix) }
+    }
+    guard let item else {
+        log("     menu-bar icon at \(spot):\n\(dumpTree(icon))")
+        press(keyEscape)
+        return nil
+    }
+    if let path, let menu = attribute(item, kAXParentAttribute) {
+        screenshot(window: Window(frame: frame(of: menu as! AXUIElement)), to: path)
+    }
+    let title = attribute(item, kAXTitleAttribute) as? String
+    AXUIElementPerformAction(item, kAXPressAction as CFString)
+    return title
+}
+let turnOff = chooseFromMenu("Turn ", screenshotTo: outDir + "/menu-turn-off.png")
+check(turnOff == "Turn off in TextEdit", "the menu-bar menu offers to turn SuperEditr off in TextEdit", "item: \(turnOff ?? "none")")
+let turnedOff = waitFor(5) { excludedApps().contains("com.apple.TextEdit") ? true : nil }
+check(turnedOff != nil, "choosing it adds TextEdit to the excluded apps", "excluded_apps: \(excludedApps())")
+press(keyUp, .maskCommand)  // nothing selected
+pump(0.5)
+check(selectAll(), "TextEdit's text is selected while SuperEditr is off there")
+pump(3)
+check(overlay() == nil, "no automatic suggestion in an app it's turned off in", "overlay appeared")
+press(keyE, .maskCommand)
+pump(0.1)
+press(keyE, .maskCommand)
+let offNotice = waitFor(5) { () -> String? in
+    let text = panelText()
+    return text.contains("turned off in TextEdit") ? text : nil
+}
+check(offNotice?.contains("menu bar") ?? false, "⌘E E says it's off in TextEdit and how to turn it on", "panel text: \(offNotice ?? panelText())")
+press(keyEscape)
+check(waitFor(3) { overlay() == nil ? true : nil } != nil, "Escape closes the message", "overlay still showing")
+let turnOn = chooseFromMenu("Turn ")
+check(turnOn == "Turn on in TextEdit", "the menu then offers to turn it back on", "item: \(turnOn ?? "none")")
+let turnedOn = waitFor(5) { excludedApps().contains("com.apple.TextEdit") ? nil : true }
+check(turnedOn != nil, "choosing that takes TextEdit off the excluded apps", "excluded_apps: \(excludedApps())")
+press(keyUp, .maskCommand)
+pump(0.5)
+check(selectAll(), "TextEdit's text is selected with SuperEditr on again")
+check(waitFor(6) { overlay() } != nil, "a selection gets a suggestion again", "no overlay within 6 s")
+press(keyEscape)
+check(waitFor(3) { overlay() == nil ? true : nil } != nil, "Escape dismisses that suggestion", "overlay still showing")
+
 // 2. A single ⌘E still reaches the app, replayed after the double-press window.
 pump(0.5)
 KeyLog.seen.removeAll()

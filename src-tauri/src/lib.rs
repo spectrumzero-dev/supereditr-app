@@ -1,5 +1,6 @@
 //! SuperEditr desktop shell: menu-bar app, global shortcuts, overlay, and settings.
 
+mod app_toggle;
 mod commands;
 mod double_press;
 mod hotkeys;
@@ -106,6 +107,8 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     app.manage(AiStatusItem(status.clone()));
     let review = MenuItem::with_id(app, "review", "Review Selection", true, None::<&str>)?;
     let pause = CheckMenuItem::with_id(app, "pause", "Pause Automatic Suggestions", true, false, None::<&str>)?;
+    // Labelled and shown or hidden by `app_toggle`.
+    let app_toggle = MenuItem::with_id(app, app_toggle::ID, "", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
     let quit = MenuItem::with_id(app, "quit", "Quit SuperEditr", true, Some("CmdOrCtrl+Q"))?;
     let menu = Menu::with_items(
@@ -115,6 +118,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             &PredefinedMenuItem::separator(app)?,
             &review,
             &pause,
+            &app_toggle,
             &PredefinedMenuItem::separator(app)?,
             &settings,
             &PredefinedMenuItem::separator(app)?,
@@ -123,8 +127,9 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     )?;
     if updater::ENABLED {
         // Below Settings…
-        menu.insert(&updater::menu_item(app)?, 6)?;
+        menu.insert(&updater::menu_item(app)?, 7)?;
     }
+    app_toggle::init(app, &menu, app_toggle)?;
     let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
     let pause_item = pause.clone();
     TrayIconBuilder::with_id("main")
@@ -139,6 +144,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 let paused = pause_item.is_checked().unwrap_or(false);
                 app.state::<AppState>().paused.store(paused, Ordering::Relaxed);
             }
+            app_toggle::ID => app_toggle::on_menu(app),
             "settings" => show_settings(app, None),
             "update" => updater::on_menu(app),
             "quit" => app.exit(0),
@@ -267,7 +273,10 @@ pub fn run() {
                     });
                 });
                 let switch_app = handle.clone();
-                platform::start_app_switch_watcher(move |pid| review::on_app_switch(&switch_app, pid));
+                platform::start_app_switch_watcher(move |pid| {
+                    review::on_app_switch(&switch_app, pid);
+                    app_toggle::on_app_switch(&switch_app, pid);
+                });
             }
 
             if let Some(settings) = handle.get_webview_window("settings") {

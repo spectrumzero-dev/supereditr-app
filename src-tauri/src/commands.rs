@@ -130,6 +130,9 @@ pub fn save_settings(app: AppHandle, state: State<'_, AppState>, config: Config)
     if previous.words != config.words {
         prepare_words(&state, config.words.clone());
     }
+    if previous.excluded_apps != config.excluded_apps {
+        crate::app_toggle::refresh(&app);
+    }
     if previous.hotkeys.review != config.hotkeys.review
         || previous.hotkeys.quick_fix != config.hotkeys.quick_fix
         || previous.presets.iter().map(|p| &p.shortcut).ne(config.presets.iter().map(|p| &p.shortcut))

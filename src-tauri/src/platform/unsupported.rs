@@ -105,6 +105,14 @@ pub fn mouse_location() -> (f64, f64) {
 
 pub fn start_app_switch_watcher(_on_switch: impl Fn(i32) + 'static) {}
 
+pub fn frontmost_pid() -> Option<i32> {
+    None
+}
+
+pub fn app_identity(_pid: i32) -> (String, String) {
+    (String::new(), "this app".into())
+}
+
 pub fn start_selection_watcher(_on_event: impl Fn(WatchEvent) + Send + Sync + 'static) {}
 
 pub fn selection_app_switched() {}

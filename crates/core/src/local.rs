@@ -7,15 +7,30 @@ use crate::diff::{self, DiffView, Segment};
 use harper_core::linting::{Lint, LintGroup, LintKind, Linter, Suggestion};
 use harper_core::spell::{Dictionary, FstDictionary, MergedDictionary, MutableDictionary};
 use harper_core::{Dialect, DictWordMetadata, Document};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 pub struct LocalChecker {
     linter: Mutex<LintGroup>,
-    /// Harper's dictionary plus the author's word list.
+    /// Harper's dictionary, the title-case forms it drops, and the author's word list.
     dictionary: Arc<MergedDictionary>,
     /// The word list this checker was built with, so the engine knows when to rebuild it.
     pub words: Vec<String>,
 }
+
+/// Title-case spellings Harper's dictionary drops. It stores one spelling per word whatever its
+/// case, the last one listed, so "Ida" is kept only as a flag on "IDA", and Harper then takes the
+/// name for a typo ("Id").
+static TITLE_CASE_FORMS: LazyLock<Arc<MutableDictionary>> = LazyLock::new(|| {
+    let curated = FstDictionary::curated();
+    let mut forms = MutableDictionary::new();
+    forms.extend_words(curated.words_iter().filter_map(|word| {
+        let metadata = curated.get_word_metadata(word)?;
+        let (first, rest) = word.split_first()?;
+        let title: Vec<char> = first.to_uppercase().chain(rest.iter().flat_map(|c| c.to_lowercase())).collect();
+        (metadata.is_titlecase() && title != word).then(|| (title, metadata.into_owned()))
+    }));
+    Arc::new(forms)
+});
 
 pub fn dialect_from_name(name: &str) -> Dialect {
     let lower = name.to_lowercase();
@@ -41,6 +56,7 @@ impl LocalChecker {
         );
         let mut dictionary = MergedDictionary::new();
         dictionary.add_dictionary(FstDictionary::curated());
+        dictionary.add_dictionary(TITLE_CASE_FORMS.clone());
         dictionary.add_dictionary(Arc::new(own));
         let dictionary = Arc::new(dictionary);
         let linter = LintGroup::new_curated(dictionary.clone(), dialect);
@@ -350,10 +366,11 @@ mod tests {
     fn keeps_names_that_are_also_acronyms() {
         let checker = LocalChecker::new(Dialect::American, &[]);
         let fixed = |text: &str| diff::apply(&checker.check(text), &Default::default());
-        // The dictionary lists "Sam" and "SAM", "Mia" and "MIA", "Dec" and "DEC".
+        // The dictionary lists "Sam" and "SAM", "Mia" and "MIA", "Dec" and "DEC", "Ida" and "IDA".
         assert_eq!(fixed("Hi Sam, thanks for the draft!"), "Hi Sam, thanks for the draft!");
         assert_eq!(fixed("Thanks, Mia! I took Sam to tennis."), "Thanks, Mia! I took Sam to tennis.");
         assert_eq!(fixed("Sam has tennis on Dec 3."), "Sam has tennis on Dec 3.");
+        assert_eq!(fixed("Ida read Sam's draft."), "Ida read Sam's draft.");
         // Real capitalization fixes still apply.
         assert_eq!(fixed("i need it by Friday."), "I need it by Friday.");
         assert_eq!(fixed("Done. the lesson is today."), "Done. The lesson is today.");

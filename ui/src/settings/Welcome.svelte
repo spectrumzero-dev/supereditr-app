@@ -3,7 +3,7 @@
   import type { BuiltinAi, Config, ProviderCheck } from "../lib/types";
   import { watchBuiltinAi } from "./builtin";
   import Playground from "./Playground.svelte";
-  import Shortcuts from "./Shortcuts.svelte";
+  import Keycaps from "./Keycaps.svelte";
   import { keySymbols } from "../lib/diff";
   import { api } from "./ipc";
 
@@ -129,7 +129,7 @@
         {/if}
       </div>
       {#if trusted}
-        <div class="inset tight"><Shortcuts review={config.hotkeys.review} auto={config.auto_popup} /></div>
+        <div class="inset tight"><Keycaps review={config.hotkeys.review} auto={config.auto_popup} /></div>
         <fieldset class="inset when">
           <legend>Show suggestions</legend>
           <label>
@@ -140,7 +140,7 @@
             <input type="radio" name="when" checked={!config.auto_popup} onchange={() => setAuto(false)} />
             <span><span class="label">Only when I press {keySymbols(config.hotkeys.review)}</span><span class="hint">Nothing appears until you ask.</span></span>
           </label>
-          <p class="hint">Change this anytime in Settings → Behavior.</p>
+          <p class="hint">Change this anytime in Settings → General.</p>
         </fieldset>
       {:else}
         <p class="detail">System Settings opens at Accessibility: turn on SuperEditr’s switch (a card at the bottom helps if it isn’t listed). This page updates when it’s done.</p>

@@ -13,8 +13,6 @@
   let selected = $state(config.presets[0]?.id ?? "");
   const preset = $derived(config.presets.find((p) => p.id === selected));
 
-  const dialects = ["American English", "British English", "Canadian English", "Australian English", "Indian English"];
-
   function addPreset() {
     const id = `custom-${Date.now().toString(36)}`;
     const next: Preset = { id, name: "My style", instruction: "Rewrite the text so it ", builtin: false, shortcut: null };
@@ -76,12 +74,6 @@
         <div class="hint">Applied to every style. Describe your audience, words to avoid, formatting habits, or paste a short sample of your writing.</div>
       </div>
       <textarea rows="3" bind:value={config.style_notes} onchange={onchange} placeholder="e.g. I write to engineers and executives. Keep sentences short. Never use em dashes. Prefer “use” over “utilize”."></textarea>
-    </div>
-    <div class="row">
-      <div class="label">English spelling</div>
-      <select bind:value={config.dialect} onchange={onchange}>
-        {#each dialects as d (d)}<option>{d}</option>{/each}
-      </select>
     </div>
     <div class="row">
       <div>

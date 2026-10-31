@@ -120,7 +120,7 @@
     try {
       const isNew = await ipc.addWord(word);
       added = new Set([...added, word]);
-      showFlash(isNew === false ? `“${word}” is already in your words` : `Added “${word}” to your words`);
+      showFlash(isNew === false ? `“${word}” is already in your dictionary` : `Added “${word}” to your dictionary`);
     } catch {
       // The offer stays, so the author can try again.
       showFlash(`Couldn’t save “${word}”. Try again.`);

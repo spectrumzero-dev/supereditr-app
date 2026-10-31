@@ -27,7 +27,7 @@ Select text in any Mac app and get fixes in about half a second. Accept them wit
    | ↩︎ | Apply what you see |
    | tab / ⇧tab | Step through individual changes |
    | ␣ | Keep the original for the focused change |
-   | A | Always keep a name or term you kept: add it to your words |
+   | A | Always keep a name or term you kept: add it to your dictionary |
    | 1–7 | Switch style: Proofread, Polish, Shorter, Friendlier, Professional, Simplify, To English |
    | / | Type an instruction, e.g. "warmer and shorter" |
    | R | Try again |
@@ -36,17 +36,17 @@ Select text in any Mac app and get fixes in about half a second. Accept them wit
 
 3. **⌃⌥⇧E** fixes the selection in place without showing anything.
 
-### Your words
+### Your dictionary
 
-Add names, places, and terms under Settings → Your words, as a word ("Rhyan") or a phrase ("1234 Glenmoor Ct"). The offline checker treats them as correctly spelled, the AI is told to keep the ones in the selected text (the rest of the list stays on your Mac), and a change that drops one anyway starts out rejected. When you keep your original spelling of an unfamiliar word in the panel, **A** adds it. Even before you add them, the offline checker leaves capitalized names in the middle of a sentence alone ("I am taking Rhyan to tennis").
+Add names, places, and terms under Settings → Dictionary, as a word ("Rhyan") or a phrase ("1234 Glenmoor Ct"). The offline checker treats them as correctly spelled, the AI is told to keep the ones in the selected text (the rest of the list stays on your Mac), and a change that drops one anyway starts out rejected. When you keep your original spelling of an unfamiliar word in the panel, **A** adds it. Even before you add them, the offline checker leaves capitalized names in the middle of a sentence alone ("I am taking Rhyan to tennis"). Settings → Dictionary also sets English spelling (American, British, Canadian, Australian or Indian), which the offline checker and the AI both follow.
 
-With nothing selected, ⌘E E and ⌃⌥⇧E select the sentence before the cursor and review that. In an app that hides its text from Accessibility, select the text yourself. Turn this off in Settings → Behavior.
+With nothing selected, ⌘E E and ⌃⌥⇧E select the sentence before the cursor and review that. In an app that hides its text from Accessibility, select the text yourself. Turn this off in Settings → Shortcuts.
 
-Applying a proofread changes only the words it fixes, so code, bold and links in the rest of the text stay as they are. Undo takes one step per fix. A different style, or an app that doesn't allow it, replaces the whole selection instead. Turn this off in Settings → Behavior → Keep formatting when applying fixes.
+Applying a proofread changes only the words it fixes, so code, bold and links in the rest of the text stay as they are. Undo takes one step per fix. A different style, or an app that doesn't allow it, replaces the whole selection instead. Turn this off in Settings → General → Keep formatting when applying fixes.
 
-Typing or clicking elsewhere hides an automatic suggestion. Turn automatic suggestions off in Settings → Behavior to use the shortcut only. All shortcuts can be changed, and any style can have its own global shortcut.
+Typing or clicking elsewhere hides an automatic suggestion. Turn automatic suggestions off in Settings → General to use the shortcut only. All shortcuts can be changed in Settings → Shortcuts, and any style can have its own global shortcut.
 
-SuperEditr opens when you log in, so it is running again after you restart your Mac. Turn this off in Settings → Behavior → Open at login.
+SuperEditr opens when you log in, so it is running again after you restart your Mac. Turn this off in Settings → General → Open at login.
 
 ## Install
 
@@ -78,7 +78,7 @@ Consumer Claude, ChatGPT and Gemini plans don't give other apps API access. The 
 
 ## Privacy
 
-SuperEditr has no accounts or analytics, and its only server is the update server. Official release builds check for updates through `updates.supereditr.app`, which counts each check by app version and Mac architecture (Apple silicon or Intel) and passes it on to `latest.json` on the newest GitHub Release. The app sends no identifier, and the server doesn't store IP addresses. Builds from source never check. The text you review goes from your Mac directly to the provider you chose, or nowhere if you use the offline checker or a local model. Password fields are never read. Apple's Passwords app, the password managers 1Password, NordPass, Bitwarden and KeePassXC, Keychain Access, and terminals are excluded by default (Settings → Behavior); add any other app there. To diagnose a problem in a particular app, turn on Settings → Behavior → Keep a diagnostic log. SuperEditr then keeps a small local log, `~/Library/Logs/SuperEditr/capture.log`, with the app, timing and length of each read and write, never the text. It's off by default, and turning it off deletes the log.
+SuperEditr has no accounts or analytics, and its only server is the update server. Official release builds check for updates through `updates.supereditr.app`, which counts each check by app version and Mac architecture (Apple silicon or Intel) and passes it on to `latest.json` on the newest GitHub Release. The app sends no identifier, and the server doesn't store IP addresses. Builds from source never check. The text you review goes from your Mac directly to the provider you chose, or nowhere if you use the offline checker or a local model. Password fields are never read. Apple's Passwords app, the password managers 1Password, NordPass, Bitwarden and KeePassXC, Keychain Access, and terminals are excluded by default (Settings → Privacy); add any other app there. To diagnose a problem in a particular app, turn on Settings → General → Keep a diagnostic log. SuperEditr then keeps a small local log, `~/Library/Logs/SuperEditr/capture.log`, with the app, timing and length of each read and write, never the text. It's off by default, and turning it off deletes the log.
 
 A selection that holds a secret SuperEditr recognizes is never reviewed: not by the offline checker, and never sent to any AI. It recognizes private keys, access tokens and API keys from common services (GitHub, AWS, OpenAI, Anthropic, Stripe, Slack and others), passwords given in settings (`DB_PASSWORD=…`), passwords in links, and random-looking keys right after words like "token" or "API key". It says what it found and on which line, never the secret itself. Detection works by pattern, so a secret in an unrecognized format, or a bare random string with no label (an AWS secret access key on its own, for example), can still get through; don't select text you wouldn't paste into the AI yourself. The rules are listed in [`crates/core/src/sensitive.rs`](crates/core/src/sensitive.rs), each naming the document that defines its format where there is one.
 

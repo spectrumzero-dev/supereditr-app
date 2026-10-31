@@ -6,6 +6,7 @@
   import type { EngineEvent, SessionPayload, StatusPayload } from "../lib/types";
   import { ipc } from "./ipc";
   import { canUse, emptyReview, offerToKeep, reduce, type Review } from "./review";
+  import { words } from "../lib/platform";
 
   let session = $state<SessionPayload | null>(null);
   let presetId = $state("proofread");
@@ -379,7 +380,7 @@
       {/if}
 
       {#if showTips && keyboard && phase === "done" && list.length}
-        <p class="tips">Tip: <kbd>⌥↩</kbd> {session.canApply ? "replaces your text with" : "copies"} everything you see · <kbd>tab</kbd> steps through changes · <kbd>␣</kbd> switches a change between yours and the suggestion · <kbd>esc</kbd> closes</p>
+        <p class="tips">Tip: <kbd>{words().applyKey}</kbd> {session.canApply ? "replaces your text with" : "copies"} everything you see · <kbd>tab</kbd> steps through changes · <kbd>␣</kbd> switches a change between yours and the suggestion · <kbd>esc</kbd> closes</p>
       {/if}
       <footer>
         <div class="status" title={[summarize(view), sourceLabel(source, view), timing].filter(Boolean).join(" · ")}>
@@ -405,7 +406,7 @@
             {#if focusedId != null}<span><kbd>␣</kbd> {rejected.has(focusedId) ? "restore" : "keep original"}</span>{/if}
             <span><kbd>/</kbd> instruct</span>
           {/if}
-          {#if !unchanged}<span><kbd>⌥↩</kbd> {session.canApply ? "replace" : "copy fix"}</span>{/if}
+          {#if !unchanged}<span><kbd>{words().applyKey}</kbd> {session.canApply ? "replace" : "copy fix"}</span>{/if}
           {#if keyboard}
             <span><kbd>esc</kbd></span>
           {:else}

@@ -2,12 +2,18 @@
   import { onMount } from "svelte";
   import type { Config } from "../lib/types";
   import { api } from "./ipc";
+  import { isMac, words } from "../lib/platform";
 
   interface Props {
     config: Config;
+    /** Where capture.log is written. */
+    logPath: string | null;
     onchange: () => void;
   }
-  let { config = $bindable(), onchange }: Props = $props();
+  let { config = $bindable(), logPath, onchange }: Props = $props();
+  const w = words();
+  /** The log's path with the home folder as ~, as people write it. */
+  const shownLogPath = $derived((logPath ?? "").replace(/^\/(Users|home)\/[^/]+\//, "~/"));
   let launchAtLogin = $state(true);
   let launchError = $state("");
 
@@ -32,6 +38,8 @@
 
   <div class="group-title">Suggestions</div>
   <div class="group">
+    <!-- Automatic suggestions need a system-wide view of selections, which only macOS gives. -->
+    {#if isMac()}
     <div class="row">
       <div>
         <div class="label">Suggest as soon as I select text</div>
@@ -46,6 +54,7 @@
       </div>
       <span><input type="number" min="1" max="500" bind:value={config.auto_min_chars} onchange={onchange} style="width: 70px" /> characters</span>
     </div>
+    {/if}
     <div class="row">
       <div>
         <div class="label">Keep formatting when applying fixes</div>
@@ -64,7 +73,7 @@
     <div class="row">
       <div>
         <div class="label">Open at login</div>
-        <div class="hint">Starts SuperEditr in the menu bar when you log in, so it’s running again after you restart your Mac.</div>
+        <div class="hint">Starts SuperEditr in {w.tray} when you log in, so it’s running again after you restart {isMac() ? "your Mac" : "your computer"}.</div>
       </div>
       <input type="checkbox" class="switch" aria-label="Open at login" checked={launchAtLogin} onchange={(e) => setLaunchAtLogin(e.currentTarget.checked)} />
     </div>
@@ -78,7 +87,7 @@
     <div class="row">
       <div>
         <div class="label">Keep a diagnostic log</div>
-        <div class="hint">Records which app each selection came from, with timings and lengths but never your text, in ~/Library/Logs/SuperEditr/capture.log. Turn on to diagnose a problem in a particular app. Turning it off deletes the log.</div>
+        <div class="hint">Records which app each selection came from, with timings and lengths but never your text, in {shownLogPath}. Turn on to diagnose a problem in a particular app. Turning it off deletes the log.</div>
       </div>
       <input type="checkbox" class="switch" bind:checked={config.diagnostic_log} onchange={onchange} />
     </div>

@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Config } from "../lib/types";
   import ShortcutInput from "./ShortcutInput.svelte";
+  import { isMac, words } from "../lib/platform";
 
   interface Props {
     config: Config;
@@ -8,6 +9,7 @@
     onchange: () => void;
   }
   let { config = $bindable(), problems, onchange }: Props = $props();
+  const w = words();
 </script>
 
 <div class="page">
@@ -18,7 +20,11 @@
     <div class="row">
       <div>
         <div class="label">Review selection</div>
-        <div class="hint">Opens suggestions for the selected text. Press again to bring an automatic suggestion into focus. Use a key combination such as ⌃⌥E or F6, or a double press like ⌘E E (press it twice quickly). Shortcuts macOS or other apps already use are refused.</div>
+        {#if isMac()}
+          <div class="hint">Opens suggestions for the selected text. Press again to bring an automatic suggestion into focus. Use a key combination such as ⌃⌥E or F6, or a double press like ⌘E E (press it twice quickly). Shortcuts macOS or other apps already use are refused.</div>
+        {:else}
+          <div class="hint">Opens suggestions for the selected text. Use a key combination such as Super+Alt+E or F6.</div>
+        {/if}
       </div>
       <ShortcutInput slot="review" value={config.hotkeys.review} onchange={(v) => { config.hotkeys.review = v; onchange(); }} />
     </div>
@@ -39,13 +45,13 @@
     <div class="row keys">
       <div class="label">In the suggestion panel</div>
       <div class="cheats">
-        <span><kbd>⌥↩</kbd> or <kbd>↩</kbd> replace</span>
+        <span><kbd>{w.applyKey}</kbd> or <kbd>{isMac() ? "↩" : "Enter"}</kbd> replace</span>
         <span><kbd>tab</kbd> next change</span>
         <span><kbd>␣</kbd> keep original</span>
         <span><kbd>1</kbd>–<kbd>7</kbd> style</span>
         <span><kbd>/</kbd> instruct</span>
         <span><kbd>R</kbd> retry</span>
-        <span><kbd>⌘C</kbd> copy</span>
+        <span><kbd>{w.copyKey}</kbd> copy</span>
       </div>
     </div>
     {#if problems.length}

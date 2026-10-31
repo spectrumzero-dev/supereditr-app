@@ -21,5 +21,6 @@ describe("keycaps", () => {
     expect(keycaps("Control+Alt+E")).toEqual(["⌃", "⌥", "E"]);
     expect(keycaps("Command+E Command+E")).toEqual(["⌘", "E", "E"]);
     expect(keycaps("")).toEqual([]);
+    expect(keycaps("Super+Alt+E", false)).toEqual(["Super", "Alt", "E"]);
   });
 });

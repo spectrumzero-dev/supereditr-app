@@ -683,8 +683,12 @@ mod tests {
             excluded_message(&config, "com.apple.Notes", "Notes"),
             "SuperEditr is turned off in Notes. Turn it on from the pen icon in the menu bar, or in Settings → Privacy."
         );
+        #[cfg(not(target_os = "linux"))]
+        let terminal = "com.apple.Terminal";
+        #[cfg(target_os = "linux")]
+        let terminal = "foot";
         assert_eq!(
-            excluded_message(&config, "com.apple.Terminal", "Terminal"),
+            excluded_message(&config, terminal, "Terminal"),
             "SuperEditr is turned off in Terminal. Change this in Settings → Privacy.",
             "the menu doesn't offer to turn a terminal on"
         );

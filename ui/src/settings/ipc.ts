@@ -42,7 +42,7 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
   }
   // Browser preview: just enough behavior to design the screens.
   const demo: Record<string, () => unknown> = {
-    get_settings: () => ({ config: demoConfig, keys: { anthropic: true }, accessibility: false, version: "0.1.0", platform: "macos", revision: demoRevision }),
+    get_settings: () => ({ config: demoConfig, keys: { anthropic: true }, accessibility: false, version: "0.1.0", platform: "macos", logPath: "/Users/rhyan/Library/Logs/SuperEditr/capture.log", revision: demoRevision }),
     save_settings: () => {
       if (args?.revision != null && args.revision !== demoRevision) return { revision: null, problems: [] };
       demoConfig = args?.config as Config;

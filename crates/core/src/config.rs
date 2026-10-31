@@ -16,7 +16,8 @@ pub struct Hotkeys {
 }
 
 /// Apps where SuperEditr never reads text: password managers, and terminals, whose output reads
-/// like text and where pasting a revision would run it as input.
+/// like text and where pasting a revision would run it as input. macOS bundle IDs.
+#[cfg(not(target_os = "linux"))]
 const DEFAULT_EXCLUSIONS: &[&str] = &[
     "com.1password.1password",
     "com.nordsec.nordpass",
@@ -35,6 +36,7 @@ const DEFAULT_EXCLUSIONS: &[&str] = &[
 ];
 
 /// The terminals among the default exclusions.
+#[cfg(not(target_os = "linux"))]
 const TERMINALS: &[&str] = &[
     "com.apple.Terminal",
     "com.googlecode.iterm2",
@@ -46,24 +48,69 @@ const TERMINALS: &[&str] = &[
     "com.github.wez.wezterm",
 ];
 
+/// On Linux, apps are known by their Wayland app ID (Hyprland's window class).
+#[cfg(target_os = "linux")]
+const DEFAULT_EXCLUSIONS: &[&str] = &[
+    "1Password",
+    "Bitwarden",
+    "org.keepassxc.KeePassXC",
+    "org.gnome.seahorse.Application",
+    "foot",
+    "Alacritty",
+    "com.mitchellh.ghostty",
+    "kitty",
+    "org.wezfurlong.wezterm",
+    "org.gnome.Ptyxis",
+    "org.kde.konsole",
+];
+
+#[cfg(target_os = "linux")]
+const TERMINALS: &[&str] = &[
+    "foot",
+    "Alacritty",
+    "com.mitchellh.ghostty",
+    "kitty",
+    "org.wezfurlong.wezterm",
+    "org.gnome.Ptyxis",
+    "org.kde.konsole",
+];
+
 /// True for a terminal SuperEditr excludes by default.
 pub fn is_terminal(bundle_id: &str) -> bool {
     TERMINALS.iter().any(|t| t.eq_ignore_ascii_case(bundle_id))
 }
 
 /// The defaults in the first release, before `offered_exclusions` was recorded.
+#[cfg(not(target_os = "linux"))]
 fn first_default_exclusions() -> Vec<String> {
     DEFAULT_EXCLUSIONS[..6].iter().map(|s| s.to_string()).collect()
 }
 
+/// Every Linux release has recorded `offered_exclusions`.
+#[cfg(target_os = "linux")]
+fn first_default_exclusions() -> Vec<String> {
+    DEFAULT_EXCLUSIONS.iter().map(|s| s.to_string()).collect()
+}
+
+/// Hold ⌘ and press E twice. A single ⌘E still reaches the app, a moment later.
+#[cfg(not(target_os = "linux"))]
 const REVIEW_SHORTCUT: &str = "Command+E Command+E";
+#[cfg(not(target_os = "linux"))]
+const QUICK_FIX_SHORTCUT: &str = "Control+Alt+Shift+E";
 /// The first default, replaced because ⌃⌥E clashes with other apps.
+#[cfg(not(target_os = "linux"))]
 const OLD_REVIEW_SHORTCUT: &str = "Control+Alt+E";
+
+/// Single chords: a double press needs a keyboard tap, which Wayland doesn't allow. Both are free in
+/// Omarchy's own bindings (Super+Alt+Shift+E opens its email app).
+#[cfg(target_os = "linux")]
+const REVIEW_SHORTCUT: &str = "Super+Alt+E";
+#[cfg(target_os = "linux")]
+const QUICK_FIX_SHORTCUT: &str = "Super+Control+Alt+E";
 
 impl Default for Hotkeys {
     fn default() -> Self {
-        // Hold ⌘ and press E twice. A single ⌘E still reaches the app, a moment later.
-        Self { review: REVIEW_SHORTCUT.into(), quick_fix: "Control+Alt+Shift+E".into() }
+        Self { review: REVIEW_SHORTCUT.into(), quick_fix: QUICK_FIX_SHORTCUT.into() }
     }
 }
 
@@ -124,7 +171,8 @@ impl Default for Config {
             style_notes: String::new(),
             dialect: "American English".into(),
             hotkeys: Hotkeys::default(),
-            auto_popup: true,
+            // On Linux, only the shortcut starts a review.
+            auto_popup: cfg!(not(target_os = "linux")),
             auto_min_chars: 12,
             select_sentence: true,
             keep_formatting: true,
@@ -146,6 +194,7 @@ impl Config {
         config.merge_new_builtins();
         config.merge_new_exclusions();
         config.drop_builtin_ai();
+        #[cfg(not(target_os = "linux"))]
         if config.hotkeys.review == OLD_REVIEW_SHORTCUT {
             config.hotkeys.review = REVIEW_SHORTCUT.into();
         }
@@ -307,6 +356,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn apple_intelligence_profiles_become_the_builtin_default() {
         let dir = std::env::temp_dir().join(format!("supereditr-builtin-{}", std::process::id()));
@@ -324,6 +374,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn new_default_exclusions_reach_existing_settings_once() {
         let dir = std::env::temp_dir().join(format!("supereditr-exclusions-{}", std::process::id()));
@@ -344,6 +395,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn excludes_password_managers_and_terminals_by_default() {
         let config = Config::default();
@@ -354,12 +406,26 @@ mod tests {
         assert!(!config.is_excluded(""));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_defaults_use_wayland_app_ids_and_single_chords() {
+        let config = Config::default();
+        assert!(config.is_excluded("foot"), "Omarchy's terminal");
+        assert!(config.is_excluded("org.keepassxc.keepassxc"));
+        assert!(!config.is_excluded("chromium"));
+        assert!(is_terminal("FOOT"));
+        assert!(!is_terminal("1Password"));
+        assert_eq!(config.hotkeys.review, "Super+Alt+E");
+        assert_eq!(config.hotkeys.quick_fix, "Super+Control+Alt+E");
+        assert!(!config.auto_popup, "no automatic suggestions on Linux");
+    }
+
     #[test]
     fn every_terminal_is_excluded_by_default() {
         let config = Config::default();
         assert!(TERMINALS.iter().all(|t| config.is_excluded(t)));
-        assert!(is_terminal("COM.APPLE.TERMINAL"));
-        assert!(!is_terminal("com.1password.1password"), "a password manager isn't a terminal");
+        assert!(TERMINALS.iter().all(|t| is_terminal(&t.to_uppercase())));
+        assert!(!is_terminal(DEFAULT_EXCLUSIONS[0]), "a password manager isn't a terminal");
         assert!(!is_terminal(""));
     }
 
@@ -375,7 +441,7 @@ mod tests {
         assert!(config.set_excluded("com.apple.TextEdit", false));
         assert!(!config.is_excluded("com.apple.TextEdit"), "every spelling is removed");
         assert!(!config.set_excluded("com.apple.TextEdit", false));
-        assert!(config.is_excluded("com.1password.1password"), "other apps stay excluded");
+        assert!(config.is_excluded(DEFAULT_EXCLUSIONS[0]), "other apps stay excluded");
 
         assert!(!config.set_excluded("", true), "an app without a bundle ID can't be listed");
         assert!(!config.excluded_apps.iter().any(String::is_empty));
@@ -385,7 +451,7 @@ mod tests {
     fn missing_file_gives_defaults() {
         let config = Config::load(Path::new("/nonexistent/supereditr.json"));
         assert_eq!(config.default_preset().id, "proofread");
-        assert!(config.auto_popup);
+        assert_eq!(config.auto_popup, cfg!(not(target_os = "linux")));
     }
 
     #[test]

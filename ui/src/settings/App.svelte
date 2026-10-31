@@ -10,6 +10,7 @@
   import Welcome from "./Welcome.svelte";
   import { api } from "./ipc";
   import { mergeUnsaved, saveUntilCurrent } from "./merge";
+  import { isMac, setPlatform } from "../lib/platform";
 
   type Section = "welcome" | "models" | "styles" | "dictionary" | "general" | "shortcuts" | "privacy" | "about";
   // The pages about the writing, then a gap, then the app's own.
@@ -19,7 +20,7 @@
     { id: "styles", name: "Styles", icon: "¶" },
     { id: "dictionary", name: "Dictionary", icon: "Aa" },
     { id: "general", name: "General", icon: "⚙", gap: true },
-    { id: "shortcuts", name: "Shortcuts", icon: "⌘" },
+    { id: "shortcuts", name: "Shortcuts", icon: isMac() ? "⌘" : "⌨" },
     { id: "privacy", name: "Privacy", icon: "⚿" },
     { id: "about", name: "About", icon: "ⓘ" },
   ];
@@ -49,6 +50,7 @@
 
   async function reload() {
     const fresh = await api.get();
+    setPlatform(fresh.platform);
     const latest = structuredClone(fresh.config);
     // Changes waiting to be saved, or still being saved, survive a reload.
     if (config && base && edits !== savedEdits) {
@@ -155,7 +157,7 @@
       {:else if section === "dictionary"}
         <Dictionary bind:config {onchange} />
       {:else if section === "general"}
-        <General bind:config {onchange} />
+        <General bind:config logPath={payload.logPath} {onchange} />
       {:else if section === "shortcuts"}
         <Shortcuts bind:config {problems} {onchange} />
       {:else if section === "privacy"}

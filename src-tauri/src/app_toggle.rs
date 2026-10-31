@@ -125,6 +125,16 @@ mod tests {
         TargetApp { bundle_id: bundle_id.into(), name: name.into() }
     }
 
+    /// A default-excluded terminal and password manager, by this platform's app IDs.
+    #[cfg(not(target_os = "linux"))]
+    const TERMINAL: &str = "com.apple.Terminal";
+    #[cfg(not(target_os = "linux"))]
+    const PASSWORD_MANAGER: &str = "com.1password.1password";
+    #[cfg(target_os = "linux")]
+    const TERMINAL: &str = "foot";
+    #[cfg(target_os = "linux")]
+    const PASSWORD_MANAGER: &str = "1Password";
+
     #[test]
     fn offers_to_turn_off_an_app_that_is_on() {
         let config = Config::default();
@@ -136,7 +146,7 @@ mod tests {
         let mut config = Config::default();
         config.set_excluded("com.apple.TextEdit", true);
         assert_eq!(label(&config, &app("com.apple.TextEdit", "TextEdit")).as_deref(), Some("Turn on in TextEdit"));
-        let password_manager = app("com.1password.1password", "1Password");
+        let password_manager = app(PASSWORD_MANAGER, "1Password");
         assert_eq!(label(&config, &password_manager).as_deref(), Some("Turn on in 1Password"));
     }
 
@@ -156,11 +166,11 @@ mod tests {
     #[test]
     fn hides_for_an_excluded_terminal() {
         let mut config = Config::default();
-        let terminal = app("com.apple.Terminal", "Terminal");
+        let terminal = app(TERMINAL, "Terminal");
         assert_eq!(label(&config, &terminal), None);
         assert!(!offered(&config, "com.mitchellh.ghostty"));
         // Once the user has turned a terminal on in Settings, the menu can turn it off again.
-        config.set_excluded("com.apple.Terminal", false);
+        config.set_excluded(TERMINAL, false);
         assert_eq!(label(&config, &terminal).as_deref(), Some("Turn off in Terminal"));
     }
 

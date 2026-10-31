@@ -41,6 +41,7 @@ describe("summaries and keys", () => {
     expect(keySymbols("Control+Alt+E")).toBe("⌃⌥E");
     expect(keySymbols("Control+Alt+Shift+E")).toBe("⌃⌥⇧E");
     expect(keySymbols("Control+Alt+E", false)).toBe("Ctrl+Alt+E");
+    expect(keySymbols("Super+Control+Alt+E", false)).toBe("Super+Ctrl+Alt+E");
     expect(keySymbols("Command+E Command+E")).toBe("⌘E E");
   });
 });

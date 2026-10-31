@@ -2,6 +2,7 @@
   import type { AppInfo, Config } from "../lib/types";
   import { excludedRows, withApps } from "./excluded";
   import { api } from "./ipc";
+  import { isMac, words } from "../lib/platform";
 
   interface Props {
     config: Config;
@@ -9,6 +10,7 @@
     onchange: () => void;
   }
   let { config = $bindable(), accessibility, onchange }: Props = $props();
+  const w = words();
   let newApp = $state("");
   /** What each excluded bundle ID's lookup found: the app, or null if it isn't installed. */
   let known = $state<Record<string, AppInfo | null>>({});
@@ -59,8 +61,10 @@
 
 <div class="page">
   <h1>Privacy</h1>
-  <p class="lede">Your text goes only to the provider you pick, directly from this Mac. SuperEditr collects no analytics, and its only server counts update checks.</p>
+  <p class="lede">Your text goes only to the provider you pick, directly from {w.device}. SuperEditr collects no analytics, and its only server counts update checks.</p>
 
+  <!-- Accessibility is a permission only macOS asks for. -->
+  {#if isMac()}
   <div class="group-title">Permissions</div>
   <div class="group">
     <div class="row">
@@ -73,6 +77,7 @@
       {/if}
     </div>
   </div>
+  {/if}
 
   <div class="group-title">Apps where SuperEditr never reads text</div>
   <div class="group">

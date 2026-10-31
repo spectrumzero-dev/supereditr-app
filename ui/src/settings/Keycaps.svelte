@@ -3,6 +3,7 @@
   // the panel (it shows tips for the first few reviews), and Try it now tests ⌘E E for real.
   import { keycaps } from "../lib/accelerator";
   import { keySymbols } from "../lib/diff";
+  import { isMac, words } from "../lib/platform";
 
   interface Props {
     review: string;
@@ -13,7 +14,7 @@
 
   const items = $derived([
     { id: "review", caps: keycaps(review), label: "Review selection" },
-    { id: "apply", caps: ["↩"], label: "Apply" },
+    { id: "apply", caps: [isMac() ? "↩" : "Enter"], label: "Apply" },
     // Spelled out: the ⇥ symbol reads as an arrow.
     { id: "next", caps: ["tab"], label: "Next change" },
     { id: "styles", caps: ["1–7"], label: "Switch style" },
@@ -24,7 +25,7 @@
 <div class="shortcuts">
   <p class="intro">
     Select text anywhere, then press {keySymbols(review)} to review it with these keys.{#if auto}{" "}Or just wait
-      a moment: a suggestion appears on its own, and <kbd>⌥↩</kbd> applies it (↩ stays with your app).{/if}
+      a moment: a suggestion appears on its own, and <kbd>{words().applyKey}</kbd> applies it (↩ stays with your app).{/if}
   </p>
   <div class="keys">
     {#each items as item (item.id)}

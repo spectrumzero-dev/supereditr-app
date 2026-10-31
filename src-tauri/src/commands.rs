@@ -474,6 +474,10 @@ pub fn default_presets() -> Vec<supereditr_core::prompts::Preset> {
 /// Apple Intelligence, the AI SuperEditr uses unless another is chosen.
 #[tauri::command]
 pub async fn builtin_ai(state: State<'_, AppState>) -> CmdResult<BuiltinAi> {
+    // Apple Intelligence exists only on a Mac; elsewhere the setup screens never mention it.
+    if cfg!(not(target_os = "macos")) {
+        return Ok(BuiltinAi { supported: false, available: false, message: None });
+    }
     let status = state.engine.providers.apple_status(&ProviderProfile::new(ProviderKind::AppleIntelligence)).await;
     let unsupported = matches!(status.reason.as_deref(), Some("osTooOld" | "deviceNotEligible" | "missing"));
     Ok(BuiltinAi { supported: !unsupported, available: status.available, message: status.message() })

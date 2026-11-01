@@ -672,7 +672,7 @@ impl Capture {
 pub fn playground_capture(text: String, bounds: Rect) -> Capture {
     Capture {
         pid: own_pid(),
-        bundle_id: "com.sghael.supereditr".into(),
+        bundle_id: app_identity(own_pid()).0,
         app_name: "SuperEditr".into(),
         text,
         bounds: Some(bounds),

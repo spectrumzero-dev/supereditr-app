@@ -108,6 +108,14 @@ const REVIEW_SHORTCUT: &str = "Super+Alt+E";
 #[cfg(target_os = "linux")]
 const QUICK_FIX_SHORTCUT: &str = "Super+Control+Alt+E";
 
+/// Where the settings file keeps this OS's shortcuts. Each OS has its own key, so a settings file
+/// synced from a Mac doesn't bring ⌘ shortcuts to Linux, and a save on one keeps the other's.
+#[cfg(target_os = "linux")]
+const HOTKEYS_KEY: &str = "linux_hotkeys";
+#[cfg(not(target_os = "linux"))]
+const HOTKEYS_KEY: &str = "hotkeys";
+const ALL_HOTKEYS_KEYS: &[&str] = &["hotkeys", "linux_hotkeys"];
+
 impl Default for Hotkeys {
     fn default() -> Self {
         Self { review: REVIEW_SHORTCUT.into(), quick_fix: QUICK_FIX_SHORTCUT.into() }
@@ -189,8 +197,20 @@ impl Default for Config {
 
 impl Config {
     pub fn load(path: &Path) -> Self {
-        let mut config: Config =
-            std::fs::read_to_string(path).ok().and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_default();
+        let mut config: Config = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|mut raw| {
+                // This OS's shortcuts, or the defaults: never another OS's.
+                if let Some(fields) = raw.as_object_mut() {
+                    match fields.remove(HOTKEYS_KEY) {
+                        Some(own) => fields.insert("hotkeys".into(), own),
+                        None => fields.remove("hotkeys"),
+                    };
+                }
+                serde_json::from_value(raw).ok()
+            })
+            .unwrap_or_default();
         config.merge_new_builtins();
         config.merge_new_exclusions();
         config.drop_builtin_ai();
@@ -206,8 +226,21 @@ impl Config {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        let mut raw = serde_json::to_value(self).map_err(std::io::Error::other)?;
+        let previous: Option<serde_json::Value> =
+            std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok());
+        if let Some(fields) = raw.as_object_mut() {
+            if let Some(own) = fields.remove("hotkeys") {
+                fields.insert(HOTKEYS_KEY.into(), own);
+            }
+            for key in ALL_HOTKEYS_KEYS.iter().filter(|key| **key != HOTKEYS_KEY) {
+                if let Some(other) = previous.as_ref().and_then(|p| p.get(*key)) {
+                    fields.insert(key.to_string(), other.clone());
+                }
+            }
+        }
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?)?;
+        std::fs::write(&tmp, serde_json::to_vec_pretty(&raw).map_err(std::io::Error::other)?)?;
         std::fs::rename(tmp, path)
     }
 
@@ -418,6 +451,33 @@ mod tests {
         assert_eq!(config.hotkeys.review, "Super+Alt+E");
         assert_eq!(config.hotkeys.quick_fix, "Super+Control+Alt+E");
         assert!(!config.auto_popup, "no automatic suggestions on Linux");
+    }
+
+    #[test]
+    fn each_os_keeps_its_own_shortcuts_in_a_shared_settings_file() {
+        let dir = std::env::temp_dir().join(format!("supereditr-hotkeys-{}", std::process::id()));
+        let path = dir.join("settings.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Saved on the other OS, with that OS's shortcuts.
+        let other = if HOTKEYS_KEY == "hotkeys" { "linux_hotkeys" } else { "hotkeys" };
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"{other}": {{"review": "Brynlee+Q", "quick_fix": "Kyndal+Q"}}, "dialect": "British English"}}"#
+            ),
+        )
+        .unwrap();
+        let mut config = Config::load(&path);
+        assert_eq!(config.dialect, "British English");
+        assert_eq!(config.hotkeys.review, Hotkeys::default().review, "another OS's shortcuts never apply here");
+
+        config.hotkeys.review = "Rhyan+R".into();
+        config.save(&path).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved[HOTKEYS_KEY]["review"], "Rhyan+R");
+        assert_eq!(saved[other]["review"], "Brynlee+Q", "the other OS's shortcuts are kept");
+        assert_eq!(Config::load(&path).hotkeys.review, "Rhyan+R");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

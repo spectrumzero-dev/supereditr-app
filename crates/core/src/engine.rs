@@ -52,10 +52,18 @@ pub struct Outcome {
     /// Changes (by id) that replace one of the author's own terms, offered as rejected, and the
     /// terms they would have dropped.
     pub kept: Vec<usize>,
-    pub kept_terms: Vec<String>,
+    pub kept_terms: Vec<KeptTerm>,
     /// Words in the original that the dictionary doesn't know and the word list doesn't have yet;
     /// the panel offers to always keep one when its change is rejected.
     pub learnable: Vec<String>,
+}
+
+/// One of the author's terms a revision would have dropped, and the changes (by id) that drop it.
+/// The panel says it kept the term only while one of those changes stays rejected.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct KeptTerm {
+    pub term: String,
+    pub changes: Vec<usize>,
 }
 
 impl Outcome {
@@ -103,29 +111,43 @@ impl Outcome {
         // A term the revision has fewer of was dropped somewhere: "Rhyan met Rhyan" → "Rhyan met
         // Ryan". A reworded sentence that only moves a term keeps the count.
         let count = |text: &str, term: &str| crate::words::spans(text, term).len();
-        self.kept_terms = spellings.into_iter().filter(|t| count(&self.text, t) < count(original, t)).collect();
-        let spans: Vec<(usize, usize)> =
-            self.kept_terms.iter().flat_map(|t| crate::words::spans(original, t)).collect();
-        for segment in &self.view.segments {
-            if let diff::Segment::Change { id, old, new, old_start, .. } = segment {
-                let (a, b) = (*old_start, old_start + old.chars().count());
-                // A change drops a term when the part of it the change covers is gone from its
-                // replacement: "Ct" → "Court" in "1234 Glenmoor Ct", but not "Rhyan" → "Rhyan,".
-                let drops = |&(s, e): &(usize, usize)| {
-                    if a == b {
-                        s < a && a < e
-                    } else if a < e && s < b {
-                        let part: String = chars[s.max(a)..e.min(b)].iter().collect();
-                        !crate::words::contains(new, part.trim())
-                    } else {
-                        false
+        let dropped: Vec<String> =
+            spellings.into_iter().filter(|t| count(&self.text, t) < count(original, t)).collect();
+        for term in dropped {
+            let spans = crate::words::spans(original, &term);
+            let changes: Vec<usize> = self
+                .view
+                .segments
+                .iter()
+                .filter_map(|segment| match segment {
+                    diff::Segment::Change { id, old, new, old_start, .. } => {
+                        let (a, b) = (*old_start, old_start + old.chars().count());
+                        // A change drops a term when the part of it the change covers is gone from
+                        // its replacement: "Ct" → "Court" in "1234 Glenmoor Ct", but not "Rhyan" →
+                        // "Rhyan,".
+                        let drops = |&(s, e): &(usize, usize)| {
+                            if a == b {
+                                s < a && a < e
+                            } else if a < e && s < b {
+                                let part: String = chars[s.max(a)..e.min(b)].iter().collect();
+                                !crate::words::contains(new, part.trim())
+                            } else {
+                                false
+                            }
+                        };
+                        spans.iter().any(drops).then_some(*id)
                     }
-                };
-                if spans.iter().any(drops) {
+                    _ => None,
+                })
+                .collect();
+            for id in &changes {
+                if !self.kept.contains(id) {
                     self.kept.push(*id);
                 }
             }
+            self.kept_terms.push(KeptTerm { term, changes });
         }
+        self.kept.sort_unstable();
     }
 
     /// The revision with the changes in `kept` left out: what quick fix and the CLI apply.
@@ -417,6 +439,28 @@ mod tests {
         let original = "Meet at 1234 Glenmoor Ct today.";
         assert_eq!(kept(original, "Meet at 1234 Glenmoor Court today.", &["1234 Glenmoor Ct"]), vec!["Ct"]);
         assert!(kept(original, "Meet at 1234 Glenmoor Ct, today.", &["1234 Glenmoor Ct"]).is_empty());
+    }
+
+    #[test]
+    fn each_kept_term_names_the_changes_that_drop_it() {
+        let (original, revised) = ("Rhyan met Brynlee and Rhyan.", "Ryan met Brynn and Ryan.");
+        let mut outcome = Outcome::new(original, diff::diff(original, revised), revised.into(), String::new(), None, 0);
+        outcome.keep_authors_terms(original, &["Rhyan".to_string(), "Brynlee".to_string()]);
+        let id_of = |text: &str| {
+            outcome
+                .view
+                .segments
+                .iter()
+                .filter_map(|s| match s {
+                    diff::Segment::Change { id, old, .. } if old == text => Some(*id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let terms: Vec<(&str, Vec<usize>)> =
+            outcome.kept_terms.iter().map(|k| (k.term.as_str(), k.changes.clone())).collect();
+        assert_eq!(terms, vec![("Rhyan", id_of("Rhyan")), ("Brynlee", id_of("Brynlee"))]);
+        assert_eq!(id_of("Rhyan").len(), 2);
     }
 
     #[test]

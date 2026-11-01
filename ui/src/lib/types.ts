@@ -39,11 +39,17 @@ export type EngineEvent =
       backupFor: string | null;
       /** Changes that would drop the author's own terms; they start out rejected. */
       kept: number[];
-      keptTerms: string[];
+      keptTerms: KeptTerm[];
       /** Words the dictionary doesn't know and the word list doesn't have; see `offerToKeep`. */
       learnable: string[];
     }
   | { type: "failed"; message: string; localOnly: boolean };
+
+/** One of the author's terms a revision would have dropped, and the changes (by id) that drop it. */
+export interface KeptTerm {
+  term: string;
+  changes: number[];
+}
 
 export interface PresetInfo {
   id: string;

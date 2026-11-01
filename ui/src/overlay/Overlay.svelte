@@ -5,7 +5,7 @@
   import { applyView, changeLabel, changes, sourceLabel, summarize } from "../lib/diff";
   import type { EngineEvent, SessionPayload, StatusPayload } from "../lib/types";
   import { ipc } from "./ipc";
-  import { canUse, emptyReview, offerToKeep, reduce, type Review } from "./review";
+  import { canUse, emptyReview, keptWording, offerToKeep, reduce, type Review } from "./review";
 
   let session = $state<SessionPayload | null>(null);
   let presetId = $state("proofread");
@@ -31,7 +31,7 @@
   const timing = $derived(review.timing);
   const error = $derived(review.error);
   const changedTokens = $derived(review.changedTokens);
-  const keptTerms = $derived(review.keptTerms);
+  const keptTerms = $derived(keptWording(review, rejected));
   const backupFor = $derived(review.backupFor);
   const usable = $derived(canUse(review));
   const list = $derived(changes(view));

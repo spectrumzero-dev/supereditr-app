@@ -558,7 +558,11 @@ async fn changes_that_drop_the_authors_terms_start_rejected() {
     let mut events = Vec::new();
     engine.run(job, &mut |e| events.push(e)).await;
     let Some(Event::Done(outcome)) = events.last() else { panic!("{events:?}") };
-    assert_eq!(outcome.kept_terms, vec!["glanceable"], "KPI survived; the typo fix isn't a kept term");
+    assert_eq!(
+        outcome.kept_terms.iter().map(|k| k.term.as_str()).collect::<Vec<_>>(),
+        vec!["glanceable"],
+        "KPI survived; the typo fix isn't a kept term"
+    );
     assert_eq!(outcome.kept.len(), 1, "only the glanceable change starts rejected: {:?}", outcome.view.segments);
 }
 
@@ -588,7 +592,10 @@ async fn the_authors_words_reach_the_ai_and_survive_it() {
     assert!(request.contains("Keep them exactly as written: Rhyan, 1234 Glenmoor Ct"), "{request}");
     assert!(!request.contains("QuillPoint"), "only entries in the selection are sent");
     let Some(Event::Done(outcome)) = events.last() else { panic!("{events:?}") };
-    assert_eq!(outcome.kept_terms, vec!["Rhyan", "1234 Glenmoor Ct"]);
+    assert_eq!(
+        outcome.kept_terms.iter().map(|k| k.term.as_str()).collect::<Vec<_>>(),
+        vec!["Rhyan", "1234 Glenmoor Ct"]
+    );
     assert_eq!(outcome.kept.len(), 2, "both changes start rejected: {:?}", outcome.view.segments);
     let kept: std::collections::HashSet<usize> = outcome.kept.iter().copied().collect();
     assert_eq!(supereditr_core::diff::apply(&outcome.view, &kept), "I am taking Rhyan to tennis at 1234 Glenmoor Ct.");

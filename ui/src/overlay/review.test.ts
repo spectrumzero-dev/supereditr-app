@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DiffView, EngineEvent } from "../lib/types";
-import { canUse, emptyReview, offerToKeep, reduce } from "./review";
+import { canUse, emptyReview, keptWording, offerToKeep, reduce } from "./review";
 
 const view = (text: string): DiffView => ({ segments: [{ type: "equal", text }], pending: "", changeCount: 0 });
 const local: EngineEvent = { type: "local", view: view("local"), ms: 3 };
@@ -54,8 +54,8 @@ describe("review state", () => {
   });
 
   it("reports the author's terms a rewrite would drop, and why the backup answered", () => {
-    const r = run({ ...done, keptTerms: ["glanceable"], backupFor: "Claude Code couldn’t answer: timed out" });
-    expect(r.keptTerms).toEqual(["glanceable"]);
+    const r = run({ ...done, keptTerms: [{ term: "glanceable", changes: [0] }], backupFor: "Claude Code couldn’t answer: timed out" });
+    expect(r.keptTerms).toEqual([{ term: "glanceable", changes: [0] }]);
     expect(r.backupFor).toContain("Claude Code");
   });
 });
@@ -88,5 +88,23 @@ describe("always keep", () => {
     expect(offerToKeep(r, new Set([0, 2]), 2, new Set())).toBe("Brynlee");
     expect(offerToKeep(r, new Set([0, 2]), 2, new Set(["Brynlee"]))).toBe("Rhyan");
     expect(offerToKeep(run(local), new Set([0]), null, new Set())).toBeNull();
+  });
+});
+
+describe("kept wording", () => {
+  const r = run({
+    ...done,
+    kept: [0, 1, 2],
+    keptTerms: [
+      { term: "Rhyan", changes: [0, 2] },
+      { term: "wrellly", changes: [1] },
+    ],
+  });
+
+  it("names a term only while a change that drops it stays rejected", () => {
+    expect(keptWording(r, new Set([0, 1, 2]))).toEqual(["Rhyan", "wrellly"]);
+    expect(keptWording(r, new Set([0, 2]))).toEqual(["Rhyan"]);
+    expect(keptWording(r, new Set([2]))).toEqual(["Rhyan"]);
+    expect(keptWording(r, new Set())).toEqual([]);
   });
 });

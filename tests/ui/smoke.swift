@@ -121,7 +121,7 @@ func windows(bundleID: String) -> [Window] {
     }
 }
 
-let superEditr = "com.sghael.supereditr"
+let superEditr = "app.supereditr"
 /// SuperEditr’s suggestion panel: about 548 points wide (Settings is 900, the guide card 380).
 func overlay() -> Window? { windows(bundleID: superEditr).first { (400...700).contains($0.frame.width) } }
 /// The permission guide card, about 380 points wide.
@@ -389,7 +389,8 @@ if let session = CGSessionCopyCurrentDictionary() as? [String: Any], session["CG
     skipEnvironment("the screen is locked")
 }
 guard AXIsProcessTrusted() else { skipEnvironment("this process lacks Accessibility permission") }
-if !running("com.sghael.supereditr").isEmpty { skipEnvironment("another SuperEditr is running") }
+// Versions before 0.1.2 have the identifier com.sghael.supereditr.
+if !running(superEditr).isEmpty || !running("com.sghael.supereditr").isEmpty { skipEnvironment("another SuperEditr is running") }
 // The test opens and force-quits these; never touch someone's open documents.
 for (name, id) in [("TextEdit", "com.apple.TextEdit"), ("Terminal", "com.apple.Terminal")] where !running(id).isEmpty {
     skipEnvironment("\(name) is already open on this Mac")
@@ -401,15 +402,18 @@ let home = work + "/home"
 try? FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
 cleanups.append { try? FileManager.default.removeItem(atPath: work) }
 captureLogPath = home + "/Library/Logs/SuperEditr/capture.log"
-let support = home + "/Library/Application Support/com.sghael.supereditr"
+let support = home + "/Library/Application Support/" + superEditr
+// The settings folder before 0.1.2, where the settings below start, so every run checks that an
+// update carries them over.
+let oldSupport = home + "/Library/Application Support/com.sghael.supereditr"
 let status = support + "/status.json"
 let draft = work + "/draft.txt"
 try! "Their going to love this, it work good and its realy fast.".write(toFile: draft, atomically: true, encoding: .utf8)
 // Onboarded, so Settings doesn't open over the test; Terminal allowed, so check 4 exercises the
 // read-only text rule rather than the excluded-apps list; and the diagnostic log on, for the Chrome
 // check and the run's artifacts.
-try! FileManager.default.createDirectory(atPath: support, withIntermediateDirectories: true)
-try! #"{"onboarded": true, "excluded_apps": ["com.1password.1password"], "diagnostic_log": true}"#.write(toFile: support + "/settings.json", atomically: true, encoding: .utf8)
+try! FileManager.default.createDirectory(atPath: oldSupport, withIntermediateDirectories: true)
+try! #"{"onboarded": true, "excluded_apps": ["com.1password.1password"], "diagnostic_log": true}"#.write(toFile: oldSupport + "/settings.json", atomically: true, encoding: .utf8)
 
 FileManager.default.createFile(atPath: outDir + "/supereditr.log", contents: nil)
 appLog = FileHandle(forWritingAtPath: outDir + "/supereditr.log") ?? FileHandle.nullDevice
@@ -427,6 +431,10 @@ guard let trusted = started else {
     check(false, "SuperEditr starts", "no status.json within 15 s; the app \(state)")
     finish(1)
 }
+let carried = FileManager.default.contents(atPath: support + "/settings.json").flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+check(carried?["onboarded"] as? Bool == true && FileManager.default.fileExists(atPath: oldSupport + "/settings.json"),
+      "settings from before 0.1.2 carry over, and the old folder stays",
+      "settings.json in \(support): \(String(describing: carried))")
 if let data = FileManager.default.contents(atPath: status),
    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
     log("     SuperEditr pid: launched \(pid), reported \(json["pid"] ?? "?")")

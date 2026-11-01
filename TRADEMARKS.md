@@ -15,7 +15,8 @@ If you distribute your own build, whether free or paid:
 
 Please also make these changes, so your build doesn't collide with the official app on the same Mac:
 
-- change the bundle identifier `com.sghael.supereditr` (in `src-tauri/tauri.conf.json`) and the Keychain service in `src-tauri/src/secrets.rs`, so the two apps don't share macOS permissions and saved keys;
+- change the bundle identifier `app.supereditr` (in `src-tauri/tauri.conf.json`) and the Keychain service in `src-tauri/src/secrets.rs`, so the two apps don't share macOS permissions and saved keys;
+- set `OLD_IDENTIFIER` in `src-tauri/src/lib.rs` to your own identifier, so your build doesn't copy the settings and saved keys of official versions before 0.1.2;
 - if you turn on updates (`SUPEREDITR_RELEASE_BUILD`), point them at your own release feed and updater key.
 
 Open an issue if you're unsure whether a use is fine.

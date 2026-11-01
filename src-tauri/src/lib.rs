@@ -162,6 +162,51 @@ fn lasting_app_path(exe: &str) -> bool {
     exe.contains(".app/Contents/MacOS/") && !exe.starts_with("/Volumes/") && !exe.contains("/AppTranslocation/")
 }
 
+/// The app's identifier before 0.1.2. It named the settings folder and the Keychain service.
+const OLD_IDENTIFIER: &str = "com.sghael.supereditr";
+
+/// Copies the settings and first-run record from the folder named after the old identifier, the
+/// first time this version runs, so an update isn't taken for a first run. The old folder stays as
+/// it is. Returns whether it copied the settings.
+fn copy_old_settings(config_dir: &std::path::Path) -> std::io::Result<bool> {
+    let old = config_dir.with_file_name(OLD_IDENTIFIER);
+    if config_dir.join("settings.json").exists() || !old.join("settings.json").is_file() {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(config_dir)?;
+    let copy = |name: &str| -> std::io::Result<()> {
+        let from = old.join(name);
+        if !from.is_file() {
+            return Ok(());
+        }
+        let to = config_dir.join(name);
+        let tmp = to.with_extension("json.tmp");
+        std::fs::copy(from, &tmp)?;
+        std::fs::rename(tmp, to)
+    };
+    // A first-run record that can't be copied doesn't stop the settings: `Install::record` then
+    // writes a new one. settings.json goes last, and appears whole: once it's there, the copy is
+    // done.
+    if let Err(e) = copy("install.json") {
+        eprintln!("SuperEditr: couldn't copy the first-run record from before 0.1.2: {e}");
+    }
+    copy("settings.json")?;
+    Ok(true)
+}
+
+/// The settings file for this launch, and whether its settings were just copied from before
+/// 0.1.2. When the copy fails, this launch keeps its settings in another file, so settings.json
+/// stays missing and the next launch tries the copy again.
+fn settings_file(config_dir: &std::path::Path) -> (std::path::PathBuf, bool) {
+    match copy_old_settings(config_dir) {
+        Ok(copied) => (config_dir.join("settings.json"), copied),
+        Err(e) => {
+            eprintln!("SuperEditr: couldn't copy the settings from before 0.1.2 into {}: {e}", config_dir.display());
+            (config_dir.join("settings-until-copied.json"), false)
+        }
+    }
+}
+
 /// Opening at login is on by default: turned on once, before Settings first reads the config, and
 /// then left to the user. Only a copy of the app that stays where it is gets added, and while it's
 /// on, each launch points the Launch Agent at the current copy, so moving the app doesn't break it.
@@ -215,12 +260,17 @@ pub fn run() {
                 app.handle().plugin(tauri_nspanel::init())?;
             }
             let config_dir = app.path().app_config_dir()?;
-            let settings = config_dir.join("settings.json");
+            let (settings, copied) = settings_file(&config_dir);
             let install = config_dir.join("install.json");
             if let Err(e) = Install::record(&install, env!("CARGO_PKG_VERSION"), settings.exists()) {
                 eprintln!("SuperEditr: couldn't record the first run in {}: {e}", install.display());
             }
             app.manage(AppState::new(settings));
+            if copied {
+                // Before anything reads a key, so the copies are what it finds.
+                let providers = app.state::<AppState>().config().providers;
+                secrets::copy_old(providers.iter().map(|p| p.id.as_str()));
+            }
             launch_at_login_by_default(app.handle());
             app.manage(hotkeys::Registry::default());
             write_status_file(config_dir.join("status.json"));
@@ -344,7 +394,81 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::lasting_app_path;
+    use super::{OLD_IDENTIFIER, copy_old_settings, lasting_app_path, settings_file};
+
+    #[test]
+    fn an_update_keeps_the_settings_from_the_old_folder() {
+        let root = std::env::temp_dir().join(format!("supereditr-old-settings-{}", std::process::id()));
+        let old = root.join(OLD_IDENTIFIER);
+        let new = root.join("app.supereditr");
+        let read = |path: std::path::PathBuf| std::fs::read_to_string(path).unwrap();
+
+        assert!(!copy_old_settings(&new).unwrap());
+        assert!(!new.exists(), "a first install has nothing to copy");
+
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("settings.json"), r#"{"onboarded": true}"#).unwrap();
+        std::fs::write(old.join("install.json"), r#"{"first_version": "0.1.0"}"#).unwrap();
+        std::fs::write(old.join("status.json"), "{}").unwrap();
+        assert!(copy_old_settings(&new).unwrap());
+        assert_eq!(read(new.join("settings.json")), r#"{"onboarded": true}"#);
+        assert_eq!(read(new.join("install.json")), r#"{"first_version": "0.1.0"}"#);
+        assert!(!new.join("status.json").exists(), "each launch writes its own status");
+        assert!(!new.join("settings.json.tmp").exists());
+        assert_eq!(read(old.join("settings.json")), r#"{"onboarded": true}"#, "the old folder stays");
+
+        // Settings this version saved aren't replaced on a later launch.
+        std::fs::write(new.join("settings.json"), r#"{"onboarded": true, "dialect": "en-GB"}"#).unwrap();
+        assert!(!copy_old_settings(&new).unwrap());
+        assert_eq!(read(new.join("settings.json")), r#"{"onboarded": true, "dialect": "en-GB"}"#);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_first_run_record_that_cant_be_read_doesnt_stop_the_settings() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("supereditr-old-record-{}", std::process::id()));
+        let old = root.join(OLD_IDENTIFIER);
+        let new = root.join("app.supereditr");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("settings.json"), r#"{"onboarded": true}"#).unwrap();
+        std::fs::write(old.join("install.json"), "{}").unwrap();
+        std::fs::set_permissions(old.join("install.json"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(copy_old_settings(&new).unwrap());
+        assert_eq!(std::fs::read_to_string(new.join("settings.json")).unwrap(), r#"{"onboarded": true}"#);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_copy_is_tried_again_on_the_next_launch() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("supereditr-old-retry-{}", std::process::id()));
+        let old = root.join(OLD_IDENTIFIER);
+        let new = root.join("app.supereditr");
+        std::fs::create_dir_all(&old).unwrap();
+        let old_settings = old.join("settings.json");
+        std::fs::write(&old_settings, r#"{"onboarded": true}"#).unwrap();
+        std::fs::set_permissions(&old_settings, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&old_settings).is_ok() {
+            // Running as root, which reads it anyway.
+            std::fs::remove_dir_all(root).unwrap();
+            return;
+        }
+        // This launch saves its settings elsewhere, defaults included.
+        let (settings, copied) = settings_file(&new);
+        assert!(!copied);
+        assert_ne!(settings, new.join("settings.json"));
+        std::fs::write(&settings, r#"{"onboarded": false}"#).unwrap();
+
+        std::fs::set_permissions(&old_settings, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let (settings, copied) = settings_file(&new);
+        assert!(copied, "the next launch copies the old settings");
+        assert_eq!(settings, new.join("settings.json"));
+        assert_eq!(std::fs::read_to_string(settings).unwrap(), r#"{"onboarded": true}"#);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn only_a_copy_that_stays_put_opens_at_login() {

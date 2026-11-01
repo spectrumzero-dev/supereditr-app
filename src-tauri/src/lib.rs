@@ -13,13 +13,18 @@ mod review_keys;
 mod secrets;
 mod shortcut_check;
 mod state;
+#[cfg(target_os = "linux")]
+mod tray_linux;
 mod updater;
 
 use state::AppState;
+#[cfg(not(target_os = "linux"))]
 use std::sync::atomic::Ordering;
 use supereditr_core::install::Install;
 use supereditr_core::provider::{ProviderKind, ProviderProfile};
+#[cfg(not(target_os = "linux"))]
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+#[cfg(not(target_os = "linux"))]
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
@@ -76,6 +81,7 @@ pub fn show_settings(app: &AppHandle, section: Option<String>) {
 }
 
 /// The menu-bar menu's first line: which AI reviews, or what's wrong with it.
+#[cfg(not(target_os = "linux"))]
 struct AiStatusItem(MenuItem<tauri::Wry>);
 
 /// Checks the AI in use and shows the result in the menu-bar menu.
@@ -97,36 +103,32 @@ pub fn show_ai_status(app: &AppHandle) {
                 None => "AI: none (rule-based spelling and grammar)".into(),
             },
         };
+        #[cfg(target_os = "linux")]
+        tray_linux::refresh(&app, Some(label));
+        #[cfg(not(target_os = "linux"))]
         if let Some(item) = app.try_state::<AiStatusItem>() {
             let _ = item.0.set_text(label);
         }
     });
 }
 
-/// The tray menu's wording. Linux tray menus show no key equivalents, and automatic suggestions,
-/// which "Pause" is for, are macOS-only for now.
-#[cfg(target_os = "macos")]
-mod tray_words {
-    pub const SETTINGS: &str = "Settings…";
-    pub const SETTINGS_KEY: Option<&str> = Some("CmdOrCtrl+,");
-    pub const QUIT_KEY: Option<&str> = Some("CmdOrCtrl+Q");
-    pub const PAUSE: bool = true;
-}
-#[cfg(not(target_os = "macos"))]
-mod tray_words {
-    pub const SETTINGS: &str = "Open Settings";
-    pub const SETTINGS_KEY: Option<&str> = None;
-    pub const QUIT_KEY: Option<&str> = None;
-    pub const PAUSE: bool = false;
-}
-
 /// The menu-bar glyph is black, and macOS tints it as a template. Linux trays draw it as it is, and
 /// Omarchy's bar is dark, so Linux gets a light one.
-#[cfg(target_os = "macos")]
+#[cfg(not(target_os = "linux"))]
 const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 const TRAY_ICON: &[u8] = include_bytes!("../icons/tray-light.png");
 
+/// On Linux the tray is `tray_linux`'s, which answers a left click; its menu has no key equivalents
+/// and no "Pause", since automatic suggestions are macOS-only for now.
+#[cfg(target_os = "linux")]
+fn build_tray(app: &AppHandle) -> tauri::Result<()> {
+    app_toggle::init_without_menu(app);
+    tray_linux::start(app, TRAY_ICON);
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let status = MenuItem::with_id(app, "ai-status", "AI: checking…", false, None::<&str>)?;
     app.manage(AiStatusItem(status.clone()));
@@ -134,28 +136,26 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let pause = CheckMenuItem::with_id(app, "pause", "Pause Automatic Suggestions", true, false, None::<&str>)?;
     // Labelled and shown or hidden by `app_toggle`.
     let app_toggle = MenuItem::with_id(app, app_toggle::ID, "", true, None::<&str>)?;
-    let settings = MenuItem::with_id(app, "settings", tray_words::SETTINGS, true, tray_words::SETTINGS_KEY)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit SuperEditr", true, tray_words::QUIT_KEY)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
+    let quit = MenuItem::with_id(app, "quit", "Quit SuperEditr", true, Some("CmdOrCtrl+Q"))?;
     let menu = Menu::with_items(
         app,
         &[
             &status,
             &PredefinedMenuItem::separator(app)?,
             &review,
+            &pause,
             &app_toggle,
             &PredefinedMenuItem::separator(app)?,
             &settings,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
         ],
     )?;
-    if tray_words::PAUSE {
-        menu.insert(&pause, 3)?;
-    }
     if updater::ENABLED {
         // Below Settings…
-        menu.append(&updater::menu_item(app)?)?;
+        menu.insert(&updater::menu_item(app)?, 7)?;
     }
-    menu.append(&PredefinedMenuItem::separator(app)?)?;
-    menu.append(&quit)?;
     app_toggle::init(app, &menu, app_toggle)?;
     let icon = tauri::image::Image::from_bytes(TRAY_ICON)?;
     let pause_item = pause.clone();
@@ -174,12 +174,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             app_toggle::ID => app_toggle::on_menu(app),
             "settings" => show_settings(app, None),
             "update" => updater::on_menu(app),
-            "quit" => {
-                // SuperEditr's binds and window rule live in the compositor until taken out.
-                #[cfg(target_os = "linux")]
-                platform::stop();
-                app.exit(0)
-            }
+            "quit" => app.exit(0),
             _ => {}
         })
         .build(app)?;

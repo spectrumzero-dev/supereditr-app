@@ -37,6 +37,8 @@ pub fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry, tauri_plugin_updater::
     tauri_plugin_updater::Builder::new().build()
 }
 
+// The menu items are for the menu-bar menu; Linux updates come from the package manager.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 pub fn menu_item(app: &AppHandle) -> tauri::Result<MenuItem<tauri::Wry>> {
     let item = MenuItem::with_id(app, "update", "Check for Updates…", true, None::<&str>)?;
     app.manage(UpdateItem { item: item.clone(), ready: AtomicBool::new(false), checking: AtomicBool::new(false) });
@@ -56,6 +58,7 @@ pub fn start(app: &AppHandle) {
 }
 
 /// The menu item: restart into an installed update, or check now.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 pub fn on_menu(app: &AppHandle) {
     let Some(state) = app.try_state::<UpdateItem>() else { return };
     if state.ready.load(Ordering::Relaxed) {

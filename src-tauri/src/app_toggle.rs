@@ -10,9 +10,14 @@ use crate::state::AppState;
 use std::sync::Mutex;
 use supereditr_core::Config;
 use supereditr_core::config::is_terminal;
+#[cfg(not(target_os = "linux"))]
+use tauri::Wry;
+#[cfg(not(target_os = "linux"))]
 use tauri::menu::{Menu, MenuItem};
-use tauri::{AppHandle, Emitter, Manager, Wry};
+use tauri::{AppHandle, Emitter, Manager};
 
+/// The item's menu ID; Linux's tray menu has no IDs.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 pub const ID: &str = "app-toggle";
 
 /// The app the item acts on.
@@ -40,10 +45,10 @@ fn label(config: &Config, app: &TargetApp) -> Option<String> {
 }
 
 struct AppToggle {
-    menu: Menu<Wry>,
-    item: MenuItem<Wry>,
-    /// Where the item goes back in when it has been hidden.
-    position: usize,
+    /// The menu, the item, and where the item goes back in when it has been hidden. Linux's tray
+    /// (`tray_linux`) builds its menu each time it opens, from `current_label`.
+    #[cfg(not(target_os = "linux"))]
+    menu: (Menu<Wry>, MenuItem<Wry>, usize),
     target: Mutex<Option<TargetApp>>,
 }
 
@@ -56,12 +61,27 @@ fn target_for(pid: i32) -> Option<TargetApp> {
 }
 
 /// Starts following the app in front. `item` must already be in `menu`.
+#[cfg(not(target_os = "linux"))]
 pub fn init(app: &AppHandle, menu: &Menu<Wry>, item: MenuItem<Wry>) -> tauri::Result<()> {
     let position = menu.items()?.iter().position(|i| i.id() == ID).unwrap_or(0);
     let target = platform::frontmost_pid().and_then(target_for);
-    app.manage(AppToggle { menu: menu.clone(), item, position, target: Mutex::new(target) });
+    app.manage(AppToggle { menu: (menu.clone(), item, position), target: Mutex::new(target) });
     refresh(app);
     Ok(())
+}
+
+/// Starts following the app in front, for a tray that asks `current_label` as its menu opens.
+#[cfg(target_os = "linux")]
+pub fn init_without_menu(app: &AppHandle) {
+    let target = platform::frontmost_pid().and_then(target_for);
+    app.manage(AppToggle { target: Mutex::new(target) });
+}
+
+/// What the item says now, or None when it's hidden.
+pub fn current_label(app: &AppHandle) -> Option<String> {
+    let toggle = app.try_state::<AppToggle>()?;
+    let config = app.state::<AppState>().config();
+    toggle.target.lock().unwrap().as_ref().and_then(|target| label(&config, target))
 }
 
 /// Another app came to the front.
@@ -75,21 +95,25 @@ pub fn on_app_switch(app: &AppHandle, pid: i32) {
 
 /// Shows the item as the current settings have it, or hides it.
 pub fn refresh(app: &AppHandle) {
-    let Some(toggle) = app.try_state::<AppToggle>() else { return };
-    let config = app.state::<AppState>().config();
-    let label = toggle.target.lock().unwrap().as_ref().and_then(|target| label(&config, target));
-    let shown = toggle.menu.get(ID).is_some();
-    match label {
-        Some(label) => {
-            let _ = toggle.item.set_text(label);
-            if !shown {
-                let _ = toggle.menu.insert(&toggle.item, toggle.position);
+    #[cfg(target_os = "linux")]
+    crate::tray_linux::refresh(app, None);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let Some(toggle) = app.try_state::<AppToggle>() else { return };
+        let (menu, item, position) = &toggle.menu;
+        let shown = menu.get(ID).is_some();
+        match current_label(app) {
+            Some(label) => {
+                let _ = item.set_text(label);
+                if !shown {
+                    let _ = menu.insert(item, *position);
+                }
             }
+            None if shown => {
+                let _ = menu.remove(item);
+            }
+            None => {}
         }
-        None if shown => {
-            let _ = toggle.menu.remove(&toggle.item);
-        }
-        None => {}
     }
 }
 

@@ -44,6 +44,8 @@ wl-clipboard-rs = "0.9"
 futures-util = "0.3"
 # Sentence boundaries, for selecting the sentence before the caret.
 unicode-segmentation = "1"
+# The tray icon, served as a StatusNotifierItem: libayatana-appindicator ignores a left click.
+ksni = { version = "0.3", default-features = false, features = ["tokio"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-nspanel = "2.1.1"

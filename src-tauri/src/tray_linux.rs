@@ -82,7 +82,9 @@ pub fn start(app: &AppHandle, png: &'static [u8]) {
     let tray = SuperEditrTray { app: app.clone(), ai_status: "AI: checking…".into(), icon: pixmap(png) };
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        match tray.spawn().await {
+        // SuperEditr opens at login, often before the bar that shows tray icons: the icon then
+        // registers when the bar's StatusNotifierWatcher appears.
+        match tray.assume_sni_available(true).spawn().await {
             Ok(handle) => {
                 app.manage(TrayHandle(handle));
                 // The first check may have finished before the tray was there to show it.

@@ -8,11 +8,12 @@
   import Shortcuts from "./Shortcuts.svelte";
   import Styles from "./Styles.svelte";
   import Welcome from "./Welcome.svelte";
+  import LinuxSetup from "./LinuxSetup.svelte";
   import { api } from "./ipc";
   import { mergeUnsaved, saveUntilCurrent } from "./merge";
   import { isMac, setPlatform } from "../lib/platform";
 
-  type Section = "welcome" | "models" | "styles" | "dictionary" | "general" | "shortcuts" | "privacy" | "about";
+  type Section = "welcome" | "setup" | "models" | "styles" | "dictionary" | "general" | "shortcuts" | "privacy" | "about";
   // The pages about the writing, then a gap, then the app's own.
   const nav: { id: Section; name: string; icon: string; gap?: boolean }[] = [
     { id: "welcome", name: "Get Started", icon: "✦" },
@@ -20,6 +21,7 @@
     { id: "styles", name: "Styles", icon: "¶" },
     { id: "dictionary", name: "Dictionary", icon: "Aa" },
     { id: "general", name: "General", icon: "⚙", gap: true },
+    ...(isMac() ? [] : [{ id: "setup" as Section, name: "Desktop setup", icon: "▣" }]),
     { id: "shortcuts", name: "Shortcuts", icon: isMac() ? "⌘" : "⌨" },
     { id: "privacy", name: "Privacy", icon: "⚿" },
     { id: "about", name: "About", icon: "ⓘ" },
@@ -160,6 +162,8 @@
         <General bind:config logPath={payload.logPath} {onchange} />
       {:else if section === "shortcuts"}
         <Shortcuts bind:config {problems} {onchange} />
+      {:else if section === "setup"}
+        <LinuxSetup />
       {:else if section === "privacy"}
         <Privacy bind:config accessibility={payload.accessibility} {onchange} />
       {:else}

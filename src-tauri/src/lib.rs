@@ -103,6 +103,30 @@ pub fn show_ai_status(app: &AppHandle) {
     });
 }
 
+/// The tray menu's wording. Linux tray menus show no key equivalents, and automatic suggestions,
+/// which "Pause" is for, are macOS-only for now.
+#[cfg(target_os = "macos")]
+mod tray_words {
+    pub const SETTINGS: &str = "Settings…";
+    pub const SETTINGS_KEY: Option<&str> = Some("CmdOrCtrl+,");
+    pub const QUIT_KEY: Option<&str> = Some("CmdOrCtrl+Q");
+    pub const PAUSE: bool = true;
+}
+#[cfg(not(target_os = "macos"))]
+mod tray_words {
+    pub const SETTINGS: &str = "Open Settings";
+    pub const SETTINGS_KEY: Option<&str> = None;
+    pub const QUIT_KEY: Option<&str> = None;
+    pub const PAUSE: bool = false;
+}
+
+/// The menu-bar glyph is black, and macOS tints it as a template. Linux trays draw it as it is, and
+/// Omarchy's bar is dark, so Linux gets a light one.
+#[cfg(target_os = "macos")]
+const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
+#[cfg(not(target_os = "macos"))]
+const TRAY_ICON: &[u8] = include_bytes!("../icons/tray-light.png");
+
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let status = MenuItem::with_id(app, "ai-status", "AI: checking…", false, None::<&str>)?;
     app.manage(AiStatusItem(status.clone()));
@@ -110,28 +134,30 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let pause = CheckMenuItem::with_id(app, "pause", "Pause Automatic Suggestions", true, false, None::<&str>)?;
     // Labelled and shown or hidden by `app_toggle`.
     let app_toggle = MenuItem::with_id(app, app_toggle::ID, "", true, None::<&str>)?;
-    let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
-    let quit = MenuItem::with_id(app, "quit", "Quit SuperEditr", true, Some("CmdOrCtrl+Q"))?;
+    let settings = MenuItem::with_id(app, "settings", tray_words::SETTINGS, true, tray_words::SETTINGS_KEY)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit SuperEditr", true, tray_words::QUIT_KEY)?;
     let menu = Menu::with_items(
         app,
         &[
             &status,
             &PredefinedMenuItem::separator(app)?,
             &review,
-            &pause,
             &app_toggle,
             &PredefinedMenuItem::separator(app)?,
             &settings,
-            &PredefinedMenuItem::separator(app)?,
-            &quit,
         ],
     )?;
+    if tray_words::PAUSE {
+        menu.insert(&pause, 3)?;
+    }
     if updater::ENABLED {
         // Below Settings…
-        menu.insert(&updater::menu_item(app)?, 7)?;
+        menu.append(&updater::menu_item(app)?)?;
     }
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    menu.append(&quit)?;
     app_toggle::init(app, &menu, app_toggle)?;
-    let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
+    let icon = tauri::image::Image::from_bytes(TRAY_ICON)?;
     let pause_item = pause.clone();
     TrayIconBuilder::with_id("main")
         .icon(icon)
@@ -191,6 +217,10 @@ fn login_item(app: &AppHandle) -> Option<std::path::PathBuf> {
 /// The autostart entry's name on Linux: `~/.config/autostart/supereditr.desktop`.
 #[cfg(not(target_os = "macos"))]
 const AUTOSTART_NAME: &str = "supereditr";
+
+/// The app's identifier, which names its settings folder.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const IDENTIFIER: &str = "app.supereditr";
 
 /// The app's identifier before 0.1.2. It named the settings folder and the Keychain service.
 const OLD_IDENTIFIER: &str = "com.sghael.supereditr";
@@ -297,6 +327,13 @@ fn autostart() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 }
 
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if args.get(1).map(String::as_str) == Some("uninstall-omarchy") {
+            std::process::exit(platform::setup::uninstall_command(&args[2..]));
+        }
+    }
     let mut builder = tauri::Builder::default();
     if updater::ENABLED {
         builder = builder.plugin(updater::plugin());
@@ -457,6 +494,9 @@ pub fn run() {
             commands::drag_app,
             commands::preview_review,
             commands::set_paused,
+            commands::linux_setup,
+            commands::set_up_omarchy,
+            commands::remove_omarchy_setup,
         ])
         .run(tauri::generate_context!())
         .expect("SuperEditr failed to start");

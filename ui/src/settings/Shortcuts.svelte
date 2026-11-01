@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Config } from "../lib/types";
   import ShortcutInput from "./ShortcutInput.svelte";
+  import ShortcutPicker from "./ShortcutPicker.svelte";
   import { isMac, words } from "../lib/platform";
 
   interface Props {
@@ -23,17 +24,25 @@
         {#if isMac()}
           <div class="hint">Opens suggestions for the selected text. Press again to bring an automatic suggestion into focus. Use a key combination such as ⌃⌥E or F6, or a double press like ⌘E E (press it twice quickly). Shortcuts macOS or other apps already use are refused.</div>
         {:else}
-          <div class="hint">Opens suggestions for the selected text. Use a key combination such as Super+Alt+E or F6.</div>
+          <div class="hint">Opens suggestions for the selected text. These combinations are free on Omarchy; one your desktop already uses can’t be chosen.</div>
         {/if}
       </div>
-      <ShortcutInput slot="review" value={config.hotkeys.review} onchange={(v) => { config.hotkeys.review = v; onchange(); }} />
+      {#if isMac()}
+        <ShortcutInput slot="review" value={config.hotkeys.review} onchange={(v) => { config.hotkeys.review = v; onchange(); }} />
+      {:else}
+        <ShortcutPicker slot="review" value={config.hotkeys.review} onchange={(v) => { config.hotkeys.review = v; onchange(); }} />
+      {/if}
     </div>
     <div class="row">
       <div>
         <div class="label">Quick fix</div>
         <div class="hint">Applies your default style to the selection immediately, without showing suggestions.</div>
       </div>
-      <ShortcutInput slot="quick_fix" value={config.hotkeys.quick_fix} onchange={(v) => { config.hotkeys.quick_fix = v; onchange(); }} />
+      {#if isMac()}
+        <ShortcutInput slot="quick_fix" value={config.hotkeys.quick_fix} onchange={(v) => { config.hotkeys.quick_fix = v; onchange(); }} />
+      {:else}
+        <ShortcutPicker slot="quick_fix" value={config.hotkeys.quick_fix} onchange={(v) => { config.hotkeys.quick_fix = v; onchange(); }} />
+      {/if}
     </div>
     <div class="row">
       <div>

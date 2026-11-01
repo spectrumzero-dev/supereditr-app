@@ -196,6 +196,20 @@ impl Atspi {
         Ok(pid)
     }
 
+    /// The processes of every app registered on the accessibility bus.
+    pub async fn registered_pids(&self) -> Result<Vec<i32>, ReadError> {
+        let root = self.accessible("org.a11y.atspi.Registry", "/org/a11y/atspi/accessible/root").await?;
+        let mut pids = Vec::new();
+        for app in limit(root.get_children()).await? {
+            if let Some(bus) = app.name_as_str()
+                && let Ok(pid) = self.pid_of(bus).await
+            {
+                pids.push(pid);
+            }
+        }
+        Ok(pids)
+    }
+
     /// The bus name of the app running as `pid`.
     async fn app_bus(&self, pid: i32) -> Result<Option<String>, ReadError> {
         let root = self.accessible("org.a11y.atspi.Registry", "/org/a11y/atspi/accessible/root").await?;

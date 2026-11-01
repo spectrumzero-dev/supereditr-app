@@ -1,4 +1,4 @@
-import type { AppInfo, BuiltinAi, Candidate, ProviderCheck, Config, EngineEvent, Preset, ProviderKind, PickedApps, ProviderProfile, Saved, SettingsPayload } from "../lib/types";
+import type { AppInfo, BuiltinAi, Candidate, ProviderCheck, Config, EngineEvent, LinuxSetup, Preset, ProviderKind, PickedApps, ProviderProfile, Saved, SettingsPayload } from "../lib/types";
 
 export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -68,6 +68,22 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
       return Object.fromEntries(ids.map((id) => [id, { bundleId: id, name: names[id], icon: null }]));
     },
     pick_apps: () => ({ apps: [{ bundleId: "com.apple.Notes", name: "Notes", icon: null }], skipped: [] }),
+    linux_setup: () => ({
+      desktop: "Omarchy 4.0.6 on Hyprland 0.56.2",
+      omarchy: true,
+      checks: [
+        { name: "Hyprland", ok: true, detail: "0.56.2" },
+        { name: "Accessibility", ok: true, detail: "On for this session, so apps opened from now on expose their text" },
+        { name: "Web pages and Electron apps", ok: false, detail: "--force-renderer-accessibility isn’t in ~/.config/chromium-flags.conf. Set up Omarchy adds it." },
+      ],
+      changes: [
+        { path: "~/.config/chromium-flags.conf", what: "Add --force-renderer-accessibility, with a comment marking it as SuperEditr’s.", needed: true },
+        { path: "~/.config/autostart/supereditr.desktop", what: "Open SuperEditr at login.", needed: true },
+      ],
+      restart: [{ name: "Chromium", reason: "started without --force-renderer-accessibility" }],
+    }),
+    set_up_omarchy: () => ["Added --force-renderer-accessibility to ~/.config/chromium-flags.conf"],
+    remove_omarchy_setup: () => [],
   };
   return (demo[cmd]?.() ?? null) as T;
 }
@@ -101,6 +117,11 @@ export const api = {
   /** Returns whether opening at login is on afterwards. */
   setLaunchAtLogin: (enabled: boolean) => invoke<boolean>("set_launch_at_login", { enabled }),
   openAccessibility: () => invoke<void>("open_accessibility_settings"),
+  /** The Linux setup page's checks; null on other systems. */
+  linuxSetup: () => invoke<LinuxSetup | null>("linux_setup"),
+  /** Returns what it changed. */
+  setUpOmarchy: () => invoke<string[]>("set_up_omarchy"),
+  removeOmarchySetup: () => invoke<string[]>("remove_omarchy_setup"),
   /** Names and icons of the installed apps among `bundleIds`, by bundle ID. */
   appInfo: (bundleIds: string[]) => invoke<Record<string, AppInfo>>("app_info", { bundleIds }),
   /** Opens a panel on /Applications and returns the apps chosen there. */

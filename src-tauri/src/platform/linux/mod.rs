@@ -17,6 +17,7 @@ mod clipboard;
 pub mod desktop;
 mod log;
 mod replace;
+pub mod setup;
 #[cfg(test)]
 mod testing;
 
@@ -25,7 +26,8 @@ pub use log::{log_path, set_trace, trace};
 use super::{PlatformError, Rect, ReplaceMethod, ReplaceOutcome};
 use desktop::hyprland::HyprlandDesktop;
 use desktop::shortcuts::HyprlandShortcuts;
-use desktop::{Action, Binding, Desktop, FallbackDesktop, ShortcutBackend, WindowRef};
+use desktop::{Action, Binding, Desktop, FallbackDesktop, SetupCheck, ShortcutBackend, WindowRef};
+use serde::Serialize;
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 /// Where a capture's text came from. Only an AT-SPI capture can be editable.
@@ -342,4 +344,173 @@ pub fn overlay_closed() {
     if let Some(window) = target {
         return_focus(window.pid);
     }
+}
+
+/// The Linux setup page: what SuperEditr found, what Set up Omarchy would change, and which running
+/// apps it can't read until they restart.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupReport {
+    /// Such as "Omarchy 4.0.6 on Hyprland 0.56.2".
+    pub desktop: String,
+    pub omarchy: bool,
+    pub checks: Vec<SetupCheck>,
+    pub changes: Vec<setup::Change>,
+    pub restart: Vec<RestartApp>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RestartApp {
+    pub name: String,
+    pub reason: String,
+}
+
+/// Omarchy's version, when this is Omarchy.
+fn omarchy_version() -> Option<String> {
+    if !std::path::Path::new("/usr/share/omarchy").is_dir() {
+        return None;
+    }
+    let version = std::process::Command::new("pacman")
+        .args(["-Q", "omarchy"])
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .and_then(|line| line.split_whitespace().nth(1).map(|v| v.split('-').next().unwrap_or(v).to_string()));
+    Some(version.unwrap_or_default())
+}
+
+pub async fn setup_report() -> SetupReport {
+    let config = setup::config_home().unwrap_or_default();
+    let desktop = desktop();
+    let omarchy = omarchy_version();
+    let mut checks = desktop.setup_status();
+    let compositor =
+        checks.first().map(|check| format!("{} {}", check.name, check.detail.split(',').next().unwrap_or("")));
+    let name = match (&omarchy, compositor) {
+        (Some(version), Some(compositor)) => format!("Omarchy {version} on {compositor}").replace("  ", " "),
+        (None, Some(compositor)) => compositor,
+        (_, None) => desktop.name().to_string(),
+    };
+
+    let limit = std::time::Duration::from_secs(2);
+    let enabled = tokio::time::timeout(limit, ::atspi::connection::read_session_accessibility()).await;
+    let registered = tokio::time::timeout(limit, ATSPI.registered_pids()).await;
+    checks.push(SetupCheck {
+        name: "Accessibility".into(),
+        ok: matches!(enabled, Ok(Ok(true))) && matches!(registered, Ok(Ok(_))),
+        detail: match (&enabled, &registered) {
+            (Ok(Ok(true)), Ok(Ok(_))) => "On for this session, so apps opened from now on expose their text".into(),
+            (Ok(Ok(false)), _) => "Off for this session. Quit and reopen SuperEditr, which turns it on.".into(),
+            (Ok(Err(error)), _) => format!("The accessibility bus didn’t answer ({error}). Is at-spi2-core installed?"),
+            (_, Ok(Err(error))) => format!("The accessibility registry didn’t answer ({error})"),
+            _ => "The accessibility bus didn’t answer in time".into(),
+        },
+    });
+    checks.push(clipboard_check());
+    checks.push(setup::flags_check(&config));
+    checks.push(setup::autostart_check(&config));
+    checks.push(keyring_check().await);
+    if let Some(shortcuts) = SHORTCUTS.get() {
+        checks.push(shortcuts.status());
+    }
+    if std::path::Path::new("/proc/driver/nvidia").exists() {
+        let set = std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").is_ok_and(|v| v == "1");
+        checks.push(SetupCheck {
+            name: "NVIDIA".into(),
+            ok: set,
+            detail: if set {
+                "WEBKIT_DISABLE_DMABUF_RENDERER=1 is set".into()
+            } else {
+                "If SuperEditr’s windows draw blank, add WEBKIT_DISABLE_DMABUF_RENDERER=1 to a file in ~/.config/uwsm/env.d/ and log in again.".into()
+            },
+        });
+    }
+
+    let mut changes = setup::flag_changes(&config);
+    let autostart = setup::autostart_check(&config);
+    changes.push(setup::Change {
+        path: setup::tilde(&config.join(setup::AUTOSTART)),
+        what: if autostart.ok {
+            "SuperEditr already opens at login.".into()
+        } else {
+            "Open SuperEditr at login.".into()
+        },
+        needed: !autostart.ok,
+    });
+
+    let registered = match registered {
+        Ok(Ok(pids)) => Some(pids),
+        _ => None,
+    };
+    SetupReport {
+        desktop: name,
+        omarchy: omarchy.is_some(),
+        checks,
+        changes,
+        restart: needs_restart(registered.as_deref()),
+    }
+}
+
+/// The running apps SuperEditr can't read until they restart: Chromium and Electron apps started
+/// without the flag, and apps started before accessibility was on (not on the accessibility bus).
+fn needs_restart(registered: Option<&[i32]>) -> Vec<RestartApp> {
+    let Some(windows) = hyprland().and_then(|h| h.windows().ok()) else { return Vec::new() };
+    let mut seen = Vec::new();
+    let mut apps = Vec::new();
+    for window in windows {
+        if window.pid == own_pid() || seen.contains(&window.pid) {
+            continue;
+        }
+        seen.push(window.pid);
+        let profile = apps::profile(&window.app_id, &window.tags);
+        if profile.terminal || profile.password_manager {
+            continue;
+        }
+        let reason = if setup::chromium_based(window.pid) && !setup::started_with_flag(window.pid) {
+            format!("started without {}", setup::FLAG)
+        } else if registered.is_some_and(|pids| !pids.contains(&window.pid)) {
+            "started before accessibility was on".to_string()
+        } else {
+            continue;
+        };
+        apps.push(RestartApp { name: apps::display_name(&window.app_id), reason });
+    }
+    apps
+}
+
+/// Whether the clipboard can be read and restored without focus (the data-control protocol).
+fn clipboard_check() -> SetupCheck {
+    use wl_clipboard_rs::paste::{ClipboardType, Error, Seat, get_mime_types};
+    let (ok, detail) = match get_mime_types(ClipboardType::Regular, Seat::Unspecified) {
+        Err(Error::MissingProtocol { name, .. }) => {
+            (false, format!("The desktop doesn’t offer {name}, so SuperEditr can’t copy or restore the clipboard"))
+        }
+        Err(Error::WaylandConnection(error)) => (false, format!("Couldn’t connect to the desktop: {error}")),
+        _ => (true, "Read and restored through data-control".into()),
+    };
+    SetupCheck { name: "Clipboard".into(), ok, detail }
+}
+
+/// Whether a Secret Service keeps API keys, and whether its keyring has a password.
+async fn keyring_check() -> SetupCheck {
+    let owner = async {
+        let connection = zbus::Connection::session().await.ok()?;
+        let dbus = zbus::fdo::DBusProxy::new(&connection).await.ok()?;
+        let name = zbus::names::BusName::try_from("org.freedesktop.secrets").ok()?;
+        dbus.name_has_owner(name).await.ok()
+    };
+    let running = tokio::time::timeout(std::time::Duration::from_secs(2), owner).await.ok().flatten().unwrap_or(false);
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".local/share")));
+    let plain = data.map(|data| setup::plain_keyrings(&data)).unwrap_or_default();
+    let detail = match (running, plain.is_empty()) {
+        (false, _) => "No Secret Service is running, so API keys can’t be saved. Install gnome-keyring.".to_string(),
+        (true, true) => "API keys are saved in your keyring".to_string(),
+        (true, false) => format!(
+            "API keys are saved in your keyring, but {} has no password (Omarchy’s default), so any program you run can read them. Seahorse (Passwords and Keys) can set one.",
+            plain.join(", ")
+        ),
+    };
+    SetupCheck { name: "Keyring".into(), ok: running, detail }
 }

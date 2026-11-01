@@ -131,7 +131,7 @@ pub struct Binding {
 }
 
 /// One line of the Linux setup page.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SetupCheck {
     pub name: String,
     pub ok: bool,

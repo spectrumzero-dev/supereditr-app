@@ -462,6 +462,10 @@ pub fn check_shortcut(app: AppHandle, state: State<'_, AppState>, accelerator: S
     {
         return Some(problem);
     }
+    #[cfg(target_os = "linux")]
+    if let Some(what) = platform::shortcut_taken(&accelerator) {
+        return Some(format!("Your desktop already uses this for “{what}”."));
+    }
     hotkeys::taken_by_another_app(&app, &accelerator).then(|| "Another app already uses this shortcut.".into())
 }
 
@@ -559,6 +563,59 @@ pub fn set_launch_at_login(app: AppHandle, enabled: bool) -> CmdResult<bool> {
     let result = if enabled { launcher.enable() } else { launcher.disable() };
     result.map_err(|e| format!("Couldn't change opening at login: {e}"))?;
     launcher.is_enabled().map_err(|e| e.to_string())
+}
+
+/// The Linux setup page's report; `None` on other systems.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub async fn linux_setup() -> Option<platform::SetupReport> {
+    Some(platform::setup_report().await)
+}
+
+#[cfg(not(target_os = "linux"))]
+#[tauri::command]
+pub async fn linux_setup() -> Option<()> {
+    None
+}
+
+/// Set up Omarchy: adds the flag lines and turns on opening at login. Returns what it did.
+#[tauri::command]
+pub fn set_up_omarchy(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<String>> {
+    #[cfg(target_os = "linux")]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        let config_home = platform::setup::config_home().ok_or("HOME isn’t set")?;
+        let mut done = platform::setup::add_flags(&config_home).map_err(|e| format!("Couldn’t add the flag: {e}"))?;
+        if !platform::setup::autostart_check(&config_home).ok {
+            app.autolaunch().enable().map_err(|e| format!("Couldn’t turn on opening at login: {e}"))?;
+            done.push("Turned on opening at login".into());
+        }
+        let mut config = state.config();
+        if !config.offered_launch_at_login {
+            config.offered_launch_at_login = true;
+            state.save_config(config).map_err(|e| e.to_string())?;
+        }
+        Ok(done)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (app, state);
+        Err("Set up Omarchy is for Linux.".into())
+    }
+}
+
+/// Takes out what Set up Omarchy added, as `supereditr uninstall-omarchy` does. Returns what it did.
+#[tauri::command]
+pub fn remove_omarchy_setup() -> CmdResult<Vec<String>> {
+    #[cfg(target_os = "linux")]
+    {
+        let config_home = platform::setup::config_home().ok_or("HOME isn’t set")?;
+        let mut done = platform::setup::remove_flags(&config_home).map_err(|e| e.to_string())?;
+        done.extend(platform::setup::remove_autostart(&config_home).map_err(|e| e.to_string())?);
+        Ok(done)
+    }
+    #[cfg(not(target_os = "linux"))]
+    Err("Set up Omarchy is for Linux.".into())
 }
 
 #[tauri::command]

@@ -9,7 +9,7 @@
 
 use super::hyprland::{HyprlandDesktop, modmask};
 use super::lua::{self, BindAction, PORTAL_APP_ID};
-use super::{Action, Binding, ShortcutBackend, Subscription};
+use super::{Action, Binding, SetupCheck, ShortcutBackend, Subscription};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -81,6 +81,28 @@ impl HyprlandShortcuts {
         let problems = self.apply(&wanted);
         if !problems.is_empty() {
             eprintln!("SuperEditr: some shortcuts could not be bound: {problems:?}");
+        }
+    }
+
+    /// The shortcuts' line on the setup page.
+    pub fn status(&self) -> SetupCheck {
+        let state = self.state.lock().unwrap();
+        let bound: Vec<String> =
+            state.bound.iter().map(|b| format!("{} to {}", b.shortcut.label(), b.action.description())).collect();
+        let route = match state.route {
+            Route::Pending => "waiting for the GlobalShortcuts portal",
+            Route::Portal => "through the GlobalShortcuts portal",
+            Route::Exec => "by running `supereditr review` (the GlobalShortcuts portal didn’t answer)",
+        };
+        let detail = match (bound.is_empty(), state.wanted.is_empty()) {
+            (_, true) => "None chosen. Pick one on the Shortcuts page.".to_string(),
+            (true, false) => format!("Not bound yet, {route}"),
+            (false, false) => format!("{}, {route}", bound.join("; ")),
+        };
+        SetupCheck {
+            name: "Shortcuts".into(),
+            ok: state.route != Route::Pending && !bound.is_empty() && bound.len() == state.wanted.len(),
+            detail,
         }
     }
 

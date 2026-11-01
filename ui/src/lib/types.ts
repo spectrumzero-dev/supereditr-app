@@ -179,3 +179,22 @@ export interface Candidate {
   /** The provider already added from this account, if any. */
   profileId: string | null;
 }
+
+/** One line of the Linux setup page. */
+export interface SetupCheck {
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+
+/** The Linux setup page's report (`linux_setup`). */
+export interface LinuxSetup {
+  /** Such as "Omarchy 4.0.6 on Hyprland 0.56.2". */
+  desktop: string;
+  omarchy: boolean;
+  checks: SetupCheck[];
+  /** What Set up Omarchy changes; `needed` is false for what's already in place. */
+  changes: { path: string; what: string; needed: boolean }[];
+  /** Running apps SuperEditr can't read until they restart. */
+  restart: { name: string; reason: string }[];
+}

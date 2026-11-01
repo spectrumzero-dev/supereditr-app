@@ -1,7 +1,7 @@
 <script lang="ts">
-  // Floats over System Settings → Accessibility. SuperEditr is usually listed there already,
-  // switched off: macOS lists any app that checks whether it has access, and SuperEditr must check.
-  // So the card leads with the switch; dragging the tile (SuperEditr.app itself) is the fallback.
+  // Floats over System Settings → Accessibility. SuperEditr is listed there, switched off: opening
+  // the guide asks macOS for access, which lists it. So the card leads with the switch; dragging the
+  // tile (SuperEditr.app itself) is the fallback.
   // Dragging the tile drags SuperEditr.app itself
   // (a native file drag started in Rust), which the Accessibility list accepts.
   import { invoke as tauriInvoke } from "@tauri-apps/api/core";

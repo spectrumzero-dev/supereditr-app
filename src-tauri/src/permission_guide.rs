@@ -151,6 +151,12 @@ pub fn start(app: &AppHandle) {
     if trusted() || platform::own_bundle().is_none() {
         return;
     }
+    // Asking for access the documented way lists SuperEditr in the pane, switched off, so the card's
+    // "Turn on SuperEditr in the list above" has a row to point at. macOS may also show its own
+    // alert for this. Adding the app by hand, with + or the tile, can fail without a word.
+    if !preview() {
+        platform::accessibility_trusted(true);
+    }
     DISMISSED.store(false, Ordering::Relaxed);
     *DROPPED.lock().unwrap() = None;
     if RUNNING.swap(true, Ordering::Relaxed) {

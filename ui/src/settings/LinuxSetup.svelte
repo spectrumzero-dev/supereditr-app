@@ -160,6 +160,16 @@
   .head .hint {
     max-width: 440px;
   }
+  /* Omarchy tiles Settings beside other windows: buttons go below the text when it's narrow. */
+  .head,
+  .plan {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .head > div,
+  .plan > div:first-child {
+    flex: 1 1 260px;
+  }
   .check {
     justify-content: flex-start;
     gap: 12px;

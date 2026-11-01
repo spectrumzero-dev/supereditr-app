@@ -273,8 +273,13 @@ pub fn chromium_based(pid: i32) -> bool {
 
 /// Whether a process was started with the flag.
 pub fn started_with_flag(pid: i32) -> bool {
-    std::fs::read(format!("/proc/{pid}/cmdline"))
-        .is_ok_and(|cmdline| cmdline.split(|b| *b == 0).any(|arg| arg == FLAG.as_bytes()))
+    std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|cmdline| has_flag_arg(&cmdline))
+}
+
+/// Whether a `/proc/<pid>/cmdline` passes the flag. Chromium rewrites its own as one string with
+/// spaces between the arguments, in place of the usual NUL bytes.
+fn has_flag_arg(cmdline: &[u8]) -> bool {
+    cmdline.split(|b| *b == 0 || b.is_ascii_whitespace()).any(|arg| arg == FLAG.as_bytes())
 }
 
 /// `supereditr uninstall-omarchy [--purge]`: takes out what Set up Omarchy added. With `--purge`,
@@ -459,6 +464,15 @@ mod tests {
         std::fs::write(data.join("keyrings/default"), "Default_keyring").unwrap();
         assert_eq!(plain_keyrings(&data), vec!["Default_keyring".to_string()]);
         std::fs::remove_dir_all(data).unwrap();
+    }
+
+    #[test]
+    fn the_flag_is_found_in_either_kind_of_command_line() {
+        assert!(has_flag_arg(b"/usr/lib/electron43/electron\0--force-renderer-accessibility\0app.asar\0"));
+        // Chromium's own, as /proc shows it once Chromium has rewritten it.
+        assert!(has_flag_arg(b"/usr/lib/chromium/chromium --ozone-platform=wayland --force-renderer-accessibility\0"));
+        assert!(!has_flag_arg(b"/usr/lib/chromium/chromium --ozone-platform=wayland\0"));
+        assert!(!has_flag_arg(b"/usr/lib/chromium/chromium --force-renderer-accessibility-extra\0"));
     }
 
     #[test]

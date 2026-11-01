@@ -194,6 +194,19 @@ fn copy_old_settings(config_dir: &std::path::Path) -> std::io::Result<bool> {
     Ok(true)
 }
 
+/// The settings file for this launch, and whether its settings were just copied from before
+/// 0.1.2. When the copy fails, this launch keeps its settings in another file, so settings.json
+/// stays missing and the next launch tries the copy again.
+fn settings_file(config_dir: &std::path::Path) -> (std::path::PathBuf, bool) {
+    match copy_old_settings(config_dir) {
+        Ok(copied) => (config_dir.join("settings.json"), copied),
+        Err(e) => {
+            eprintln!("SuperEditr: couldn't copy the settings from before 0.1.2 into {}: {e}", config_dir.display());
+            (config_dir.join("settings-until-copied.json"), false)
+        }
+    }
+}
+
 /// Opening at login is on by default: turned on once, before Settings first reads the config, and
 /// then left to the user. Only a copy of the app that stays where it is gets added, and while it's
 /// on, each launch points the Launch Agent at the current copy, so moving the app doesn't break it.
@@ -247,14 +260,7 @@ pub fn run() {
                 app.handle().plugin(tauri_nspanel::init())?;
             }
             let config_dir = app.path().app_config_dir()?;
-            let copied = copy_old_settings(&config_dir).unwrap_or_else(|e| {
-                eprintln!(
-                    "SuperEditr: couldn't copy the settings from before 0.1.2 into {}: {e}",
-                    config_dir.display()
-                );
-                false
-            });
-            let settings = config_dir.join("settings.json");
+            let (settings, copied) = settings_file(&config_dir);
             let install = config_dir.join("install.json");
             if let Err(e) = Install::record(&install, env!("CARGO_PKG_VERSION"), settings.exists()) {
                 eprintln!("SuperEditr: couldn't record the first run in {}: {e}", install.display());
@@ -388,7 +394,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{OLD_IDENTIFIER, copy_old_settings, lasting_app_path};
+    use super::{OLD_IDENTIFIER, copy_old_settings, lasting_app_path, settings_file};
 
     #[test]
     fn an_update_keeps_the_settings_from_the_old_folder() {
@@ -431,6 +437,36 @@ mod tests {
         std::fs::set_permissions(old.join("install.json"), std::fs::Permissions::from_mode(0o000)).unwrap();
         assert!(copy_old_settings(&new).unwrap());
         assert_eq!(std::fs::read_to_string(new.join("settings.json")).unwrap(), r#"{"onboarded": true}"#);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_copy_is_tried_again_on_the_next_launch() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("supereditr-old-retry-{}", std::process::id()));
+        let old = root.join(OLD_IDENTIFIER);
+        let new = root.join("app.supereditr");
+        std::fs::create_dir_all(&old).unwrap();
+        let old_settings = old.join("settings.json");
+        std::fs::write(&old_settings, r#"{"onboarded": true}"#).unwrap();
+        std::fs::set_permissions(&old_settings, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&old_settings).is_ok() {
+            // Running as root, which reads it anyway.
+            std::fs::remove_dir_all(root).unwrap();
+            return;
+        }
+        // This launch saves its settings elsewhere, defaults included.
+        let (settings, copied) = settings_file(&new);
+        assert!(!copied);
+        assert_ne!(settings, new.join("settings.json"));
+        std::fs::write(&settings, r#"{"onboarded": false}"#).unwrap();
+
+        std::fs::set_permissions(&old_settings, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let (settings, copied) = settings_file(&new);
+        assert!(copied, "the next launch copies the old settings");
+        assert_eq!(settings, new.join("settings.json"));
+        assert_eq!(std::fs::read_to_string(settings).unwrap(), r#"{"onboarded": true}"#);
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -177,7 +177,12 @@
 
   function onKeydown(e: PanelKey, forwarded = false) {
     if (notice && !session) {
-      if (e.key === "Escape" || e.key === "Enter") close();
+      if (e.key === "Escape" || e.key === "Enter") {
+        // Marked handled, or WebKit passes the key back to GTK after the panel has hidden, and on
+        // Linux GTK then drops the next press of that key: the first one in the next panel.
+        e.preventDefault();
+        close();
+      }
       return;
     }
     if (!session) return;

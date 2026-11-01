@@ -686,3 +686,25 @@ async fn checks_whether_an_ai_can_answer_before_it_is_used() {
     let up = profile(ProviderKind::OpenAiCompatible, &url, "local-model");
     assert_eq!(providers.check(&up).await.unwrap(), vec!["local-model"]);
 }
+
+#[tokio::test]
+async fn a_rewrite_with_no_ai_names_an_ai_this_os_has() {
+    let engine = Engine::new("American English");
+    let config = supereditr_core::Config::default();
+    let job = Job {
+        text: "This is an test.".into(),
+        preset: config.presets.iter().find(|p| p.id == "shorter").unwrap().clone(),
+        steer: None,
+        profile: None,
+        style_notes: String::new(),
+        dialect: "American English".into(),
+        words: Vec::new(),
+        code: Vec::new(),
+        local_checks: true,
+        builtin_ai: false,
+    };
+    let mut events = Vec::new();
+    engine.run(job, &mut |e| events.push(e)).await;
+    let Some(Event::Failed { message, .. }) = events.last() else { panic!("{events:?}") };
+    assert_eq!(message.contains("Apple Intelligence"), cfg!(target_os = "macos"), "{message}");
+}

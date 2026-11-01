@@ -175,6 +175,13 @@ pub struct Engine {
 /// Minimum spacing between partial updates; the UI cannot show more than this anyway.
 const FRAME: Duration = Duration::from_millis(30);
 
+/// What to do when a review needs an AI and none answers. Apple Intelligence exists only on macOS.
+#[cfg(target_os = "macos")]
+const NEEDS_AI: &str = "Turn on Apple Intelligence or connect an AI in Settings to rewrite or check non-English text.";
+#[cfg(not(target_os = "macos"))]
+const NEEDS_AI: &str =
+    "Connect an AI in Settings, such as Ollama on this computer, to rewrite or check non-English text.";
+
 impl Engine {
     pub fn new(dialect: &str) -> Self {
         Self { providers: Providers::new(), local: Arc::default(), dialect: dialect.to_string() }
@@ -245,12 +252,7 @@ impl Engine {
                 diff::diff(&job.text, &job.text)
             };
             if !is_proofread || !english {
-                on_event(Event::Failed {
-                    message:
-                        "Turn on Apple Intelligence or connect an AI in Settings to rewrite or check non-English text."
-                            .into(),
-                    local_only: can_check_locally,
-                });
+                on_event(Event::Failed { message: NEEDS_AI.into(), local_only: can_check_locally });
                 return;
             }
             let text = diff::apply(&view, &Default::default());

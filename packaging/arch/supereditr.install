@@ -1,0 +1,11 @@
+post_install() {
+  echo "Open SuperEditr from your app launcher. On Omarchy, Get Started's Set up Omarchy button"
+  echo "adds what it needs, and lists each change first."
+}
+
+pre_remove() {
+  echo "To take out what Set up Omarchy added (flag lines and opening at login), run"
+  echo "\`supereditr uninstall-omarchy\` as yourself before removing the package, or remove"
+  echo "the lines marked SuperEditr in ~/.config/chromium-flags.conf and ~/.config/electron-flags.conf,"
+  echo "and ~/.config/autostart/supereditr.desktop."
+}

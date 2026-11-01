@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=SuperEditr
+Comment=Instant, keyboard-first proofreading for any text field
+Exec=supereditr
+Icon=supereditr
+Terminal=false
+Categories=Utility;TextTools;
+StartupWMClass=supereditr

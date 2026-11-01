@@ -1,0 +1,30 @@
+# Installs SuperEditr from its Linux release tarball. scripts/linux-release.sh builds the tarball and
+# writes its SHA-256 here.
+pkgname=supereditr-bin
+pkgver=0.1.1
+pkgrel=1
+pkgdesc="Instant, keyboard-first proofreading for any text field"
+arch=(x86_64)
+url="https://github.com/spectrumzero-dev/supereditr-app"
+license=(Apache-2.0)
+depends=(webkit2gtk-4.1 gtk3 libayatana-appindicator at-spi2-core)
+optdepends=(
+  "gnome-keyring: saves API keys (or another Secret Service provider)"
+  "ollama: an AI that runs on this computer"
+)
+provides=(supereditr)
+conflicts=(supereditr)
+options=(!strip !debug)
+install=supereditr.install
+source=("$url/releases/download/v$pkgver/supereditr-$pkgver-x86_64.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+  cd "supereditr-$pkgver-x86_64"
+  install -Dm755 supereditr "$pkgdir/usr/bin/supereditr"
+  install -Dm644 app.supereditr.desktop "$pkgdir/usr/share/applications/app.supereditr.desktop"
+  for size in 32 128 256; do
+    install -Dm644 "icons/${size}x${size}.png" "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/supereditr.png"
+  done
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

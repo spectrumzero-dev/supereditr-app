@@ -49,8 +49,9 @@ pub fn trace(message: std::fmt::Arguments) {
         let _ = std::fs::rename(&path, dir.join("capture.old.log"));
     }
     if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-        let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        let _ = writeln!(file, "{seconds} {message}");
+        // Milliseconds, to time a review's steps against each other.
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        let _ = writeln!(file, "{}.{:03} {message}", now.as_secs(), now.subsec_millis());
     }
 }
 

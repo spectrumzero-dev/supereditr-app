@@ -6,20 +6,29 @@
 //!
 //! A shortcut written as the same chord twice ("Command+E Command+E", shown as ⌘E E) is a double
 //! press, watched by `platform::start_double_press_tap` instead of the system hotkey API.
+//!
+//! On Linux, Wayland gives apps no global keys: the compositor binds review and quick fix and
+//! hands them to SuperEditr (`platform::set_shortcuts`), and the panel takes focus for its own keys.
 
 use crate::{double_press, platform, review};
 use std::collections::HashMap;
+#[cfg(not(target_os = "linux"))]
 use std::str::FromStr;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
+#[cfg(not(target_os = "linux"))]
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 #[derive(Clone, Debug)]
 enum Action {
     Review,
     QuickFix,
+    // On Linux, style shortcuts and the panel's own keys aren't bound globally.
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     Preset(String),
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     OverlayApply,
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     OverlayDismiss,
 }
 
@@ -36,6 +45,7 @@ pub struct Registry {
 const OVERLAY_APPLY: &str = "Alt+Enter";
 const OVERLAY_DISMISS: &str = "Alt+Escape";
 
+#[cfg(not(target_os = "linux"))]
 pub fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     tauri_plugin_global_shortcut::Builder::new()
         .with_handler(|app, shortcut, event| {
@@ -66,6 +76,20 @@ fn run(app: &AppHandle, action: Action) {
         }
         Action::OverlayDismiss => review::dismiss(app, None),
     }
+}
+
+/// A shortcut the compositor handed SuperEditr on Linux, run on the main thread like the others.
+#[cfg(target_os = "linux")]
+pub fn on_linux_shortcut(app: &AppHandle, action: platform::desktop::Action) {
+    if *app.state::<Registry>().paused.lock().unwrap() {
+        return;
+    }
+    let action = match action {
+        platform::desktop::Action::Review => Action::Review,
+        platform::desktop::Action::QuickFix => Action::QuickFix,
+    };
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || run(&handle, action));
 }
 
 /// Starts the double-press watcher, which also passes the review panel its keys (see
@@ -111,6 +135,12 @@ pub fn others(config: &supereditr_core::Config, slot: &str) -> Vec<(String, Stri
 /// Whether another app already holds this key as a global hotkey: macOS refuses to register it
 /// for SuperEditr too. The test registration is removed at once. Skipped for a key SuperEditr
 /// itself has registered.
+#[cfg(target_os = "linux")]
+pub fn taken_by_another_app(_app: &AppHandle, accelerator: &str) -> bool {
+    platform::shortcut_taken(accelerator).is_some()
+}
+
+#[cfg(not(target_os = "linux"))]
 pub fn taken_by_another_app(app: &AppHandle, accelerator: &str) -> bool {
     let chord = accelerator.split_whitespace().next().unwrap_or_default();
     let Ok(shortcut) = Shortcut::from_str(chord) else { return false };
@@ -140,6 +170,9 @@ pub fn pause(app: &AppHandle, paused: bool) {
     }
     platform::pause_double_presses(paused);
     if paused {
+        #[cfg(target_os = "linux")]
+        platform::set_shortcuts(&[]);
+        #[cfg(not(target_os = "linux"))]
         let _ = app.global_shortcut().unregister_all();
         registry.actions.lock().unwrap().clear();
     } else {
@@ -153,6 +186,42 @@ pub fn pause(app: &AppHandle, paused: bool) {
 
 /// Registers shortcuts from settings. Returns a description of any that failed (usually
 /// because another app already owns them).
+#[cfg(target_os = "linux")]
+pub fn register_from_config(app: &AppHandle) -> Vec<String> {
+    use platform::desktop::{Action as DesktopAction, Binding, Shortcut};
+    let config = app.state::<crate::state::AppState>().config();
+    if *app.state::<Registry>().paused.lock().unwrap() {
+        return Vec::new();
+    }
+    let mut problems = Vec::new();
+    let mut bindings = Vec::new();
+    let wanted =
+        [(&config.hotkeys.review, DesktopAction::Review), (&config.hotkeys.quick_fix, DesktopAction::QuickFix)];
+    for (accelerator, action) in wanted {
+        if accelerator.trim().is_empty() {
+            continue;
+        }
+        if double_press::parse(accelerator).is_some() {
+            problems.push(format!("{accelerator}: double presses work only on macOS for now"));
+            continue;
+        }
+        match Shortcut::parse(accelerator) {
+            Some(shortcut) => bindings.push(Binding { action, shortcut }),
+            None => problems.push(format!("{accelerator}: not a shortcut SuperEditr can bind")),
+        }
+    }
+    for preset in &config.presets {
+        if let Some(key) = preset.shortcut.as_ref().filter(|k| !k.trim().is_empty()) {
+            problems.push(format!("{key}: shortcuts for a style work only on macOS for now"));
+        }
+    }
+    problems.extend(platform::set_shortcuts(&bindings));
+    problems
+}
+
+/// Registers shortcuts from settings. Returns a description of any that failed (usually
+/// because another app already owns them).
+#[cfg(not(target_os = "linux"))]
 pub fn register_from_config(app: &AppHandle) -> Vec<String> {
     let config = app.state::<crate::state::AppState>().config();
     let registry = app.state::<Registry>();
@@ -220,11 +289,17 @@ pub fn register_from_config(app: &AppHandle) -> Vec<String> {
 /// any lock the main thread may want) while registering waited for the main thread while the main
 /// thread waited for it, and every shortcut stopped. So the change runs on the main thread, in
 /// order, and no lock is held across a call to the plugin.
+#[cfg(not(target_os = "linux"))]
 pub fn set_overlay_shortcuts(app: &AppHandle, active: bool) {
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || set_overlay_shortcuts_now(&handle, active));
 }
 
+/// On Linux the panel has focus during a review and takes its keys itself.
+#[cfg(target_os = "linux")]
+pub fn set_overlay_shortcuts(_app: &AppHandle, _active: bool) {}
+
+#[cfg(not(target_os = "linux"))]
 fn set_overlay_shortcuts_now(app: &AppHandle, active: bool) {
     let registry = app.state::<Registry>();
     {

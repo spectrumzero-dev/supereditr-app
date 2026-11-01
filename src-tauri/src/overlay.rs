@@ -4,10 +4,16 @@
 //! frontmost and keeps its selection. It doesn't take keyboard focus either: during a review the
 //! keyboard tap passes the panel its keys (`crate::review_keys`), and the app keeps its key window.
 //! The panel takes focus only while the user types an instruction, and then gives it back.
+//!
+//! On Linux (Wayland) an app can't place its own windows or keep keys from another app's window.
+//! The desktop places the panel through a window rule, and for a review started with the shortcut
+//! the panel takes keyboard focus, then hands it back to the app when it closes.
 
 use crate::platform::{self, Rect};
 use std::sync::atomic::{AtomicI32, Ordering};
-use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, WebviewWindow};
+#[cfg(not(target_os = "linux"))]
+use tauri::LogicalPosition;
+use tauri::{AppHandle, LogicalSize, Manager, WebviewWindow};
 
 /// The app to give keyboard focus back to when the user stops typing an instruction; 0 when the
 /// panel doesn't have focus.
@@ -55,7 +61,12 @@ pub fn init(app: &AppHandle) {
             panel.set_opaque(false);
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    // The desktop's rule for the panel matches this title: every SuperEditr window shares one app ID.
+    #[cfg(target_os = "linux")]
+    if let Some(window) = window(app) {
+        let _ = window.set_title(platform::OVERLAY_TITLE);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let _ = app;
 }
 
@@ -79,6 +90,9 @@ pub fn position(app: &AppHandle, anchor: Option<Rect>, height: f64) {
     };
     let (x, y) = (card_x - PAD_SIDE, card_y - PAD_TOP);
     let _ = window.set_size(LogicalSize::new(WIDTH, height));
+    #[cfg(target_os = "linux")]
+    platform::place_overlay(Rect { x, y, width: WIDTH, height }, window.is_visible().unwrap_or(false));
+    #[cfg(not(target_os = "linux"))]
     let _ = window.set_position(LogicalPosition::new(x, y));
 }
 
@@ -99,8 +113,8 @@ fn screen_for(app: &AppHandle, x: f64, y: f64) -> (f64, f64, f64, f64) {
         .unwrap_or((0.0, 0.0, 1440.0, 900.0))
 }
 
-/// Runs `f` on the main thread, where AppKit requires window changes. Reviews run on async worker
-/// threads, and ordering the panel from one of them aborts the app.
+/// Runs `f` on the main thread, where AppKit and GTK require window changes. Reviews run on async
+/// worker threads, and ordering the panel from one of them aborts the app on macOS.
 fn on_main(app: &AppHandle, f: impl FnOnce(&AppHandle) + Send + 'static) {
     #[cfg(target_os = "macos")]
     {
@@ -113,6 +127,12 @@ fn on_main(app: &AppHandle, f: impl FnOnce(&AppHandle) + Send + 'static) {
             return;
         }
     }
+    #[cfg(target_os = "linux")]
+    {
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || f(&handle));
+    }
+    #[cfg(not(target_os = "linux"))]
     f(app);
 }
 
@@ -135,6 +155,11 @@ pub fn show(app: &AppHandle, keys: bool) {
         }
         if let Some(window) = window(app) {
             let _ = window.show();
+            #[cfg(target_os = "linux")]
+            if take_focus {
+                platform::focus_overlay();
+            }
+            #[cfg(not(target_os = "linux"))]
             if take_focus {
                 let _ = window.set_focus();
             }
@@ -147,6 +172,12 @@ pub fn show(app: &AppHandle, keys: bool) {
 pub fn start_typing(app: &AppHandle, pid: i32) {
     TYPING_FOR.store(pid, Ordering::Relaxed);
     platform::take_review_keys(false);
+    #[cfg(target_os = "linux")]
+    {
+        let _ = app;
+        platform::focus_overlay();
+    }
+    #[cfg(not(target_os = "linux"))]
     on_main(app, |app| {
         #[cfg(target_os = "macos")]
         {
@@ -189,8 +220,10 @@ fn give_focus_back(app: &AppHandle) -> bool {
 
 pub fn hide(app: &AppHandle) {
     platform::take_review_keys(false);
+    #[cfg(target_os = "linux")]
+    let had_focus = platform::overlay_focused();
     give_focus_back(app);
-    on_main(app, |app| {
+    on_main(app, move |app| {
         #[cfg(target_os = "macos")]
         {
             use tauri_nspanel::ManagerExt;
@@ -202,6 +235,10 @@ pub fn hide(app: &AppHandle) {
         }
         if let Some(window) = window(app) {
             let _ = window.hide();
+        }
+        #[cfg(target_os = "linux")]
+        if had_focus {
+            platform::overlay_closed();
         }
     });
 }

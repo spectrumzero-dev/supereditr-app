@@ -148,7 +148,12 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             app_toggle::ID => app_toggle::on_menu(app),
             "settings" => show_settings(app, None),
             "update" => updater::on_menu(app),
-            "quit" => app.exit(0),
+            "quit" => {
+                // SuperEditr's binds and window rule live in the compositor until taken out.
+                #[cfg(target_os = "linux")]
+                platform::stop();
+                app.exit(0)
+            }
             _ => {}
         })
         .build(app)?;
@@ -296,11 +301,15 @@ pub fn run() {
     if updater::ENABLED {
         builder = builder.plugin(updater::plugin());
     }
+    // On Linux the compositor owns global keys (see `hotkeys`).
+    #[cfg(not(target_os = "linux"))]
+    {
+        builder = builder.plugin(hotkeys::plugin());
+    }
     builder
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| on_second_launch(app, &args)))
         .plugin(tauri_plugin_opener::init())
         .plugin(autostart())
-        .plugin(hotkeys::plugin())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             {
@@ -333,6 +342,17 @@ pub fn run() {
             show_ai_status(&handle);
             if updater::ENABLED {
                 updater::start(&handle);
+            }
+            #[cfg(target_os = "linux")]
+            {
+                // Before the shortcuts are registered: they go through the desktop this finds.
+                let shortcut_app = handle.clone();
+                platform::start(move |action| hotkeys::on_linux_shortcut(&shortcut_app, action));
+                let switch_app = handle.clone();
+                platform::start_app_switch_watcher(move |pid| {
+                    review::on_app_switch(&switch_app, pid);
+                    app_toggle::on_app_switch(&switch_app, pid);
+                });
             }
             let problems = hotkeys::register_from_config(&handle);
             hotkeys::start_double_presses(&handle);

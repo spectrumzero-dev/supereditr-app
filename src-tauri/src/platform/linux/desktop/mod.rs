@@ -2,26 +2,19 @@
 //! send it keys. Each desktop (Hyprland, later GNOME and KDE) implements [`Desktop`]; everything
 //! that works the same on any Wayland desktop stays in the shared Linux layer.
 //!
-//! Every call has a time limit, so a frozen compositor never blocks the app.
-//!
-//! The capture and replace chains are the callers of most of this interface; until they exist,
-//! only detection and the setup checks are used.
-#![allow(dead_code)]
+//! Every call has a time limit, so a frozen compositor never blocks the app. The quick ones (one
+//! request and its answer) are synchronous, so the UI's code can ask them too.
 
 mod generic;
+pub mod hyprland;
+pub mod lua;
+pub mod shortcuts;
 
 pub use generic::FallbackDesktop;
 
+use crate::double_press::{ALT, COMMAND, CONTROL, SHIFT};
 use crate::platform::Rect;
 use async_trait::async_trait;
-
-/// A monitor, in global logical coordinates.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Output {
-    pub name: String,
-    pub scale: f64,
-    pub rect: Rect,
-}
 
 /// A specific window. One process can own several windows, so its pid alone isn't an identity.
 #[derive(Debug, Clone, PartialEq)]
@@ -34,16 +27,16 @@ pub struct WindowRef {
     pub title: String,
     /// In global logical coordinates.
     pub rect: Option<Rect>,
-    pub output: Option<Output>,
     pub xwayland: bool,
+    /// The compositor's tags for it; Omarchy tags terminals `terminal`.
+    pub tags: Vec<String>,
 }
 
 /// What can be done for a window in this session. Asked per window, since an XWayland window or
 /// another workspace can differ.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Capabilities {
-    pub place_overlay: bool,
-    /// A paste keystroke reaches this window.
+    /// A keystroke sent to this window reaches it.
     pub send_keys: bool,
     pub focus: bool,
 }
@@ -56,11 +49,79 @@ pub struct Shortcut {
     pub key: String,
 }
 
+impl Shortcut {
+    pub fn ctrl(key: &str) -> Self {
+        Self { modifiers: CONTROL, key: key.into() }
+    }
+
+    /// A single chord from settings, such as "Super+Alt+E"; `None` for anything else, a double
+    /// press included.
+    pub fn parse(accelerator: &str) -> Option<Self> {
+        let accelerator = accelerator.trim();
+        if accelerator.is_empty() || accelerator.contains(char::is_whitespace) {
+            return None;
+        }
+        let mut parts: Vec<&str> = accelerator.split('+').collect();
+        let key = parts.pop()?;
+        let mut modifiers = 0;
+        for part in parts {
+            modifiers |= match part.to_ascii_lowercase().as_str() {
+                "super" | "command" | "cmd" | "meta" => COMMAND,
+                "control" | "ctrl" | "cmdorctrl" | "commandorcontrol" => CONTROL,
+                "alt" | "option" => ALT,
+                "shift" => SHIFT,
+                _ => return None,
+            };
+        }
+        let key = match key.to_ascii_lowercase().as_str() {
+            "" => return None,
+            "enter" | "return" => "Return".to_string(),
+            "esc" | "escape" => "Escape".to_string(),
+            "space" => "space".to_string(),
+            _ if key.chars().count() == 1 => key.to_uppercase(),
+            _ => key.to_string(),
+        };
+        Some(Self { modifiers, key })
+    }
+
+    /// For messages: "Super+Alt+E".
+    pub fn label(&self) -> String {
+        let mut parts: Vec<&str> = [(COMMAND, "Super"), (CONTROL, "Ctrl"), (ALT, "Alt"), (SHIFT, "Shift")]
+            .iter()
+            .filter(|(bit, _)| self.modifiers & bit != 0)
+            .map(|(_, name)| *name)
+            .collect();
+        parts.push(&self.key);
+        parts.join("+")
+    }
+}
+
 /// A SuperEditr action a shortcut starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Review,
     QuickFix,
+}
+
+impl Action {
+    /// Its id with the GlobalShortcuts portal, and as `supereditr <id>` on the command line.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Review => "review",
+            Self::QuickFix => "quick-fix",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Review => "review the selection",
+            Self::QuickFix => "fix the selection in place",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        [Self::Review, Self::QuickFix].into_iter().find(|action| action.id() == id)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,7 +149,7 @@ pub enum DesktopError {
     Failed(String),
 }
 
-/// A running watch or grab. Dropping it stops it.
+/// A running watch. Dropping it stops it.
 #[must_use]
 pub struct Subscription(Option<Box<dyn FnOnce() + Send>>);
 
@@ -111,28 +172,21 @@ impl Drop for Subscription {
     }
 }
 
-/// The panel's keys while it shows, taken from the target app. The grab ends when this drops: on
-/// dismiss, timeout or panic.
-pub struct ReviewKeyGrab(pub Subscription);
-
 #[async_trait]
 pub trait Desktop: Send + Sync {
     fn name(&self) -> &'static str;
     async fn capabilities(&self, window: &WindowRef) -> Capabilities;
-    async fn front_window(&self) -> Result<WindowRef, DesktopError>;
+    fn front_window(&self) -> Result<WindowRef, DesktopError>;
     /// Calls `on_change` with each window that comes to the front.
     fn watch_front_window(&self, on_change: Box<dyn Fn(WindowRef) + Send + Sync>) -> Subscription;
-    /// The pointer, in global logical coordinates, and the monitor it's on.
-    async fn cursor(&self) -> Result<(f64, f64, Output), DesktopError>;
-    async fn place_overlay(
-        &self,
-        overlay: &tauri::WebviewWindow,
-        at: Rect,
-        output: &Output,
-    ) -> Result<(), DesktopError>;
+    /// The pointer, in global logical coordinates.
+    fn cursor(&self) -> Result<(f64, f64), DesktopError>;
+    /// Puts the panel's window at `at`: where it opens next, or, while it shows, where it moves.
+    fn place_overlay(&self, at: Rect, shown: bool) -> Result<(), DesktopError>;
     async fn focus(&self, window: &WindowRef) -> Result<(), DesktopError>;
+    /// Gives the panel keyboard focus, for a review started with the shortcut.
+    async fn focus_overlay(&self) -> Result<(), DesktopError>;
     async fn send_shortcut(&self, window: &WindowRef, keys: Shortcut) -> Result<(), DesktopError>;
-    async fn grab_review_keys(&self, keys: &[Shortcut]) -> Result<ReviewKeyGrab, DesktopError>;
     /// The desktop's lines for the Linux setup page.
     fn setup_status(&self) -> Vec<SetupCheck>;
 }
@@ -140,14 +194,10 @@ pub trait Desktop: Send + Sync {
 /// Global shortcuts. Separate from [`Desktop`]: a compositor's own binds and a portal session
 /// start and end differently.
 pub trait ShortcutBackend: Send + Sync {
-    fn install(&self, bindings: &[Binding]) -> Result<(), DesktopError>;
-    fn uninstall(&self) -> Result<(), DesktopError>;
+    /// Binds these shortcuts in place of the ones before. Returns what couldn't be bound, and why.
+    fn install(&self, bindings: &[Binding]) -> Vec<String>;
+    fn uninstall(&self);
     fn listen(&self, on_fire: Box<dyn Fn(Action) + Send + Sync>) -> Subscription;
-}
-
-/// The desktop this session runs, from its environment. Only the fallback exists so far.
-pub fn detect() -> Box<dyn Desktop> {
-    Box::new(FallbackDesktop)
 }
 
 #[cfg(test)]
@@ -164,5 +214,28 @@ mod tests {
         assert!(!stopped.load(Ordering::Relaxed));
         drop(subscription);
         assert!(stopped.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn settings_shortcuts_parse_into_chords() {
+        assert_eq!(Shortcut::parse("Super+Alt+E"), Some(Shortcut { modifiers: COMMAND | ALT, key: "E".into() }));
+        assert_eq!(
+            Shortcut::parse("Super+Control+Alt+e"),
+            Some(Shortcut { modifiers: COMMAND | CONTROL | ALT, key: "E".into() })
+        );
+        assert_eq!(Shortcut::parse("Alt+Enter").unwrap().key, "Return");
+        assert_eq!(Shortcut::parse("Super+F5").unwrap().key, "F5");
+        assert_eq!(Shortcut::parse("Command+E Command+E"), None, "a double press isn't a chord");
+        assert_eq!(Shortcut::parse("Hyper+E"), None);
+        assert_eq!(Shortcut::parse(""), None);
+        assert_eq!(Shortcut::parse("Super+Control+Alt+E").unwrap().label(), "Super+Ctrl+Alt+E");
+    }
+
+    #[test]
+    fn actions_have_stable_ids() {
+        for action in [Action::Review, Action::QuickFix] {
+            assert_eq!(Action::from_id(action.id()), Some(action));
+        }
+        assert_eq!(Action::from_id("preset"), None);
     }
 }

@@ -1,9 +1,7 @@
 //! A desktop SuperEditr has no integration for. It can't tell which window is in front, place the
 //! panel or send keys, so every suggestion goes to the clipboard, for the user to paste.
 
-use super::{
-    Capabilities, Desktop, DesktopError, Output, ReviewKeyGrab, SetupCheck, Shortcut, Subscription, WindowRef,
-};
+use super::{Capabilities, Desktop, DesktopError, SetupCheck, Shortcut, Subscription, WindowRef};
 use crate::platform::Rect;
 use async_trait::async_trait;
 
@@ -19,7 +17,7 @@ impl Desktop for FallbackDesktop {
         Capabilities::default()
     }
 
-    async fn front_window(&self) -> Result<WindowRef, DesktopError> {
+    fn front_window(&self) -> Result<WindowRef, DesktopError> {
         Err(DesktopError::Unsupported)
     }
 
@@ -27,16 +25,11 @@ impl Desktop for FallbackDesktop {
         Subscription::none()
     }
 
-    async fn cursor(&self) -> Result<(f64, f64, Output), DesktopError> {
+    fn cursor(&self) -> Result<(f64, f64), DesktopError> {
         Err(DesktopError::Unsupported)
     }
 
-    async fn place_overlay(
-        &self,
-        _overlay: &tauri::WebviewWindow,
-        _at: Rect,
-        _output: &Output,
-    ) -> Result<(), DesktopError> {
+    fn place_overlay(&self, _at: Rect, _shown: bool) -> Result<(), DesktopError> {
         Err(DesktopError::Unsupported)
     }
 
@@ -44,11 +37,11 @@ impl Desktop for FallbackDesktop {
         Err(DesktopError::Unsupported)
     }
 
-    async fn send_shortcut(&self, _window: &WindowRef, _keys: Shortcut) -> Result<(), DesktopError> {
+    async fn focus_overlay(&self) -> Result<(), DesktopError> {
         Err(DesktopError::Unsupported)
     }
 
-    async fn grab_review_keys(&self, _keys: &[Shortcut]) -> Result<ReviewKeyGrab, DesktopError> {
+    async fn send_shortcut(&self, _window: &WindowRef, _keys: Shortcut) -> Result<(), DesktopError> {
         Err(DesktopError::Unsupported)
     }
 
@@ -72,8 +65,8 @@ mod tests {
             app_id: "org.gnome.TextEditor".into(),
             title: "Notes".into(),
             rect: None,
-            output: None,
             xwayland: false,
+            tags: Vec::new(),
         }
     }
 
@@ -82,9 +75,9 @@ mod tests {
         tauri::async_runtime::block_on(async {
             let desktop = FallbackDesktop;
             assert_eq!(desktop.capabilities(&window()).await, Capabilities::default());
-            assert!(matches!(desktop.front_window().await, Err(DesktopError::Unsupported)));
+            assert!(matches!(desktop.front_window(), Err(DesktopError::Unsupported)));
             assert!(matches!(desktop.focus(&window()).await, Err(DesktopError::Unsupported)));
-            let paste = Shortcut { modifiers: crate::double_press::CONTROL, key: "V".into() };
+            let paste = Shortcut::ctrl("V");
             assert!(matches!(desktop.send_shortcut(&window(), paste).await, Err(DesktopError::Unsupported)));
             assert!(desktop.setup_status().iter().all(|check| !check.ok));
         });

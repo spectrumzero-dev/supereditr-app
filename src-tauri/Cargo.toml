@@ -19,7 +19,6 @@ serde_json.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 tauri = { version = "2.12", features = ["macos-private-api", "tray-icon", "image-png"] }
-tauri-plugin-global-shortcut = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-opener = "2"
@@ -29,8 +28,22 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 tauri-plugin-updater = "2.14"
 semver = "1"
 
+# Global shortcuts. On Linux the compositor owns the keys instead (see `platform/linux/desktop`).
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+tauri-plugin-global-shortcut = "2"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 async-trait = "0.1"
+# Reads the selection in other apps over the accessibility bus.
+atspi = { version = "0.30", default-features = false, features = ["connection", "proxies", "wrappers", "tokio"] }
+zbus = { version = "5", features = ["tokio"] }
+# The GlobalShortcuts portal, for the review and quick-fix keys.
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts"] }
+# The clipboard through data-control, without focus: read, snapshot every type and restore.
+wl-clipboard-rs = "0.9"
+futures-util = "0.3"
+# Sentence boundaries, for selecting the sentence before the caret.
+unicode-segmentation = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-nspanel = "2.1.1"

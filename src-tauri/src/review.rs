@@ -178,10 +178,12 @@ pub fn show_error(app: &AppHandle, message: String) {
 /// Says what became of a replacement that didn't apply: a copy-only one puts the suggestion on the
 /// clipboard; an uncertain one leaves the clipboard alone and offers the suggestion to copy.
 fn show_outcome(app: &AppHandle, outcome: ReplaceOutcome, suggestion: String) -> Option<String> {
+    if copies_suggestion(&outcome) {
+        platform::copy_to_clipboard(&suggestion);
+    }
     match outcome {
         ReplaceOutcome::Applied => None,
         ReplaceOutcome::CopyOnly(error) => {
-            platform::copy_to_clipboard(&suggestion);
             show_error(app, error.to_string());
             Some(error.to_string())
         }
@@ -190,6 +192,12 @@ fn show_outcome(app: &AppHandle, outcome: ReplaceOutcome, suggestion: String) ->
             Some(error.to_string())
         }
     }
+}
+
+/// Whether a replacement's outcome puts the suggestion on the clipboard: only when nothing was
+/// written. After a write that may have landed, the clipboard is the user's.
+fn copies_suggestion(outcome: &ReplaceOutcome) -> bool {
+    matches!(outcome, ReplaceOutcome::CopyOnly(_))
 }
 
 fn show_notice(app: &AppHandle, message: String, copy: Option<String>) {
@@ -465,7 +473,7 @@ pub async fn quick_fix(app: &AppHandle) {
 /// Another app came to the front (⌘Tab, the Dock): the panel belongs to the app whose text it
 /// reviews, so it closes. ⌘Tab never reaches the selection watcher, which only sees the user's
 /// typing and clicks.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 pub fn on_app_switch(app: &AppHandle, pid: i32) {
     let state = state(app);
     if pid == platform::own_pid() {
@@ -476,7 +484,10 @@ pub fn on_app_switch(app: &AppHandle, pid: i32) {
     platform::selection_app_switched();
     let reviewing = state.session.lock().unwrap().as_ref().map(|s| s.capture.pid);
     let notice = state.notice_visible.load(Ordering::Relaxed);
-    if reviewing.is_some_and(|source| source != pid) || (reviewing.is_none() && notice) {
+    // On Linux the panel has keyboard focus during a review, so any other window coming to the
+    // front, the reviewed app's included, means the user has moved on.
+    let moved_on = reviewing.is_some_and(|source| cfg!(target_os = "linux") || source != pid);
+    if moved_on || (reviewing.is_none() && notice) {
         dismiss(app, None);
     }
 }
@@ -742,6 +753,14 @@ mod tests {
         ] {
             assert!(check_selection(text, true, 12).is_none(), "{text}");
         }
+    }
+
+    #[test]
+    fn only_a_replacement_that_wrote_nothing_takes_the_clipboard() {
+        assert!(copies_suggestion(&ReplaceOutcome::CopyOnly(PlatformError::CopyOnly)));
+        assert!(copies_suggestion(&ReplaceOutcome::CopyOnly(PlatformError::Stale)));
+        assert!(!copies_suggestion(&ReplaceOutcome::Uncertain(PlatformError::Unverified)), "a paste may have landed");
+        assert!(!copies_suggestion(&ReplaceOutcome::Applied));
     }
 
     #[test]

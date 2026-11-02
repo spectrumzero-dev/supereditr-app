@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>SuperEditr smoke fields</title>
+<!-- The Linux smoke tests' page (scripts/ui-smoke-linux.sh): plain fields, a password field, a
+     selection holding a secret, a field longer than 8,192 characters, and the composer matrix's
+     editors (tests/ui/composers), copied next to this file as composers.bundle.js. -->
+<style>
+  body { font: 14px sans-serif; margin: 12px; }
+  textarea, input, .box { width: 34em; font: 14px sans-serif; }
+  .box { border: 1px solid #888; padding: 4px; min-height: 2em; }
+  label { display: block; margin-top: 6px; font-size: 12px; }
+</style>
+<label>Plain text box</label>
+<textarea id="plain" rows="2">Their going to love this, and it work good.</textarea>
+<label>Editable div</label>
+<div id="rich" class="box" contenteditable="true">Their going to love this, and it work good.</div>
+<label>Password</label>
+<input id="password" type="password" value="Their going to love this">
+<label>A secret</label>
+<textarea id="secret" rows="2"></textarea>
+<label>Large field</label>
+<textarea id="large" rows="3"></textarea>
+<div id="composers"></div>
+<script>
+  // A key-shaped token, assembled here so the source holds no secret-shaped string.
+  document.getElementById("secret").value = "Their key is " + ["sk", "proj", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6"].join("-") + " for now.";
+  // 2,000 clean sentences, then one with typos: well past the 8,192 characters hyprcorrect stops at.
+  const clean = "The quick brown fox jumps over the lazy dog. ";
+  document.getElementById("large").value = clean.repeat(450) + "Their going to love this.";
+</script>
+<script src="composers.bundle.js"></script>

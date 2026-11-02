@@ -299,6 +299,17 @@ fn launch_at_login_by_default(app: &AppHandle) {
     }
 }
 
+/// Whether the desktop setup is done, so Settings needn't open at launch (Linux's setup page).
+#[cfg(target_os = "linux")]
+fn desktop_set_up() -> bool {
+    platform::setup::config_home().is_some_and(|config| platform::setup::complete(&config))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn desktop_set_up() -> bool {
+    false
+}
+
 /// SuperEditr was started again while running. `supereditr review` and `supereditr quick-fix` act as
 /// the shortcuts do, for a desktop's own key binding to run; anything else shows Settings.
 fn on_second_launch(app: &AppHandle, args: &[String]) {
@@ -441,9 +452,10 @@ pub fn run() {
                     }
                 });
             }
-            // Settings opens by itself on the first run, and on macOS while Accessibility isn't
-            // granted, since nothing works without it.
-            let first_run = !handle.state::<AppState>().config().onboarded;
+            // Settings opens by itself on the first run, until Get Started is done or, on Linux,
+            // the desktop is set up (SuperEditr then opens at login, so Settings would open at every
+            // login); and on macOS while Accessibility isn't granted, since nothing works without it.
+            let first_run = !handle.state::<AppState>().config().onboarded && !desktop_set_up();
             if first_run || (cfg!(target_os = "macos") && !platform::accessibility_trusted(false)) {
                 show_settings(&handle, Some(if first_run { "welcome".into() } else { "privacy".into() }));
             }

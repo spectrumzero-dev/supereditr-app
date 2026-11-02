@@ -210,6 +210,12 @@ pub fn autostart_check(config: &Path) -> SetupCheck {
     SetupCheck { name: "Open at login".into(), ok, detail }
 }
 
+/// Whether Set up Omarchy's changes are all in place: the flag lines and opening at login. Settings
+/// then stops opening on its own at launch, which would otherwise be at every login.
+pub fn complete(config: &Path) -> bool {
+    flags_check(config).ok && autostart_check(config).ok
+}
+
 /// The flag files' line on the setup page. Also flags per-version Electron files
 /// (`electron43-flags.conf`), which Arch's wrapper reads in place of `electron-flags.conf`.
 pub fn flags_check(config: &Path) -> SetupCheck {
@@ -451,6 +457,20 @@ mod tests {
         assert!(remove_autostart(&config).unwrap().is_some());
         assert!(!entry.exists());
         assert!(remove_autostart(&config).unwrap().is_none());
+        std::fs::remove_dir_all(config).unwrap();
+    }
+
+    #[test]
+    fn setup_is_complete_with_both_the_flags_and_opening_at_login() {
+        let config = folder("complete");
+        assert!(!complete(&config));
+        add_flags(&config).unwrap();
+        assert!(!complete(&config), "the flags alone");
+        std::fs::create_dir_all(config.join("autostart")).unwrap();
+        std::fs::write(config.join(AUTOSTART), "[Desktop Entry]\nType=Application\nExec=/bin/sh\n").unwrap();
+        assert!(complete(&config));
+        remove_flags(&config).unwrap();
+        assert!(!complete(&config), "opening at login alone");
         std::fs::remove_dir_all(config).unwrap();
     }
 

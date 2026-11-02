@@ -17,7 +17,7 @@ conflicts=(supereditr)
 options=(!strip !debug)
 install=supereditr.install
 source=("$url/releases/download/v$pkgver/supereditr-$pkgver-x86_64.tar.gz")
-sha256sums=('4ef66bb5641dfbefbeb55bab17f140dcd55406f5a2b06cb29d956c88631d518e')
+sha256sums=('db65690719118d383bee3f26df2a71a17eb3c67c6a756eef9efae73bf05951ee')
 
 package() {
   cd "supereditr-$pkgver-x86_64"

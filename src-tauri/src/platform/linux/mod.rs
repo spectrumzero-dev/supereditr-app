@@ -146,6 +146,7 @@ pub fn start(on_shortcut: impl Fn(Action) + Send + Sync + 'static) {
             trace(format_args!("AT-SPI focus events stopped: {error}"));
         }
     });
+    tauri::async_runtime::spawn(quit_on_signal());
     match hyprland() {
         Some(hyprland) => {
             for check in hyprland.setup_status() {
@@ -162,6 +163,24 @@ pub fn start(on_shortcut: impl Fn(Action) + Send + Sync + 'static) {
         }
         None => trace(format_args!("desktop: not Hyprland; suggestions go to the clipboard")),
     }
+}
+
+/// Quits as the tray's Quit does when the session ends or something stops SuperEditr (SIGTERM,
+/// SIGINT, SIGHUP): its binds and the panel's rule stay in the compositor until taken out.
+async fn quit_on_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+    let (Ok(mut term), Ok(mut interrupt), Ok(mut hangup)) =
+        (signal(SignalKind::terminate()), signal(SignalKind::interrupt()), signal(SignalKind::hangup()))
+    else {
+        return;
+    };
+    tokio::select! {
+        _ = term.recv() => {}
+        _ = interrupt.recv() => {}
+        _ = hangup.recv() => {}
+    }
+    stop();
+    std::process::exit(0);
 }
 
 /// Binds the review and quick-fix shortcuts. Returns what couldn't be bound.

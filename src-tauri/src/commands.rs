@@ -562,6 +562,8 @@ pub fn set_launch_at_login(app: AppHandle, enabled: bool) -> CmdResult<bool> {
     let launcher = app.autolaunch();
     let result = if enabled { launcher.enable() } else { launcher.disable() };
     result.map_err(|e| format!("Couldn't change opening at login: {e}"))?;
+    #[cfg(target_os = "linux")]
+    platform::setup::reload_autostart();
     launcher.is_enabled().map_err(|e| e.to_string())
 }
 
@@ -588,6 +590,7 @@ pub fn set_up_omarchy(app: AppHandle, state: State<'_, AppState>) -> CmdResult<V
         let mut done = platform::setup::add_flags(&config_home).map_err(|e| format!("Couldn’t add the flag: {e}"))?;
         if !platform::setup::autostart_check(&config_home).ok {
             app.autolaunch().enable().map_err(|e| format!("Couldn’t turn on opening at login: {e}"))?;
+            platform::setup::reload_autostart();
             done.push("Turned on opening at login".into());
         }
         let mut config = state.config();
@@ -612,6 +615,7 @@ pub fn remove_omarchy_setup() -> CmdResult<Vec<String>> {
         let config_home = platform::setup::config_home().ok_or("HOME isn’t set")?;
         let mut done = platform::setup::remove_flags(&config_home).map_err(|e| e.to_string())?;
         done.extend(platform::setup::remove_autostart(&config_home).map_err(|e| e.to_string())?);
+        platform::setup::reload_autostart();
         Ok(done)
     }
     #[cfg(not(target_os = "linux"))]

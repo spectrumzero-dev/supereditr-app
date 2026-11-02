@@ -194,6 +194,17 @@ pub fn remove_autostart(config: &Path) -> std::io::Result<Option<String>> {
     }
 }
 
+/// Asks systemd to read the autostart entries again. Its user manager turns them into units only
+/// when it starts or reloads, and it can outlive a login (an open SSH session, lingering), so an
+/// entry added or removed meanwhile would otherwise be missed at the next login.
+pub fn reload_autostart() {
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "daemon-reload"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
 /// Whether the autostart entry is there and starts a SuperEditr that exists.
 pub fn autostart_check(config: &Path) -> SetupCheck {
     let path = config.join(AUTOSTART);
@@ -312,6 +323,7 @@ pub fn uninstall_command(args: &[String]) -> i32 {
     };
     report(remove_flags(&config));
     report(remove_autostart(&config).map(|done| done.into_iter().collect()));
+    reload_autostart();
     if purge {
         report(purge_data(&config));
     } else {

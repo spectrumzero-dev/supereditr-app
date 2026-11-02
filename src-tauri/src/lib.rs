@@ -293,6 +293,8 @@ fn launch_at_login_by_default(app: &AppHandle) {
         eprintln!("SuperEditr: couldn't turn on opening at login: {e}");
         return;
     }
+    #[cfg(target_os = "linux")]
+    platform::setup::reload_autostart();
     config.offered_launch_at_login = true;
     if let Err(e) = state.save_config(config) {
         eprintln!("SuperEditr: couldn't save settings: {e}");

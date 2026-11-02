@@ -102,15 +102,20 @@ async fn bring_back(desktop: &dyn Desktop, window: &WindowRef) -> bool {
     false
 }
 
-/// Whether the field now holds `text` where the selection began.
+/// Whether the field now holds `text` where the selection began. In a field of embedded objects
+/// (a web editor's paragraphs), offsets move when a paste adds or removes paragraphs, and an editor
+/// may turn an empty line into none: there, the field's words must hold the text's words.
 async fn landed(services: &Services<'_>, field: &super::atspi::Field, text: &str) -> bool {
     let wanted = text.replace("\r\n", "\n");
     let end = field.start + wanted.chars().count() as i32;
     let started = Instant::now();
     loop {
-        if let Ok(now) = services.fields.text(&field.id, field.start, end).await
-            && now.replace("\r\n", "\n") == wanted
-        {
+        let found = if field.embedded {
+            services.fields.whole_text(field).await.is_ok_and(|now| words(&now).contains(&words(&wanted)))
+        } else {
+            services.fields.text(&field.id, field.start, end).await.is_ok_and(|now| now.replace("\r\n", "\n") == wanted)
+        };
+        if found {
             return true;
         }
         if started.elapsed() >= PASTE_WAIT {
@@ -118,6 +123,12 @@ async fn landed(services: &Services<'_>, field: &super::atspi::Field, text: &str
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+/// `text`'s words, one space apart, without the zero-width characters editors put around code.
+fn words(text: &str) -> String {
+    let visible: String = text.chars().filter(|c| !matches!(c, '\u{200B}' | '\u{2060}' | '\u{FEFF}')).collect();
+    visible.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]
@@ -177,6 +188,20 @@ mod tests {
         assert!(matches!(outcome, ReplaceOutcome::Uncertain(PlatformError::Unverified)));
         assert_eq!(world.keys_sent(), ["CTRL V"], "one paste, never a second");
         assert_eq!(world.clipboard.get("text/plain;charset=utf-8").unwrap(), b"Rhyan's own copy");
+    }
+
+    #[test]
+    fn a_paste_into_a_web_editors_paragraphs_is_checked_by_its_words() {
+        let mut paragraphs = field("Their going\n\nSee you soon.");
+        paragraphs.embedded = true;
+        let world = World::new("chromium").with_field(paragraphs).pasting();
+        let capture = captured(&world);
+        assert!(matches!(world.replace(&capture, "They’re going\n\nSee you soon."), ReplaceOutcome::Applied));
+    }
+
+    #[test]
+    fn words_ignore_line_breaks_and_the_spaces_around_code() {
+        assert_eq!(words("\u{200B}teh fix\u{200B} first.\n\nSee  you"), "teh fix first. See you");
     }
 
     #[test]

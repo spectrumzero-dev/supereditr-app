@@ -35,6 +35,8 @@ pub fn field(selected: &str) -> Field {
         caret: selected.chars().count() as i32,
         bounds: None,
         window_bounds: None,
+        code: Vec::new(),
+        embedded: false,
     }
 }
 
@@ -54,6 +56,10 @@ impl Fields for FakeFields {
 
     async fn text(&self, _id: &FieldId, start: i32, end: i32) -> Result<String, ReadError> {
         Ok(self.content.lock().unwrap().chars().skip(start as usize).take((end - start).max(0) as usize).collect())
+    }
+
+    async fn whole_text(&self, _field: &Field) -> Result<String, ReadError> {
+        Ok(self.content.lock().unwrap().clone())
     }
 
     async fn select_sentence(&self, _field: &Field) -> Result<Option<Field>, ReadError> {

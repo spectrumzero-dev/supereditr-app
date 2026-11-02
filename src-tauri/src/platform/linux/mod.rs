@@ -72,7 +72,7 @@ impl Capture {
             bounds,
             editable: field.editable && profile.write == apps::Write::Paste,
             playground: false,
-            code: Vec::new(),
+            code: field.code.clone(),
             source: Source::Atspi,
             window: Some(window),
             field: Some(field),

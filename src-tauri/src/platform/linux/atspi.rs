@@ -11,9 +11,13 @@
 use crate::platform::Rect;
 use async_trait::async_trait;
 use atspi::proxy::accessible::AccessibleProxy;
+use atspi::proxy::hyperlink::HyperlinkProxy;
+use atspi::proxy::hypertext::HypertextProxy;
 use atspi::proxy::text::TextProxy;
 use atspi::{CoordType, Role, State};
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use zbus::proxy::CacheProperties;
@@ -28,6 +32,13 @@ const SEARCH_NODES: usize = 4000;
 const MAX_CHARS: i32 = 50_000;
 /// How far back from the caret the sentence before it is looked for.
 const SENTENCE_REACH: i32 = 4000;
+/// The most embedded objects (a web editor's paragraphs, links and code) read in one field, how
+/// deep they may nest, and how long reading them may take.
+const MAX_OBJECTS: usize = 2000;
+const MAX_DEPTH: usize = 12;
+const EMBEDDED_LIMIT: Duration = Duration::from_millis(1500);
+/// The character that stands for an embedded object in its parent's text.
+const OBJECT: char = '\u{FFFC}';
 
 /// Where a field lives on the accessibility bus.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +67,11 @@ pub struct Field {
     /// refuses screen coordinates but reports these correctly (Chromium's are relative to the page,
     /// not the window, so they come second).
     pub window_bounds: Option<Rect>,
+    /// Character ranges of `selected` the app shows as code (`<code>` in a web page).
+    pub code: Vec<(usize, usize)>,
+    /// The field's text holds embedded objects, as a web editor's paragraphs are, and `selected`
+    /// is their text put together; `start` and `end` count each object as one character.
+    pub embedded: bool,
 }
 
 impl Field {
@@ -63,10 +79,10 @@ impl Field {
         self.end > self.start && !self.selected.is_empty()
     }
 
-    /// The selection holds embedded objects (U+FFFC), such as Obsidian's lines, so its text isn't
-    /// all there.
+    /// The selection holds embedded objects (U+FFFC) whose text couldn't be read, such as
+    /// Obsidian's lines, so its text isn't all there.
     pub fn partial(&self) -> bool {
-        self.selected.contains('\u{FFFC}')
+        self.selected.contains(OBJECT)
     }
 }
 
@@ -108,6 +124,8 @@ pub trait Fields: Send + Sync {
     async fn focused(&self, pid: i32) -> Result<Option<Field>, ReadError>;
     /// A field's text between two character offsets.
     async fn text(&self, id: &FieldId, start: i32, end: i32) -> Result<String, ReadError>;
+    /// The field's whole text, with embedded objects' text put together as in [`Field::selected`].
+    async fn whole_text(&self, field: &Field) -> Result<String, ReadError>;
     /// Selects the sentence before the caret and reads the field again; `None` when there's no
     /// sentence there.
     async fn select_sentence(&self, field: &Field) -> Result<Option<Field>, ReadError>;
@@ -182,6 +200,105 @@ impl Atspi {
             .cache_properties(CacheProperties::No)
             .build()
             .await?)
+    }
+
+    async fn hypertext_proxy(&self, id: &FieldId) -> Result<HypertextProxy<'static>, ReadError> {
+        let connection = self.connection().await?.connection();
+        Ok(HypertextProxy::builder(connection)
+            .destination(id.bus.clone())?
+            .path(id.path.clone())?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?)
+    }
+
+    /// The object a hyperlink (one of a parent's embedded objects) stands for.
+    async fn linked_object(&self, bus: &str, path: &str) -> Result<FieldId, ReadError> {
+        let connection = self.connection().await?.connection();
+        let link = HyperlinkProxy::builder(connection)
+            .destination(bus.to_string())?
+            .path(path.to_string())?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
+        let object = limit(link.get_object(0)).await?;
+        Ok(FieldId { bus: object.name_as_str().unwrap_or(bus).to_string(), path: object.path_as_str().to_string() })
+    }
+
+    /// The text between `start` and `end` in an object, as pieces: runs of its own text, and the
+    /// embedded objects in it with their text, read the same way. An object's text counts only
+    /// what's selected in it, when it reports a selection, so a selection that starts or ends inside
+    /// a paragraph takes only that part of it.
+    fn pieces<'a>(
+        &'a self,
+        id: FieldId,
+        start: i32,
+        end: i32,
+        depth: usize,
+        seen: &'a mut usize,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Piece>, ReadError>> + Send + 'a>> {
+        Box::pin(async move {
+            if depth > MAX_DEPTH {
+                return Err(ReadError::Failed("embedded objects nest too deep".into()));
+            }
+            let raw = limit(self.text_proxy(&id).await?.get_text(start, end)).await?;
+            if !raw.contains(OBJECT) {
+                return Ok(vec![Piece::Text(raw)]);
+            }
+            let hypertext = self.hypertext_proxy(&id).await?;
+            let mut pieces = Vec::new();
+            let mut run = String::new();
+            for (i, c) in raw.chars().enumerate() {
+                if c != OBJECT {
+                    run.push(c);
+                    continue;
+                }
+                if !run.is_empty() {
+                    pieces.push(Piece::Text(std::mem::take(&mut run)));
+                }
+                *seen += 1;
+                if *seen > MAX_OBJECTS {
+                    return Err(ReadError::TooLong);
+                }
+                let index = limit(hypertext.get_link_index(start + i as i32)).await?;
+                if index < 0 {
+                    return Err(ReadError::Failed("an embedded object has no link".into()));
+                }
+                let link = limit(hypertext.get_link(index)).await?;
+                let child = self.linked_object(link.name_as_str().unwrap_or(&id.bus), link.path_as_str()).await?;
+                let attributes = limit(self.accessible(&child.bus, &child.path).await?.get_attributes()).await?;
+                let block = attributes.get("display").is_some_and(|display| !display.starts_with("inline"));
+                let code = attributes.get("tag").is_some_and(|tag| tag == "code");
+                let text = self.text_proxy(&child).await?;
+                let count = limit(text.character_count()).await?;
+                let (from, to) = match limit(text.get_n_selections()).await {
+                    Ok(n) if n > 0 => limit(text.get_selection(0)).await?,
+                    _ => (0, count),
+                };
+                let (from, to) = (from.min(to).clamp(0, count), to.max(from).clamp(0, count));
+                let inner = self.pieces(child, from, to, depth + 1, seen).await?;
+                pieces.push(Piece::Object { block, code, pieces: inner });
+            }
+            if !run.is_empty() {
+                pieces.push(Piece::Text(run));
+            }
+            Ok(pieces)
+        })
+    }
+
+    /// The text between `start` and `end` with its embedded objects' text put together, and the
+    /// code in it.
+    async fn embedded_text(
+        &self,
+        id: &FieldId,
+        start: i32,
+        end: i32,
+    ) -> Result<(String, Vec<(usize, usize)>), ReadError> {
+        let mut seen = 0;
+        match tokio::time::timeout(EMBEDDED_LIMIT, self.pieces(id.clone(), start, end, 0, &mut seen)).await {
+            Ok(pieces) => Ok(assemble(&pieces?)),
+            Err(_) => Err(ReadError::Timeout),
+        }
     }
 
     async fn pid_of(&self, bus: &str) -> Result<i32, ReadError> {
@@ -280,6 +397,8 @@ impl Atspi {
             caret: 0,
             bounds: None,
             window_bounds: None,
+            code: Vec::new(),
+            embedded: false,
         };
         if password {
             return Ok(Some(blank));
@@ -299,6 +418,15 @@ impl Atspi {
             return Err(ReadError::TooLong);
         }
         let selected = if end > start { limit(text.get_text(start, end)).await? } else { String::new() };
+        // A web editor's paragraphs, links and code are embedded objects: read their text. If they
+        // can't be read, the field stays partial, and a shortcut falls back to a copy-only read.
+        let (selected, code, embedded) = match selected.contains(OBJECT) {
+            true => match self.embedded_text(id, start, end).await {
+                Ok((text, code)) => (text, code, true),
+                Err(_) => (selected, Vec::new(), false),
+            },
+            false => (selected, Vec::new(), false),
+        };
         // Where the selection is; with nothing selected, where the caret is.
         let extents = |coordinates| {
             let text = &text;
@@ -313,7 +441,7 @@ impl Atspi {
         };
         let bounds = extents(CoordType::Screen).await;
         let window_bounds = if bounds.is_none() { extents(CoordType::Window).await } else { None };
-        Ok(Some(Field { start, end, selected, caret, bounds, window_bounds, ..blank }))
+        Ok(Some(Field { start, end, selected, caret, bounds, window_bounds, code, embedded, ..blank }))
     }
 }
 
@@ -340,6 +468,14 @@ impl Fields for Atspi {
         limit(text.get_text(start, end)).await
     }
 
+    async fn whole_text(&self, field: &Field) -> Result<String, ReadError> {
+        let count = limit(self.text_proxy(&field.id).await?.character_count()).await?;
+        if field.embedded {
+            return Ok(self.embedded_text(&field.id, 0, count).await?.0);
+        }
+        self.text(&field.id, 0, count).await
+    }
+
     async fn select_sentence(&self, field: &Field) -> Result<Option<Field>, ReadError> {
         let from = (field.caret - SENTENCE_REACH).max(0);
         let before = self.text(&field.id, from, field.caret).await?;
@@ -355,6 +491,49 @@ impl Fields for Atspi {
         }
         self.read(&field.id).await
     }
+}
+
+/// Part of an object's text: a run of its own, or an embedded object with its own pieces.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Piece {
+    Text(String),
+    Object { block: bool, code: bool, pieces: Vec<Piece> },
+}
+
+/// Puts the pieces' text together as the field shows it: each block (a paragraph, a list item) on a
+/// line of its own, an empty paragraph as an empty line, and inline objects (links, bold, code) in
+/// the line. Returns the text and the character ranges of code in it.
+pub fn assemble(pieces: &[Piece]) -> (String, Vec<(usize, usize)>) {
+    let mut text = String::new();
+    let mut chars = 0;
+    let mut code = Vec::new();
+    let mut after_block = false;
+    for (i, piece) in pieces.iter().enumerate() {
+        let (part, part_code, block, is_code) = match piece {
+            Piece::Text(run) => (run.clone(), Vec::new(), false, false),
+            Piece::Object { block, code, pieces } => {
+                let (mut part, part_code) = assemble(pieces);
+                // An empty paragraph holds a line break, and a paragraph may end with one.
+                if *block && part.ends_with('\n') {
+                    part.pop();
+                }
+                (part, part_code, *block, *code)
+            }
+        };
+        if i > 0 && (block || after_block) {
+            text.push('\n');
+            chars += 1;
+        }
+        let length = part.chars().count();
+        if is_code && length > 0 {
+            code.push((chars, chars + length));
+        }
+        code.extend(part_code.into_iter().map(|(from, to)| (chars + from, chars + to)));
+        text.push_str(&part);
+        chars += length;
+        after_block = block;
+    }
+    (text, code)
 }
 
 /// The byte range of a character range in `text`; `None` when it runs past the end.
@@ -427,8 +606,59 @@ mod tests {
             caret: 2,
             bounds: None,
             window_bounds: None,
+            code: Vec::new(),
+            embedded: false,
         };
         assert!(field.has_selection());
         assert!(field.partial());
+    }
+
+    fn text(run: &str) -> Piece {
+        Piece::Text(run.into())
+    }
+
+    fn object(block: bool, code: bool, pieces: Vec<Piece>) -> Piece {
+        Piece::Object { block, code, pieces }
+    }
+
+    #[test]
+    fn a_web_editors_paragraphs_are_put_together_line_by_line_with_its_code() {
+        // Chromium's tree for a rich-text editor: three paragraphs, the middle one empty (a line
+        // break), and code, bold and a link inside the first.
+        let first = object(
+            true,
+            false,
+            vec![
+                object(false, true, vec![text("teh fix")]),
+                text(" first. Their going to love this "),
+                object(false, false, vec![text("today")]),
+                text(". Read "),
+                object(false, false, vec![text("the notes")]),
+                text(" and realy run "),
+                object(false, true, vec![text("their going to work")]),
+            ],
+        );
+        let pieces =
+            vec![first, object(true, false, vec![text("\n")]), object(true, false, vec![text("See you soon.")])];
+        let (text, code) = assemble(&pieces);
+        assert_eq!(
+            text,
+            "teh fix first. Their going to love this today. Read the notes and realy run their going to work\n\nSee you soon."
+        );
+        let spans: Vec<String> =
+            code.iter().map(|&(from, to)| text.chars().skip(from).take(to - from).collect()).collect();
+        assert_eq!(spans, ["teh fix", "their going to work"]);
+    }
+
+    #[test]
+    fn code_offsets_count_characters_and_empty_lines_survive_at_either_end() {
+        let pieces = vec![
+            object(true, false, vec![text("\n")]),
+            object(true, false, vec![text("Rhyan 👋🏽 ran "), object(false, true, vec![text("make teh")])]),
+            object(true, false, vec![]),
+        ];
+        let (text, code) = assemble(&pieces);
+        assert_eq!(text, "\nRhyan 👋🏽 ran make teh\n");
+        assert_eq!(code, [(14, 22)], "characters: the line break, \"Rhyan \", the emoji as two, \" ran \"");
     }
 }

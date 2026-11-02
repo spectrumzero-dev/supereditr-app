@@ -20,6 +20,10 @@ use std::time::{Duration, Instant};
 
 /// How long the desktop gets to bring the window back to the front.
 const FOCUS_WAIT: Duration = Duration::from_millis(if cfg!(test) { 60 } else { 600 });
+/// How long the app gets to hear of the new clipboard before Ctrl+V. Wayland tells the focused app
+/// about a new clipboard with an event of its own: a Ctrl+V straight after it can paste the
+/// clipboard before (in the smoke tests, about one paste in 75 pasted nothing that way).
+const CLIPBOARD_SETTLE: Duration = Duration::from_millis(if cfg!(test) { 0 } else { 60 });
 /// How long a paste gets to show up in the field.
 const PASTE_WAIT: Duration = Duration::from_millis(if cfg!(test) { 60 } else { 1000 });
 
@@ -72,6 +76,7 @@ async fn attempt(services: &Services<'_>, capture: &Capture, text: &str) -> Repl
         return copy_only();
     }
     super::wait_for_shortcut_release();
+    tokio::time::sleep(CLIPBOARD_SETTLE).await;
     if services.desktop.send_shortcut(window, Shortcut::ctrl("V")).await.is_err() {
         transaction.restore();
         return ReplaceOutcome::CopyOnly(PlatformError::ReplaceFailed);

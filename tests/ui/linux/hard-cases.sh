@@ -128,21 +128,23 @@ large_case() {
 
 frozen_case() {
   begin_case frozen "the app in front stops answering (SIGSTOP)"
-  local e pid mark started panel took text
+  local e pid mark lines took said
   e="$(start_editor "" smoke-frozen.txt | tail -1)"
   pid="$(vm "d_pid $e")"
   vm "select_all $e; sleep 0.3; kill -STOP $pid"
   mark="$(vm log_mark)"
-  started=$(now_ms)
   key meta_l-alt-e
-  panel="$(vm 'wait_panel 8')"
-  took=$(($(now_ms) - started))
-  text="$(vm panel_text)"
+  # Timed by SuperEditr's own log, from the shortcut reaching it to its panel taking focus: while
+  # an app is stopped, the test's own window and accessibility queries can stall.
+  vm "wait_log $mark 'panel focused' 8" > /dev/null
+  lines="$(vm "log_since $mark")"
+  took="$(awk '/shortcut review from/ && !s {s = $1} /panel focused/ && s && !e {e = $1} END {if (s && e) printf "%d", (e - s) * 1000; else print 99999}' <<< "$lines")"
+  said="$(grep -m1 'shortcut org.gnome.TextEditor: ' <<< "$lines" | cut -d' ' -f3-)"
   vm 'shot 80-frozen'
-  check "frozen: SuperEditr answers within 3 s" "$(ok test "$took" -lt 3000)" "the panel after $took ms (key press included): ${text:0:100}"
+  check "frozen: SuperEditr answers within 3 s, and says why" "$(ok both test "$took" -lt 3000 has "$said" "isn’t responding")" "the panel $took ms after the shortcut: $said"
   note "log: $(vm "log_since $mark | cut -d' ' -f2- | tr '\n' '|'")"
   key esc
-  vm "wait_closed 3; kill -CONT $pid; sleep 1; d_focus $e; sleep 0.3; select_all $e; sleep 0.3"
+  vm "kill -CONT $pid; wait_closed 3; sleep 1; d_focus $e; sleep 0.3; select_all $e; sleep 0.3"
   review_and_apply "after it answers again" "$e" org.gnome.TextEditor 81-thawed
   check "after it answers again: Alt+Enter applies" "$(ok has "$REVIEW_RESULT" ": applied")" "${REVIEW_RESULT#* }"
   vm 'editor_quit'

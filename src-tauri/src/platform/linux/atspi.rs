@@ -133,10 +133,23 @@ pub trait Fields: Send + Sync {
     async fn select_sentence(&self, field: &Field) -> Result<Option<Field>, ReadError>;
 }
 
-async fn limit<T, E: Into<ReadError>>(call: impl Future<Output = Result<T, E>>) -> Result<T, ReadError> {
-    match tokio::time::timeout(CALL_LIMIT, call).await {
-        Ok(result) => result.map_err(Into::into),
-        Err(_) => Err(ReadError::Timeout),
+/// Runs one AT-SPI call within [`CALL_LIMIT`]. A slow call is logged with where it was made, since
+/// a slow app and a slow bus look the same from here.
+#[track_caller]
+fn limit<T, E: Into<ReadError>>(
+    call: impl Future<Output = Result<T, E>>,
+) -> impl Future<Output = Result<T, ReadError>> {
+    let caller = std::panic::Location::caller();
+    async move {
+        let started = Instant::now();
+        let result = tokio::time::timeout(CALL_LIMIT, call).await;
+        if started.elapsed() > Duration::from_millis(250) {
+            super::trace(format_args!("AT-SPI call at line {} took {:?}", caller.line(), started.elapsed()));
+        }
+        match result {
+            Ok(result) => result.map_err(Into::into),
+            Err(_) => Err(ReadError::Timeout),
+        }
     }
 }
 

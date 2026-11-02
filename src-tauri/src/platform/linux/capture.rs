@@ -22,6 +22,10 @@ use std::time::{Duration, Instant};
 /// in about 45; no copy by then means nothing was selected.
 const COPY_WAIT: Duration = Duration::from_millis(if cfg!(test) { 40 } else { 400 });
 
+/// How long reading the focused field may take in all, so a frozen app is given up on in time for
+/// the guarded copy and an answer within about two seconds.
+const FIELD_LIMIT: Duration = Duration::from_millis(if cfg!(test) { 200 } else { 1500 });
+
 /// The services a chain uses.
 pub struct Services<'a> {
     pub desktop: &'a dyn Desktop,
@@ -71,9 +75,14 @@ async fn read(
         return Err(PlatformError::SecureField);
     }
     let mut not_answering = false;
-    let field = match services.fields.focused(window.pid).await {
-        Ok(field) => field,
-        Err(error) => {
+    let field = match tokio::time::timeout(FIELD_LIMIT, services.fields.focused(window.pid)).await {
+        Ok(Ok(field)) => field,
+        Err(_) => {
+            trace(format_args!("{}: AT-SPI didn’t read the focused field in {FIELD_LIMIT:?}", window.app_id));
+            not_answering = true;
+            None
+        }
+        Ok(Err(error)) => {
             trace(format_args!("{}: AT-SPI couldn’t read the focused field ({error})", window.app_id));
             not_answering = matches!(error, ReadError::Timeout);
             None

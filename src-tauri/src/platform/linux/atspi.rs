@@ -22,8 +22,10 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use zbus::proxy::CacheProperties;
 
-/// The longest one AT-SPI call may take.
-const CALL_LIMIT: Duration = Duration::from_millis(300);
+/// The longest one AT-SPI call may take. Apps usually answer in a few milliseconds, but on a busy
+/// machine an app that's fine can take a few hundred, and a call that times out makes the review
+/// copy-only; a frozen app is still given up on quickly (see `capture::FIELD_LIMIT`).
+const CALL_LIMIT: Duration = Duration::from_millis(1000);
 /// The longest a search of an app's tree for its focused field may take, and how many objects it
 /// looks at, for an app SuperEditr hasn't seen focus move in.
 const SEARCH_LIMIT: Duration = Duration::from_millis(1200);

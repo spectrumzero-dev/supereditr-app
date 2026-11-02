@@ -105,6 +105,7 @@ is() { [[ "$1" == "$2" ]]; }
 # both CMD1 A1 B1 CMD2 A2 B2: two predicates of two arguments each.
 both() { "$1" "$2" "$3" && "$4" "$5" "$6"; }
 isnt() { [[ "$1" != "$2" ]]; }
+below() { (("$1" < "$2")); }
 
 # Whether the panel's card sits wholly on one monitor and touches the target window. The window
 # is larger than the card by transparent room for its shadow (src-tauri/src/overlay.rs): 26 pixels

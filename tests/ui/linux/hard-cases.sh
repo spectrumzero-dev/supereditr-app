@@ -141,7 +141,7 @@ frozen_case() {
   took="$(awk '/shortcut review from/ && !s {s = $1} /panel focused/ && s && !e {e = $1} END {if (s && e) printf "%d", (e - s) * 1000; else print 99999}' <<< "$lines")"
   said="$(grep -m1 'shortcut org.gnome.TextEditor: ' <<< "$lines" | cut -d' ' -f3-)"
   vm 'shot 80-frozen'
-  check "frozen: SuperEditr answers within 3 s, and says why" "$(ok both test "$took" -lt 3000 has "$said" "isn’t responding")" "the panel $took ms after the shortcut: $said"
+  check "frozen: SuperEditr answers within 3 s, and says why" "$(ok both below "$took" 3000 has "$said" "isn’t responding")" "the panel $took ms after the shortcut: $said"
   note "log: $(vm "log_since $mark | cut -d' ' -f2- | tr '\n' '|'")"
   key esc
   vm "kill -CONT $pid; wait_closed 3; sleep 1; d_focus $e; sleep 0.3; select_all $e; sleep 0.3"

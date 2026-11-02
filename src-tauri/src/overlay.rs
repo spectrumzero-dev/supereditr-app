@@ -86,7 +86,8 @@ pub fn position(app: &AppHandle, anchor: Option<Rect>, height: f64) {
     let card_y = if below + card_height <= sy + sh - MARGIN || anchor.y - GAP - card_height < sy + MARGIN {
         below.min(sy + sh - card_height - MARGIN).max(sy + MARGIN)
     } else {
-        anchor.y - GAP - card_height
+        // Kept on screen even if the height it was given is out of date.
+        (anchor.y - GAP - card_height).max(sy + MARGIN)
     };
     let (x, y) = (card_x - PAD_SIDE, card_y - PAD_TOP);
     let _ = window.set_size(LogicalSize::new(WIDTH, height));

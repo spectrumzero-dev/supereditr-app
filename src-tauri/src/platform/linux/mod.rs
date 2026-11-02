@@ -347,6 +347,14 @@ pub const OVERLAY_TITLE: &str = desktop::lua::OVERLAY_TITLE;
 
 /// Where the panel goes: where it opens next, or, while it shows, where it moves.
 pub fn place_overlay(at: Rect, shown: bool) {
+    trace(format_args!(
+        "panel {} at {:.0},{:.0}, {:.0}×{:.0}",
+        if shown { "moves" } else { "opens" },
+        at.x,
+        at.y,
+        at.width,
+        at.height
+    ));
     if let Err(error) = desktop().place_overlay(at, shown) {
         trace(format_args!("panel placement: {error}"));
     }

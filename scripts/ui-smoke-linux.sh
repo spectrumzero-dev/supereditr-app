@@ -18,6 +18,7 @@
 #   --identity FILE    the SSH key for both hosts
 #   --out DIR          where results and screenshots go (default build/ui-smoke-linux)
 #   --only "CASE ..."  run only these cases (setup always runs)
+#   --keep-install     skip installing and the first launch: test the SuperEditr already set up there
 #   --hard             also run the hard cases (more monitors, scaling, XWayland, an input method,
 #                      a large field, a frozen app, Hyprland restarting)
 #
@@ -27,7 +28,7 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-DESKTOP=hyprland VM="" PROXMOX="" VMID="" PACKAGE="" SNAPSHOT="" DEPS="" IDENTITY="" ONLY="" HARD=0
+DESKTOP=hyprland VM="" PROXMOX="" VMID="" PACKAGE="" SNAPSHOT="" DEPS="" IDENTITY="" ONLY="" HARD=0 KEEP=0
 OUT="$ROOT/build/ui-smoke-linux"
 while (($#)); do
   case "$1" in
@@ -42,11 +43,12 @@ while (($#)); do
     --out) OUT="$2"; shift ;;
     --only) ONLY="$2"; shift ;;
     --hard) HARD=1 ;;
-    *) sed -n '2,25p' "$0" >&2; exit 2 ;;
+    --keep-install) KEEP=1 ;;
+    *) sed -n '2,26p' "$0" >&2; exit 2 ;;
   esac
   shift
 done
-[[ -n "$VM" && -n "$PROXMOX" && -n "$VMID" && -n "$PACKAGE" ]] || { sed -n '2,25p' "$0" >&2; exit 2; }
+[[ -n "$VM" && -n "$PROXMOX" && -n "$VMID" && -n "$PACKAGE" ]] || { sed -n '2,26p' "$0" >&2; exit 2; }
 [[ -f "$ROOT/tests/ui/linux/$DESKTOP.sh" ]] || { echo "No desktop layer tests/ui/linux/$DESKTOP.sh" >&2; exit 2; }
 
 mkdir -p "$OUT"
@@ -472,8 +474,14 @@ source "$ROOT/tests/ui/linux/hard-cases.sh"
 STARTED=$(now_ms)
 log "SuperEditr Linux smoke tests, desktop $DESKTOP, $(date -u +%Y-%m-%dT%H:%MZ)" "package $PACKAGE"
 [[ -n "$SNAPSHOT" ]] && boot
-install
-first_run
+if [[ "$KEEP" == 1 ]]; then
+  COPYFILE_DISABLE=1 tar --no-xattrs -C "$ROOT/tests/ui/linux" -cf - . -C "$ROOT/tests/ui/composers" composers.bundle.js |
+    "${SSH[@]}" "$VM" 'mkdir -p ~/supereditr-smoke && tar -C ~/supereditr-smoke -xf -'
+  vm 'app_running || app_start; sleep 2'
+else
+  install
+  first_run
+fi
 wants chromium && chromium_cases
 wants chromium-plain && chromium_plain_case
 wants foot && foot_case

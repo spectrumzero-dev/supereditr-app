@@ -46,11 +46,16 @@ pub struct FakeFields {
     sentence: Mutex<Option<Field>>,
     /// The field's whole text.
     content: Mutex<String>,
+    /// The app doesn't answer, as when it's frozen.
+    frozen: std::sync::atomic::AtomicBool,
 }
 
 #[async_trait]
 impl Fields for FakeFields {
     async fn focused(&self, _pid: i32) -> Result<Option<Field>, ReadError> {
+        if self.frozen.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(ReadError::Timeout);
+        }
         Ok(self.field.lock().unwrap().clone())
     }
 
@@ -216,6 +221,12 @@ impl World {
 
     pub fn refusing_focus(mut self) -> Self {
         self.desktop.refuse_focus = true;
+        self
+    }
+
+    /// The app stops answering AT-SPI, and copies nothing.
+    pub fn frozen(self) -> Self {
+        self.fields.frozen.store(true, std::sync::atomic::Ordering::Relaxed);
         self
     }
 

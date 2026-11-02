@@ -11,7 +11,7 @@
 //! identified, and nothing at all is read in a password manager.
 
 use super::apps::{self, Profile, Write};
-use super::atspi::{Field, Fields};
+use super::atspi::{Field, Fields, ReadError};
 use super::clipboard::{DataControl, Limits, Transaction};
 use super::desktop::{Desktop, Shortcut, WindowRef};
 use super::{Capture, Source, trace};
@@ -70,10 +70,12 @@ async fn read(
     if profile.password_manager {
         return Err(PlatformError::SecureField);
     }
+    let mut not_answering = false;
     let field = match services.fields.focused(window.pid).await {
         Ok(field) => field,
         Err(error) => {
             trace(format_args!("{}: AT-SPI couldn’t read the focused field ({error})", window.app_id));
+            not_answering = matches!(error, ReadError::Timeout);
             None
         }
     };
@@ -100,7 +102,14 @@ async fn read(
     if !allow_copy {
         return Err(PlatformError::NoSelection);
     }
-    guarded_copy(services, window, profile).await
+    match guarded_copy(services, window, profile).await {
+        // A frozen app neither answers AT-SPI nor copies: that's no sign nothing is selected.
+        Err(PlatformError::NoSelection) if not_answering => Err(PlatformError::Other(format!(
+            "{} isn’t responding, so SuperEditr couldn’t read the selection.",
+            apps::display_name(&window.app_id)
+        ))),
+        result => result,
+    }
 }
 
 async fn guarded_copy(services: &Services<'_>, window: &WindowRef, profile: Profile) -> Result<Capture, PlatformError> {
@@ -222,6 +231,16 @@ mod tests {
     fn nothing_selected_means_no_capture_and_the_clipboard_comes_back() {
         let world = World::new("foot");
         assert!(matches!(world.capture(true, false), Err(PlatformError::NoSelection)));
+        assert_eq!(world.clipboard.get("text/plain;charset=utf-8").unwrap(), b"Rhyan's own copy");
+    }
+
+    #[test]
+    fn a_frozen_app_is_said_to_be_frozen_rather_than_to_have_nothing_selected() {
+        let world = World::new("org.gnome.TextEditor").with_field(field("Their going")).frozen();
+        match world.capture(true, false) {
+            Err(PlatformError::Other(message)) => assert!(message.contains("isn’t responding"), "{message}"),
+            other => panic!("expected a message about the app, got {other:?}"),
+        }
         assert_eq!(world.clipboard.get("text/plain;charset=utf-8").unwrap(), b"Rhyan's own copy");
     }
 

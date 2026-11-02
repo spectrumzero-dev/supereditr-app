@@ -71,6 +71,7 @@ async fn attempt(services: &Services<'_>, capture: &Capture, text: &str) -> Repl
         transaction.restore();
         return copy_only();
     }
+    super::wait_for_shortcut_release();
     if services.desktop.send_shortcut(window, Shortcut::ctrl("V")).await.is_err() {
         transaction.restore();
         return ReplaceOutcome::CopyOnly(PlatformError::ReplaceFailed);

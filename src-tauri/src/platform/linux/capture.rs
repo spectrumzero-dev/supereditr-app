@@ -136,6 +136,7 @@ async fn guarded_copy(services: &Services<'_>, window: &WindowRef, profile: Prof
     transaction.put_marker().map_err(|_| cant_read())?;
     // Terminals take Ctrl+C as an interrupt; Ctrl+Insert copies there, as Omarchy's own copy key does.
     let key = Shortcut::ctrl(if profile.terminal { "Insert" } else { "C" });
+    super::wait_for_shortcut_release();
     if services.desktop.send_shortcut(window, key).await.is_err() {
         transaction.restore();
         return Err(cant_read());

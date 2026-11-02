@@ -183,6 +183,19 @@ async fn quit_on_signal() {
     std::process::exit(0);
 }
 
+/// Waits for the user to let go of the shortcut that started this, so keys SuperEditr sends an app
+/// next (a copy, a paste) aren't combined with the shortcut's modifiers still held down: quick fix
+/// pastes a few milliseconds after its shortcut, while Super, Ctrl and Alt are usually still down.
+fn wait_for_shortcut_release() {
+    const LIMIT: std::time::Duration = std::time::Duration::from_millis(1000);
+    if let Some(shortcuts) = SHORTCUTS.get()
+        && shortcuts.wait_for_release(LIMIT)
+    {
+        // The modifiers often come up just after the key.
+        std::thread::sleep(std::time::Duration::from_millis(80));
+    }
+}
+
 /// Binds the review and quick-fix shortcuts. Returns what couldn't be bound.
 pub fn set_shortcuts(bindings: &[Binding]) -> Vec<String> {
     match SHORTCUTS.get() {

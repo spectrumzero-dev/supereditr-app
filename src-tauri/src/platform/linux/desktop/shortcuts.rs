@@ -10,8 +10,8 @@
 use super::hyprland::{HyprlandDesktop, modmask};
 use super::lua::{self, BindAction, PORTAL_APP_ID};
 use super::{Action, Binding, SetupCheck, ShortcutBackend, Subscription};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Route {
@@ -34,6 +34,10 @@ struct State {
 pub struct HyprlandShortcuts {
     hyprland: Arc<HyprlandDesktop>,
     state: Mutex<State>,
+    /// When the shortcut held down now was pressed, from the portal's `Activated` until its
+    /// `Deactivated`.
+    pressed: Mutex<Option<Instant>>,
+    released: Condvar,
 }
 
 impl HyprlandShortcuts {
@@ -41,6 +45,8 @@ impl HyprlandShortcuts {
         Arc::new(Self {
             hyprland,
             state: Mutex::new(State { route: Route::Pending, wanted: Vec::new(), bound: Vec::new(), on_fire: None }),
+            pressed: Mutex::new(None),
+            released: Condvar::new(),
         })
     }
 
@@ -50,14 +56,34 @@ impl HyprlandShortcuts {
         match tokio::time::timeout(Duration::from_secs(5), portal_session()).await {
             Ok(Ok((portal, _session))) => {
                 use futures_util::StreamExt;
-                let Ok(activations) = portal.receive_activated().await else { return self.use_route(Route::Exec) };
+                let (Ok(activations), Ok(deactivations)) =
+                    (portal.receive_activated().await, portal.receive_deactivated().await)
+                else {
+                    return self.use_route(Route::Exec);
+                };
                 self.use_route(Route::Portal);
                 let mut activations = std::pin::pin!(activations);
-                while let Some(activated) = activations.next().await {
-                    let on_fire = self.state.lock().unwrap().on_fire.clone();
-                    if let (Some(action), Some(on_fire)) = (Action::from_id(activated.shortcut_id()), on_fire) {
-                        crate::platform::trace(format_args!("shortcut {} from the portal", action.id()));
-                        on_fire(action);
+                let mut deactivations = std::pin::pin!(deactivations);
+                loop {
+                    tokio::select! {
+                        activated = activations.next() => {
+                            let Some(activated) = activated else { break };
+                            *self.pressed.lock().unwrap() = Some(Instant::now());
+                            let on_fire = self.state.lock().unwrap().on_fire.clone();
+                            if let (Some(action), Some(on_fire)) = (Action::from_id(activated.shortcut_id()), on_fire) {
+                                crate::platform::trace(format_args!("shortcut {} from the portal", action.id()));
+                                on_fire(action);
+                            }
+                        }
+                        deactivated = deactivations.next() => {
+                            if deactivated.is_none() {
+                                break;
+                            }
+                            if let Some(at) = self.pressed.lock().unwrap().take() {
+                                crate::platform::trace(format_args!("shortcut let go after {:?}", at.elapsed()));
+                            }
+                            self.released.notify_all();
+                        }
                     }
                 }
             }
@@ -70,6 +96,22 @@ impl HyprlandShortcuts {
                 self.use_route(Route::Exec);
             }
         }
+    }
+
+    /// Waits until the user lets go of the shortcut just pressed, but no longer than `limit` after
+    /// it was pressed. Returns whether it waited.
+    pub fn wait_for_release(&self, limit: Duration) -> bool {
+        let mut pressed = self.pressed.lock().unwrap();
+        let mut waited = false;
+        while let Some(at) = *pressed {
+            let left = limit.saturating_sub(at.elapsed());
+            if left.is_zero() {
+                break;
+            }
+            waited = true;
+            pressed = self.released.wait_timeout(pressed, left).unwrap().0;
+        }
+        waited
     }
 
     fn use_route(&self, route: Route) {

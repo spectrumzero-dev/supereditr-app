@@ -261,4 +261,14 @@
   main :global(.page) {
     max-width: 720px;
   }
+  /* Narrow, as when a tiling desktop puts Settings beside another window: less room for the sidebar
+     and the margins, so the page keeps its width. */
+  @media (max-width: 700px) {
+    .shell {
+      grid-template-columns: 168px minmax(0, 1fr);
+    }
+    main {
+      padding: 0 18px 32px;
+    }
+  }
 </style>

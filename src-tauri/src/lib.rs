@@ -442,6 +442,11 @@ pub fn run() {
             }
 
             if let Some(settings) = handle.get_webview_window("settings") {
+                // A tiling desktop (Omarchy's Hyprland) sizes Settings itself, often to half the
+                // screen. Below the window's minimum width, GTK would draw the page wider than the
+                // window and cut off its right side.
+                #[cfg(target_os = "linux")]
+                let _ = settings.set_min_size(Some(tauri::LogicalSize::new(420.0, 400.0)));
                 let window = settings.clone();
                 let app = handle.clone();
                 settings.on_window_event(move |event| {

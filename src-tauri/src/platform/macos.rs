@@ -1908,6 +1908,9 @@ pub enum SettingsWindow {
     /// Frontmost (ignoring SuperEditr's own windows), with its frame in screen points and its
     /// window number.
     Front(Rect, i64),
+    /// Frontmost, but showing a prompt of its own over its window, such as the password or Touch ID
+    /// prompt for turning an app on. The guide stays out of its way.
+    Prompt,
     /// Open, but another app is in front.
     Behind,
     Closed,
@@ -1944,6 +1947,9 @@ pub fn system_settings_window() -> SettingsWindow {
     };
     let mut seen = false;
     let mut front = true;
+    // System Settings' windows in front of every other app's, front to back. A prompt is a smaller
+    // window in front of the one it belongs to.
+    let mut stack: Vec<(Rect, i64)> = Vec::new();
     // Front to back.
     for item in windows.iter() {
         let dict: CFDictionary<CFString, CFType> =
@@ -1969,10 +1975,31 @@ pub fn system_settings_window() -> SettingsWindow {
         let mut rect = core_graphics::geometry::CGRect::default();
         if unsafe { CGRectMakeWithDictionaryRepresentation(bounds.as_CFTypeRef() as _, &mut rect) } {
             let frame = Rect { x: rect.origin.x, y: rect.origin.y, width: rect.size.width, height: rect.size.height };
-            return SettingsWindow::Front(frame, number(unsafe { kCGWindowNumber }).unwrap_or(0));
+            stack.push((frame, number(unsafe { kCGWindowNumber }).unwrap_or(0)));
         }
     }
-    if seen { SettingsWindow::Behind } else { SettingsWindow::Closed }
+    match settings_front(&stack) {
+        Some(state) => state,
+        None if seen => SettingsWindow::Behind,
+        None => SettingsWindow::Closed,
+    }
+}
+
+/// Picks System Settings' main window from its windows in front of every other app's (front to
+/// back): the frontmost, unless a window behind it contains it, which makes the frontmost a prompt.
+fn settings_front(stack: &[(Rect, i64)]) -> Option<SettingsWindow> {
+    let contains = |outer: &Rect, inner: &Rect| {
+        (outer.width > inner.width || outer.height > inner.height)
+            && inner.x >= outer.x - 1.0
+            && inner.y >= outer.y - 1.0
+            && inner.x + inner.width <= outer.x + outer.width + 1.0
+            && inner.y + inner.height <= outer.y + outer.height + 1.0
+    };
+    let (first, number) = stack.first()?;
+    if stack[1..].iter().any(|(behind, _)| contains(behind, first)) {
+        return Some(SettingsWindow::Prompt);
+    }
+    Some(SettingsWindow::Front(*first, *number))
 }
 
 /// SuperEditr's own app bundle, which the guide lets the user drag into System Settings.
@@ -2336,6 +2363,18 @@ mod pasteboard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_window_inside_settings_main_window_is_a_prompt() {
+        let main = Rect { x: 300.0, y: 60.0, width: 715.0, height: 760.0 };
+        let prompt = Rect { x: 500.0, y: 300.0, width: 300.0, height: 330.0 };
+        assert!(matches!(settings_front(&[(main, 7)]), Some(SettingsWindow::Front(f, 7)) if f == main));
+        assert!(matches!(settings_front(&[(prompt, 9), (main, 7)]), Some(SettingsWindow::Prompt)));
+        // A second Settings window beside the first is not a prompt.
+        let other = Rect { x: 1100.0, y: 60.0, width: 300.0, height: 330.0 };
+        assert!(matches!(settings_front(&[(other, 9), (main, 7)]), Some(SettingsWindow::Front(f, 9)) if f == other));
+        assert!(settings_front(&[]).is_none());
+    }
 
     #[test]
     fn finds_an_edit_in_the_field_text() {

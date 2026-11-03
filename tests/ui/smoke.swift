@@ -122,10 +122,11 @@ func windows(bundleID: String) -> [Window] {
 }
 
 let superEditr = "app.supereditr"
-/// SuperEditr’s suggestion panel: about 548 points wide (Settings is 900, the guide card 380).
+/// SuperEditr’s suggestion panel: about 548 points wide (Settings is 900, the guide card 424).
 func overlay() -> Window? { windows(bundleID: superEditr).first { (400...700).contains($0.frame.width) } }
-/// The permission guide card, about 380 points wide.
-func guideCard() -> Window? { windows(bundleID: superEditr).first { $0.frame.width < 400 } }
+/// The permission guide card's window, about 424 points wide: a 368-point card with 28 points around
+/// it for its shadow.
+func guideCard() -> Window? { windows(bundleID: superEditr).first { $0.frame.width < 470 } }
 
 /// What the window server's list shows of an app's windows. SuperEditr finds System Settings this
 /// way to place the guide card, so an empty list here explains a missing card.
@@ -1358,7 +1359,8 @@ stop(app)
 // What SuperEditr logged about each read and write (app IDs, timings and lengths, no text).
 try? FileManager.default.copyItem(atPath: home + "/Library/Logs/SuperEditr/capture.log", toPath: outDir + "/capture.log")
 
-// 7. The Accessibility guide card, when this build has it, sits at System Settings' bottom-right.
+// 7. The Accessibility guide card, when this build has it, sits beside System Settings' window, off
+// the list; with no room on the screen, over the window's top.
 let binary = (try? Data(contentsOf: URL(fileURLWithPath: "\(appPath)/Contents/MacOS/supereditr"))) ?? Data()
 if binary.range(of: Data("SUPEREDITR_PREVIEW_GUIDE".utf8)) == nil {
     log("SKIP guide card: not in this build")
@@ -1374,9 +1376,11 @@ if binary.range(of: Data("SUPEREDITR_PREVIEW_GUIDE".utf8)) == nil {
           "System Settings window: \(String(describing: settingsWindow?.frame)), card: \(String(describing: card?.frame)); "
             + "window server: \(windowServerView("com.apple.systempreferences"))")
     if let s = settingsWindow?.frame, let c = card?.frame {
-        let inside = c.maxX <= s.maxX + 1 && c.maxY <= s.maxY + 1 && c.minX >= s.minX && c.minY >= s.minY
-        let corner = s.maxX - c.maxX < 60 && s.maxY - c.maxY < 60
-        check(inside && corner, "the guide card sits at System Settings' bottom-right", "card \(c) in window \(s)")
+        let card = c.insetBy(dx: 28, dy: 28)
+        // Beside the window, the guide's whole window, shadow margin included, stays off the list.
+        let beside = !c.intersects(s.insetBy(dx: 1, dy: 1)) && card.intersects(s.insetBy(dx: -60, dy: -60))
+        let top = s.contains(card) && card.minY - s.minY < 60
+        check(beside || top, "the guide card sits beside System Settings, off the list", "card \(card) by window \(s)")
         screenshot(window: nil, rect: s.union(c), to: outDir + "/guide.png")
     }
     stop(app)

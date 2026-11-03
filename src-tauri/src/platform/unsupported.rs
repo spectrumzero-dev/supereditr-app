@@ -43,6 +43,7 @@ pub fn open_accessibility_settings() {}
 
 pub enum SettingsWindow {
     Front(Rect, i64),
+    Prompt,
     Behind,
     Closed,
 }

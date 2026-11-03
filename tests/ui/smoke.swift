@@ -1377,7 +1377,8 @@ if binary.range(of: Data("SUPEREDITR_PREVIEW_GUIDE".utf8)) == nil {
             + "window server: \(windowServerView("com.apple.systempreferences"))")
     if let s = settingsWindow?.frame, let c = card?.frame {
         let card = c.insetBy(dx: 28, dy: 28)
-        let beside = !card.intersects(s.insetBy(dx: 1, dy: 1)) && card.intersects(s.insetBy(dx: -60, dy: -60))
+        // Beside the window, the guide's whole window, shadow margin included, stays off the list.
+        let beside = !c.intersects(s.insetBy(dx: 1, dy: 1)) && card.intersects(s.insetBy(dx: -60, dy: -60))
         let top = s.contains(card) && card.minY - s.minY < 60
         check(beside || top, "the guide card sits beside System Settings, off the list", "card \(card) by window \(s)")
         screenshot(window: nil, rect: s.union(c), to: outDir + "/guide.png")

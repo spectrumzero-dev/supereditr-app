@@ -1,9 +1,9 @@
 <script lang="ts">
-  // Floats beside System Settings → Accessibility. SuperEditr is usually listed there already,
-  // switched off: macOS lists any app that checks whether it has access, and SuperEditr must check.
-  // So the card leads with the switch; dragging the tile (SuperEditr.app itself) is the fallback.
-  // Dragging the tile drags SuperEditr.app itself
-  // (a native file drag started in Rust), which the Accessibility list accepts.
+  // Floats beside System Settings → Accessibility. SuperEditr is almost always listed there already,
+  // switched off: macOS lists any app that checks whether it has access, and SuperEditr checks at
+  // launch. Nothing short of the access itself can confirm it's listed, so the card shows SuperEditr's
+  // row with its switch turning on. The row is also the fallback: dragging it drags SuperEditr.app
+  // itself (a native file drag started in Rust), which the Accessibility list accepts.
   import { invoke as tauriInvoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
 
@@ -41,12 +41,13 @@
     <svg class="arrow" style:rotate="{where.turn}deg" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V5M5.5 11.5 12 5l6.5 6.5" /></svg>
     <p>Turn on <strong>SuperEditr</strong> in the list {where.words} to let it read and fix the text you select.</p>
   </div>
-  {#if error}<p class="error">{error}</p>{:else}<p class="hint">Not in the list? Drag this into it.</p>{/if}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="tile" onmousedown={drag} title="Drag into the list {where.words}">
     <img src="/icon.png" alt="" width="28" height="28" draggable="false" />
     <span>SuperEditr</span>
+    <span class="switch" aria-hidden="true"></span>
   </div>
+  {#if error}<p class="error">{error}</p>{:else}<p class="hint">Not in the list? Drag this row into it.</p>{/if}
 </div>
 
 <style>
@@ -102,7 +103,7 @@
     cursor: pointer;
   }
   .tile {
-    margin-top: 6px;
+    margin-top: 12px;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -117,9 +118,72 @@
   .tile:active {
     cursor: grabbing;
   }
+  .tile span:first-of-type {
+    flex: 1;
+  }
+  /* A copy of the list's switch, turning on every few seconds. */
+  .switch {
+    position: relative;
+    flex: none;
+    width: 34px;
+    height: 20px;
+    border-radius: 10px;
+    background: var(--border-strong);
+    animation: switch-track 3.2s ease-in-out infinite;
+  }
+  .switch::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.3);
+    animation: switch-knob 3.2s ease-in-out infinite;
+  }
+  @keyframes switch-track {
+    0%,
+    30% {
+      background: var(--border-strong);
+    }
+    40%,
+    90% {
+      background: #0a84ff;
+    }
+    100% {
+      background: var(--border-strong);
+    }
+  }
+  @keyframes switch-knob {
+    0%,
+    30% {
+      translate: 0;
+    }
+    40%,
+    90% {
+      translate: 14px;
+    }
+    100% {
+      translate: 0;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .switch,
+    .switch::after {
+      animation: none;
+    }
+    .switch {
+      background: #0a84ff;
+    }
+    .switch::after {
+      translate: 14px;
+    }
+  }
   .hint,
   .error {
-    margin-top: 10px;
+    margin-top: 8px;
     font-size: 11.5px;
     color: var(--text-3);
   }

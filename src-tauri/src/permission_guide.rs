@@ -13,8 +13,7 @@ use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 const CARD_WIDTH: f64 = 368.0;
 const CARD_HEIGHT: f64 = 140.0;
 const SHADOW: f64 = 28.0;
-/// Space between the card and System Settings' window, and from the window's corner.
-const GAP: f64 = 12.0;
+/// Space between the card and the end of System Settings' list.
 const INSET: f64 = 18.0;
 /// Give up if System Settings stays closed this long, or the user never finishes.
 const CLOSED_GRACE: Duration = Duration::from_secs(4);
@@ -121,13 +120,15 @@ fn spot(window: &platform::Rect, screen: &platform::Rect) -> (platform::Rect, Si
     let (screen_right, screen_bottom) = (screen.x + screen.width, screen.y + screen.height);
     let y = (bottom - INSET - CARD_HEIGHT).min(screen_bottom - CARD_HEIGHT).max(screen.y);
     let card = |x: f64, y: f64| platform::Rect { x, y, width: CARD_WIDTH, height: CARD_HEIGHT };
-    if right + GAP + CARD_WIDTH <= screen_right {
-        (card(right + GAP, y), Side::Right)
-    } else if window.x - GAP - CARD_WIDTH >= screen.x {
-        (card(window.x - GAP - CARD_WIDTH, y), Side::Left)
-    } else if bottom + GAP + CARD_HEIGHT <= screen_bottom {
+    // Beside the window the card is `SHADOW` away, so its whole window, shadow margin included,
+    // stays clear of the list and never takes a click or scroll meant for it.
+    if right + SHADOW + CARD_WIDTH <= screen_right {
+        (card(right + SHADOW, y), Side::Right)
+    } else if window.x - SHADOW - CARD_WIDTH >= screen.x {
+        (card(window.x - SHADOW - CARD_WIDTH, y), Side::Left)
+    } else if bottom + SHADOW + CARD_HEIGHT <= screen_bottom {
         let x = (right - INSET - CARD_WIDTH).min(screen_right - CARD_WIDTH).max(screen.x);
-        (card(x, bottom + GAP), Side::Below)
+        (card(x, bottom + SHADOW), Side::Below)
     } else {
         (card(right - INSET - CARD_WIDTH, window.y + INSET), Side::Inside)
     }
@@ -324,7 +325,14 @@ mod tests {
         Rect { x, y: 60.0, width, height: 760.0 }
     }
 
-    fn overlaps(a: &Rect, b: &Rect) -> bool {
+    /// Whether the guide's window, shadow margin included, overlaps `b`.
+    fn overlaps(card: &Rect, b: &Rect) -> bool {
+        let a = Rect {
+            x: card.x - SHADOW,
+            y: card.y - SHADOW,
+            width: card.width + 2.0 * SHADOW,
+            height: card.height + 2.0 * SHADOW,
+        };
         a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
     }
 

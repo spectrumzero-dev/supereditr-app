@@ -147,6 +147,7 @@ pub fn start(on_shortcut: impl Fn(Action) + Send + Sync + 'static) {
         }
     });
     tauri::async_runtime::spawn(quit_on_signal());
+    clipboard::watch_changes();
     match hyprland() {
         Some(hyprland) => {
             for check in hyprland.setup_status() {

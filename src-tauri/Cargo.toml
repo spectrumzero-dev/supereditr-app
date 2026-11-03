@@ -41,6 +41,9 @@ zbus = { version = "5", features = ["tokio"] }
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts"] }
 # The clipboard through data-control, without focus: read, snapshot every type and restore.
 wl-clipboard-rs = "0.9"
+# Hears when the clipboard changes, without reading it.
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 futures-util = "0.3"
 # Sentence boundaries, for selecting the sentence before the caret.
 unicode-segmentation = "1"

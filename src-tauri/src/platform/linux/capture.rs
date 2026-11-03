@@ -21,6 +21,10 @@ use std::time::{Duration, Instant};
 /// How long a guarded copy waits for the app to copy. Chromium copies in about 15 ms and Obsidian
 /// in about 45; no copy by then means nothing was selected.
 const COPY_WAIT: Duration = Duration::from_millis(if cfg!(test) { 40 } else { 400 });
+/// How long a copy counts as the selection of a program running in a terminal. Programs that take
+/// over the mouse, such as Claude Code and Codex, draw their own selection and copy it when the
+/// button comes up, so the terminal has no selection of its own to copy.
+const TERMINAL_PROGRAM_COPY: Duration = Duration::from_secs(20);
 
 /// How long reading the focused field may take in all, so a frozen app is given up on in time for
 /// the guarded copy and an answer within about two seconds.
@@ -132,7 +136,11 @@ async fn guarded_copy(services: &Services<'_>, window: &WindowRef, profile: Prof
         return Err(cant_read());
     }
     let limits = Limits::default();
+    // Asked before the marker goes on the clipboard, which is a change too.
+    let just_copied =
+        profile.terminal && services.clipboard.last_change().is_some_and(|at| at.elapsed() < TERMINAL_PROGRAM_COPY);
     let transaction = Transaction::begin(services.clipboard, &limits).map_err(|_| cant_read())?;
+    let program_copy = just_copied.then(|| transaction.before().text()).flatten();
     transaction.put_marker().map_err(|_| cant_read())?;
     // Terminals take Ctrl+C as an interrupt; Ctrl+Insert copies there, as Omarchy's own copy key does.
     let key = Shortcut::ctrl(if profile.terminal { "Insert" } else { "C" });
@@ -143,18 +151,27 @@ async fn guarded_copy(services: &Services<'_>, window: &WindowRef, profile: Prof
     }
     if !transaction.wait_for_copy(COPY_WAIT) {
         transaction.restore();
-        return Err(PlatformError::NoSelection);
+        return match program_copy {
+            Some(text) => Ok(Capture::copied(window.clone(), text, pointer_in(services, window))),
+            None if profile.terminal => Err(PlatformError::Other(format!(
+                "Nothing was selected in {}. If a program there has the mouse, select the text again, or hold Shift while you select.",
+                apps::display_name(&window.app_id)
+            ))),
+            None => Err(PlatformError::NoSelection),
+        };
     }
     let text = transaction.read_text(&limits);
     transaction.restore_after_copy();
     match text {
-        Ok(text) if !text.trim().is_empty() => {
-            let anchor = services.desktop.cursor().ok().filter(|&point| inside(window, point)).map(point_rect);
-            Ok(Capture::copied(window.clone(), text, anchor))
-        }
+        Ok(text) if !text.trim().is_empty() => Ok(Capture::copied(window.clone(), text, pointer_in(services, window))),
         Ok(_) => Err(PlatformError::NoSelection),
         Err(_) => Err(cant_read()),
     }
+}
+
+/// The pointer, when it's over the window, for the panel to open beside.
+fn pointer_in(services: &Services<'_>, window: &WindowRef) -> Option<Rect> {
+    services.desktop.cursor().ok().filter(|&point| inside(window, point)).map(point_rect)
 }
 
 /// Where the panel goes: the selection, when the app reports a position inside its window,
@@ -239,9 +256,67 @@ mod tests {
 
     #[test]
     fn nothing_selected_means_no_capture_and_the_clipboard_comes_back() {
-        let world = World::new("foot");
+        let world = World::new("org.gnome.Papers");
         assert!(matches!(world.capture(true, false), Err(PlatformError::NoSelection)));
         assert_eq!(world.clipboard.get("text/plain;charset=utf-8").unwrap(), b"Rhyan's own copy");
+    }
+
+    #[test]
+    fn a_terminal_with_nothing_selected_says_to_hold_shift() {
+        let world = World::new("foot");
+        match world.capture(true, false) {
+            Err(PlatformError::Other(message)) => assert!(message.contains("hold Shift"), "{message}"),
+            other => panic!("expected the terminal message, got {other:?}"),
+        }
+        assert_eq!(world.clipboard.get("text/plain;charset=utf-8").unwrap(), b"Rhyan's own copy");
+    }
+
+    #[test]
+    fn a_program_in_a_terminal_that_just_copied_its_selection_is_reviewed() {
+        let world = World::new("foot");
+        world.clipboard.copy_from_app("what do you think of tis");
+        *world.clipboard.changed.lock().unwrap() = Some(Instant::now());
+        let capture = world.capture(true, false).unwrap();
+        assert_eq!(capture.text, "what do you think of tis");
+        assert!(!capture.editable, "terminals are copy-only");
+        assert_eq!(world.clipboard.get("text/plain;charset=utf-8").unwrap(), b"what do you think of tis");
+    }
+
+    #[test]
+    fn the_terminals_own_selection_comes_before_a_recent_copy() {
+        let world = World::new("foot").copying("make deploy");
+        *world.clipboard.changed.lock().unwrap() = Some(Instant::now());
+        assert_eq!(world.capture(true, false).unwrap().text, "make deploy");
+    }
+
+    #[test]
+    fn an_old_copy_isnt_taken_for_a_terminal_programs_selection() {
+        let world = World::new("foot");
+        let long_ago = Instant::now().checked_sub(TERMINAL_PROGRAM_COPY + Duration::from_secs(1));
+        *world.clipboard.changed.lock().unwrap() = long_ago;
+        assert!(matches!(world.capture(true, false), Err(PlatformError::Other(_))));
+    }
+
+    #[test]
+    fn a_sensitive_copy_isnt_taken_for_a_terminal_programs_selection() {
+        let world = World::new("foot");
+        world
+            .clipboard
+            .offer(vec![
+                ("text/plain;charset=utf-8".into(), b"hunter2".to_vec()),
+                (super::super::clipboard::SENSITIVE_HINT.into(), b"secret".to_vec()),
+            ])
+            .unwrap();
+        *world.clipboard.changed.lock().unwrap() = Some(Instant::now());
+        assert!(matches!(world.capture(true, false), Err(PlatformError::Other(_))));
+    }
+
+    #[test]
+    fn a_recent_copy_isnt_taken_for_a_selection_outside_a_terminal() {
+        let world = World::new("org.gnome.Papers");
+        world.clipboard.copy_from_app("from somewhere else");
+        *world.clipboard.changed.lock().unwrap() = Some(Instant::now());
+        assert!(matches!(world.capture(true, false), Err(PlatformError::NoSelection)));
     }
 
     #[test]

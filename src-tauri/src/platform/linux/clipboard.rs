@@ -9,7 +9,16 @@
 //! Everything SuperEditr puts on the clipboard, a restore included, carries the password-manager
 //! hint, so clipboard history (Omarchy's included) leaves it out.
 
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+use wayland_client::globals::{GlobalListContents, registry_queue_init};
+use wayland_client::protocol::wl_registry::{self, WlRegistry};
+use wayland_client::protocol::wl_seat::WlSeat;
+use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop, event_created_child};
+use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_device_v1::{self, ZwlrDataControlDeviceV1};
+use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
+use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_offer_v1::ZwlrDataControlOfferV1;
 
 pub const SENSITIVE_HINT: &str = "x-kde-passwordManagerHint";
 
@@ -65,6 +74,10 @@ pub trait DataControl: Send + Sync {
     /// Replaces the clipboard with exactly these types.
     fn offer(&self, items: Vec<(String, Vec<u8>)>) -> Result<(), ClipboardError>;
     fn clear(&self) -> Result<(), ClipboardError>;
+    /// When the clipboard last changed, as far as SuperEditr knows.
+    fn last_change(&self) -> Option<Instant> {
+        None
+    }
 }
 
 /// The user's clipboard, put aside.
@@ -104,6 +117,16 @@ impl Snapshot {
 
     pub fn types(&self) -> impl Iterator<Item = &str> {
         self.items.iter().map(|(mime, _)| mime.as_str())
+    }
+
+    /// The text that was put aside. None when it's marked sensitive, as a password manager's copy
+    /// and everything SuperEditr itself puts on the clipboard are.
+    pub fn text(&self) -> Option<String> {
+        if self.types().any(|mime| mime == SENSITIVE_HINT) {
+            return None;
+        }
+        let data = READ_TEXT_TYPES.iter().find_map(|t| self.items.iter().find(|(mime, _)| mime == t))?;
+        String::from_utf8(data.1.clone()).ok().filter(|text| !text.trim().is_empty())
     }
 }
 
@@ -275,12 +298,88 @@ impl DataControl for Wayland {
         use wl_clipboard_rs::copy::{ClipboardType, Seat, clear};
         clear(ClipboardType::Regular, Seat::All).map_err(|error| ClipboardError::Failed(error.to_string()))
     }
+
+    fn last_change(&self) -> Option<Instant> {
+        *LAST_CHANGE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }
+
+static LAST_CHANGE: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Starts noting when the clipboard changes. Only the moment is kept: the contents aren't read.
+pub fn watch_changes() {
+    std::thread::spawn(|| {
+        if let Err(error) = run_watcher() {
+            super::trace(format_args!("clipboard changes can't be watched: {error}"));
+        }
+    });
+}
+
+fn run_watcher() -> Result<(), Box<dyn std::error::Error>> {
+    let connection = Connection::connect_to_env()?;
+    let (globals, mut queue) = registry_queue_init::<Watcher>(&connection)?;
+    let handle = queue.handle();
+    let seat: WlSeat = globals.bind(&handle, 1..=1, ())?;
+    let manager: ZwlrDataControlManagerV1 = globals.bind(&handle, 1..=1, ())?;
+    let _device = manager.get_data_device(&seat, &handle, ());
+    let mut watcher = Watcher { offer: None, started: false };
+    // The first round reports what's on the clipboard already, which isn't a change.
+    queue.roundtrip(&mut watcher)?;
+    watcher.started = true;
+    loop {
+        queue.blocking_dispatch(&mut watcher)?;
+    }
+}
+
+struct Watcher {
+    offer: Option<ZwlrDataControlOfferV1>,
+    started: bool,
+}
+
+impl Dispatch<ZwlrDataControlDeviceV1, ()> for Watcher {
+    fn event(
+        state: &mut Self,
+        _: &ZwlrDataControlDeviceV1,
+        event: zwlr_data_control_device_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwlr_data_control_device_v1::Event::Selection { id } = event {
+            if let Some(old) = std::mem::replace(&mut state.offer, id) {
+                old.destroy();
+            }
+            if state.started {
+                let now = state.offer.is_some().then(Instant::now);
+                *LAST_CHANGE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = now;
+            }
+        }
+    }
+
+    event_created_child!(Watcher, ZwlrDataControlDeviceV1, [
+        zwlr_data_control_device_v1::EVT_DATA_OFFER_OPCODE => (ZwlrDataControlOfferV1, ()),
+    ]);
+}
+
+impl Dispatch<WlRegistry, GlobalListContents> for Watcher {
+    fn event(
+        _: &mut Self,
+        _: &WlRegistry,
+        _: wl_registry::Event,
+        _: &GlobalListContents,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+delegate_noop!(Watcher: ignore WlSeat);
+delegate_noop!(Watcher: ignore ZwlrDataControlManagerV1);
+delegate_noop!(Watcher: ignore ZwlrDataControlOfferV1);
 
 #[cfg(test)]
 pub mod fake {
     use super::*;
-    use std::sync::Mutex;
 
     /// A clipboard in memory. `slow` types never answer; `on_offer` runs after each offer, as an
     /// app copying in response to a key would.
@@ -289,6 +388,7 @@ pub mod fake {
         pub items: Mutex<Vec<(String, Vec<u8>)>>,
         pub slow: Vec<String>,
         pub offers_made: Mutex<usize>,
+        pub changed: Mutex<Option<Instant>>,
     }
 
     impl FakeClipboard {
@@ -338,6 +438,10 @@ pub mod fake {
         fn clear(&self) -> Result<(), ClipboardError> {
             self.items.lock().unwrap().clear();
             Ok(())
+        }
+
+        fn last_change(&self) -> Option<Instant> {
+            *self.changed.lock().unwrap()
         }
     }
 }

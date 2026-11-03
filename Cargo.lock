@@ -6945,6 +6945,8 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "unicode-segmentation",
+ "wayland-client",
+ "wayland-protocols-wlr",
  "wl-clipboard-rs",
  "zbus 5.19.0",
 ]

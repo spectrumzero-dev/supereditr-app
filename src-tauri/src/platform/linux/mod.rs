@@ -97,13 +97,16 @@ impl Capture {
     }
 }
 
+/// `bounds` is the box's frame inside Settings. Wayland doesn't tell a program where its window is,
+/// so the desktop's answer places it on screen; without one, the panel opens at the pointer.
 pub fn playground_capture(text: String, bounds: Rect) -> Capture {
+    let front = desktop().front_window().ok();
     Capture {
         pid: own_pid(),
         bundle_id: String::new(),
         app_name: "SuperEditr".into(),
         text,
-        bounds: Some(bounds),
+        bounds: in_window(front.as_ref().filter(|window| window.pid == own_pid()), bounds),
         editable: true,
         playground: true,
         code: Vec::new(),
@@ -271,6 +274,11 @@ pub fn return_focus(pid: i32) {
             let _ = desktop.focus(&window).await;
         });
     }
+}
+
+/// A frame inside a window, in screen coordinates.
+fn in_window(window: Option<&WindowRef>, frame: Rect) -> Option<Rect> {
+    window?.rect.map(|at| Rect { x: at.x + frame.x, y: at.y + frame.y, ..frame })
 }
 
 pub fn own_pid() -> i32 {
@@ -554,4 +562,27 @@ async fn keyring_check() -> SetupCheck {
         ),
     };
     SetupCheck { name: "Keyring".into(), ok: running, detail }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_frame_inside_a_window_is_placed_by_the_window() {
+        let frame = Rect { x: 40.0, y: 100.0, width: 500.0, height: 80.0 };
+        let mut window = WindowRef {
+            handle: String::new(),
+            pid: 1,
+            app_id: String::new(),
+            title: String::new(),
+            rect: None,
+            xwayland: false,
+            tags: Vec::new(),
+        };
+        assert_eq!(in_window(None, frame), None);
+        assert_eq!(in_window(Some(&window), frame), None);
+        window.rect = Some(Rect { x: 960.0, y: 38.0, width: 950.0, height: 1000.0 });
+        assert_eq!(in_window(Some(&window), frame), Some(Rect { x: 1000.0, y: 138.0, width: 500.0, height: 80.0 }));
+    }
 }

@@ -1342,14 +1342,23 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             check(overlay() != nil, "⌥↩ leaves the panel open when it can't replace")
             check(panelText().contains("Nothing replaced"), "⌥↩ says nothing was replaced", "panel text: \(panelText())")
             screenshot(window: overlay(), to: outDir + "/read-only-pressed.png")
+            KeyLog.seen.removeAll()
             press(keyC, .maskCommand)
-            let copied = waitFor(3) { () -> String? in
+            let first = waitFor(3) { () -> String? in
                 let text = NSPasteboard.general.string(forType: .string) ?? ""
                 return text != untouched && !text.isEmpty ? text : nil
             }
-            check(copied.map { !$0.contains(typo) } ?? false, "⌘C copies the fix", "the clipboard holds \"\(copied ?? untouched)\"")
-            press(keyEscape)
-            _ = waitFor(3) { overlay() == nil ? true : nil }
+            pump(0.5)  // for anything else that writes after the first change
+            let settled = NSPasteboard.general.string(forType: .string) ?? ""
+            let panelNow = overlay() != nil ? panelText() : ""
+            log("NOTE ⌘C in a review: clipboard first \"\(first ?? "unchanged")\", then \"\(settled)\"; panel \(overlay() != nil ? "open" : "closed")")
+            check(!KeyLog.seen.contains { $0.code == Int64(keyC) }, "⌘C in a review never reaches the app", "the app received ⌘C")
+            check(!settled.isEmpty && settled != untouched && !settled.contains(typo), "⌘C copies the fix", "the clipboard holds \"\(settled)\"")
+            check(panelNow.contains("Copied"), "⌘C says it copied", "panel text: \(panelNow)")
+            if overlay() != nil {
+                press(keyEscape)
+                _ = waitFor(3) { overlay() == nil ? true : nil }
+            }
         }
     }
     quitOpened(chrome)

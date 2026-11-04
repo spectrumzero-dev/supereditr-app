@@ -2271,12 +2271,17 @@ pub fn start_double_press_tap(
                         let matched =
                             key.and_then(|key| chords.iter().position(|c| c.key == key && c.modifiers == mods));
                         // A double-press shortcut still works during a review (⌘E E starts a new one).
-                        if matched.is_none()
-                            && REVIEW_KEYS.load(Ordering::Relaxed)
-                            && let Some(key) = review_key(event, code)
-                        {
-                            on_review_key(key);
-                            return CallbackResult::Drop;
+                        if matched.is_none() && REVIEW_KEYS.load(Ordering::Relaxed) {
+                            let key = review_key(event, code);
+                            // Shortcuts are what can reach the wrong place. A key code, so never text.
+                            if mods & (double_press::COMMAND | double_press::CONTROL) != 0 {
+                                let to = if key.is_some() { "the panel" } else { "the app" };
+                                trace(format_args!("review: ⌘ or ⌃ with key code {code} goes to {to}"));
+                            }
+                            if let Some(key) = key {
+                                on_review_key(key);
+                                return CallbackResult::Drop;
+                            }
                         }
                         if chords.is_empty() {
                             return CallbackResult::Keep;

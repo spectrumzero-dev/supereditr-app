@@ -14,6 +14,7 @@ use super::apps::{self, Profile, Write};
 use super::atspi::{Field, Fields, ReadError};
 use super::clipboard::{DataControl, Limits, Transaction};
 use super::desktop::{Desktop, Shortcut, WindowRef};
+use super::replace::words;
 use super::{Capture, Source, trace};
 use crate::platform::{PlatformError, Rect};
 use std::time::{Duration, Instant};
@@ -25,6 +26,11 @@ const COPY_WAIT: Duration = Duration::from_millis(if cfg!(test) { 40 } else { 40
 /// over the mouse, such as Claude Code and Codex, draw their own selection and copy it when the
 /// button comes up, so the terminal has no selection of its own to copy.
 const TERMINAL_PROGRAM_COPY: Duration = Duration::from_secs(20);
+/// From this many lines, a selection read through AT-SPI is checked against a copy before it can be
+/// pasted over. The Monaco editor shows accessibility 500 lines of a longer selection and reports
+/// them as all of it, and it can be on a web page, where the app doesn't give it away. A paste would
+/// delete the rest.
+const CHECKED_LINES: usize = 100;
 
 /// How long reading the focused field may take in all, so a frozen app is given up on in time for
 /// the guarded copy and an answer within about two seconds.
@@ -104,11 +110,23 @@ async fn read(
     };
     match field {
         Some(field) if field.has_selection() && !field.partial() => {
+            if profile.code_editor || field.selected.lines().count() >= CHECKED_LINES {
+                if !allow_copy {
+                    return Err(PlatformError::NoSelection);
+                }
+                let copied = guarded_copy(services, window, profile).await?;
+                if words(&copied.text) != words(&field.selected) {
+                    trace(format_args!("{}: AT-SPI shows only part of the selection", window.app_id));
+                    return Ok(copied);
+                }
+            }
             let anchor = anchor(window, &field, services.desktop.cursor().ok());
             return Ok(Capture::read(window.clone(), field, profile, anchor));
         }
-        // A field that exposes its text, with nothing selected in it.
-        Some(field) if !field.partial() => return Err(PlatformError::NoSelection),
+        // A field that exposes its text, with nothing selected in it. A code editor can hide its
+        // text from accessibility (VS Code does with `editor.accessibilitySupport` off), so it gets
+        // a copy too.
+        Some(field) if !field.partial() && !profile.code_editor => return Err(PlatformError::NoSelection),
         _ => {}
     }
     // Fail closed: without a shortcut press, a field AT-SPI can't read isn't read at all.
@@ -143,7 +161,7 @@ async fn guarded_copy(services: &Services<'_>, window: &WindowRef, profile: Prof
     let program_copy = just_copied.then(|| transaction.before().text()).flatten();
     transaction.put_marker().map_err(|_| cant_read())?;
     // Terminals take Ctrl+C as an interrupt; Ctrl+Insert copies there, as Omarchy's own copy key does.
-    let key = Shortcut::ctrl(if profile.terminal { "Insert" } else { "C" });
+    let key = Shortcut::ctrl(if profile.terminal || profile.code_editor { "Insert" } else { "C" });
     super::wait_for_shortcut_release();
     if services.desktop.send_shortcut(window, key).await.is_err() {
         transaction.restore();
@@ -259,6 +277,61 @@ mod tests {
         let world = World::new("org.gnome.Papers");
         assert!(matches!(world.capture(true, false), Err(PlatformError::NoSelection)));
         assert_eq!(world.clipboard.get("text/plain;charset=utf-8").unwrap(), b"Rhyan's own copy");
+    }
+
+    #[test]
+    fn a_code_editor_showing_all_of_the_selection_can_be_replaced() {
+        let world = World::new("com.microsoft.VSCode").with_field(field("Their going")).copying("Their going");
+        let capture = world.capture(true, false).unwrap();
+        assert!(capture.editable);
+        assert_eq!(world.keys_sent(), ["CTRL Insert"]);
+    }
+
+    #[test]
+    fn a_code_editor_showing_part_of_the_selection_is_copy_only_with_all_of_it() {
+        let world = World::new("com.microsoft.VSCode").with_field(field("Line 1\n…")).copying("Line 1\nLine 2\nLine 3");
+        let capture = world.capture(true, false).unwrap();
+        assert!(!capture.editable, "a paste would delete what accessibility didn't show");
+        assert_eq!(capture.text, "Line 1\nLine 2\nLine 3");
+    }
+
+    #[test]
+    fn a_long_selection_anywhere_is_checked_against_a_copy() {
+        let shown = "A line\n".repeat(CHECKED_LINES);
+        let whole = format!("{shown}{shown}");
+        let world = World::new("chromium").with_field(field(&shown)).copying(&whole);
+        let capture = world.capture(true, false).unwrap();
+        assert!(!capture.editable);
+        assert_eq!(capture.text, whole);
+    }
+
+    #[test]
+    fn a_long_selection_that_matches_its_copy_can_be_replaced() {
+        let shown = "A line\n".repeat(CHECKED_LINES);
+        let world = World::new("chromium").with_field(field(&shown)).copying(&shown);
+        assert!(world.capture(true, false).unwrap().editable);
+    }
+
+    #[test]
+    fn a_short_selection_outside_a_code_editor_isnt_copied() {
+        let world = World::new("chromium").with_field(field("Their going"));
+        assert!(world.capture(true, false).unwrap().editable);
+        assert!(world.keys_sent().is_empty());
+    }
+
+    #[test]
+    fn an_automatic_review_of_a_code_editor_copies_nothing() {
+        let world = World::new("com.microsoft.VSCode").with_field(field("Their going")).copying("Their going");
+        assert!(matches!(world.capture(false, false), Err(PlatformError::NoSelection)));
+        assert!(world.keys_sent().is_empty());
+    }
+
+    #[test]
+    fn a_code_editor_hiding_its_text_is_read_with_a_copy() {
+        let world = World::new("com.microsoft.VSCode").with_field(field("")).copying("Their going");
+        let capture = world.capture(true, false).unwrap();
+        assert_eq!(capture.text, "Their going");
+        assert!(!capture.editable);
     }
 
     #[test]

@@ -21,6 +21,10 @@ pub struct Profile {
     pub terminal: bool,
     /// Nothing is ever read here, not even on a shortcut press.
     pub password_manager: bool,
+    /// An editor that shows accessibility only part of a long selection, and has a terminal inside
+    /// it. Its selection is checked against a copy, made with Ctrl+Insert (Ctrl+C would interrupt
+    /// what's running in that terminal).
+    pub code_editor: bool,
 }
 
 const PASSWORD_MANAGERS: &[&str] =
@@ -30,6 +34,19 @@ const PASSWORD_MANAGERS: &[&str] =
 /// character per line, so its selection is read by a guarded copy.
 const COPY_ONLY: &[&str] = &["md.obsidian.Obsidian", "obsidian"];
 
+/// Apps built on the Monaco editor.
+const CODE_EDITORS: &[&str] = &[
+    "com.microsoft.VSCode",
+    "com.visualstudio.code.oss",
+    "code",
+    "code-oss",
+    "code-url-handler",
+    "codium",
+    "vscodium",
+    "cursor",
+    "windsurf",
+];
+
 /// The profile of the app with this ID. `tags` are the window's Hyprland tags: Omarchy tags every
 /// terminal it knows `terminal`, which catches terminals missing from SuperEditr's own list.
 pub fn profile(app_id: &str, tags: &[String]) -> Profile {
@@ -37,7 +54,7 @@ pub fn profile(app_id: &str, tags: &[String]) -> Profile {
     let terminal = is_terminal(app_id) || tags.iter().any(|tag| tag.starts_with("terminal"));
     let password_manager = listed(PASSWORD_MANAGERS);
     let write = if terminal || password_manager || listed(COPY_ONLY) { Write::CopyOnly } else { Write::Paste };
-    Profile { write, terminal, password_manager }
+    Profile { write, terminal, password_manager, code_editor: listed(CODE_EDITORS) }
 }
 
 /// A readable name for an app ID, for messages: "org.gnome.TextEditor" becomes "TextEditor",

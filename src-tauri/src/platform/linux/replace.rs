@@ -132,7 +132,7 @@ async fn landed(services: &Services<'_>, field: &super::atspi::Field, text: &str
 }
 
 /// `text`'s words, one space apart, without the zero-width characters editors put around code.
-fn words(text: &str) -> String {
+pub(super) fn words(text: &str) -> String {
     let visible: String = text.chars().filter(|c| !matches!(c, '\u{200B}' | '\u{2060}' | '\u{FEFF}')).collect();
     visible.split_whitespace().collect::<Vec<_>>().join(" ")
 }

@@ -252,7 +252,7 @@ review_and_apply() {
   if [[ "$panel_ms" == none ]]; then REVIEW_RESULT=""; return; fi
   text="$(vm "wait_panel_text '[0-9]+ changes?' 15")"
   check "$label: the panel shows a fix" "$(ok has "$text" "[0-9]+ changes?")" "${text:0:120}"
-  REVIEW_PANEL="$(vm d_panel)"
+  REVIEW_PANEL="$(vm panel_placed)"
   where="$(placement "$REVIEW_PANEL" "$win")"
   check "$label: the panel is on one monitor, over the app" "$(ok has "$where" "^ok")" "${where#* }"
   where="$(next_to "$REVIEW_PANEL" "$win" "${rect:-null}" "$pointer")"
@@ -451,7 +451,7 @@ placement_case() {
     key meta_l-alt-e
     vm 'wait_panel 6' > /dev/null || true
     sleep 0.5
-    panel="$(vm d_panel)"
+    panel="$(vm panel_placed)"
     where="$(placement "$panel" "$win")"
     check "pointer at the $corner: the panel is on screen, over the app" "$(ok has "$where" "^ok")" "pointer $x,$y; ${where#* }"
     where="$(next_to "$panel" "$win" "${rect:-null}" "[$x,$y]")"
@@ -471,7 +471,7 @@ placement_case() {
   key meta_l-alt-e
   vm 'wait_panel 6' > /dev/null || true
   sleep 1
-  panel="$(vm d_panel)"
+  panel="$(vm panel_placed)"
   where="$(next_to "$panel" "$win" null "[$x,$y]")"
   check "with nothing selected, the notice stays at the pointer" "$(ok has "$where" "^ok")" "${where#* }"
   vm 'shot 45-placement-notice'
@@ -496,7 +496,7 @@ try_it_case() {
   page="$(vm 'for _ in $(seq 20); do python3 $SMOKE/probe.py press "SuperEditr Settings" "Review" | tee /tmp/smoke-press | grep -q pressed && break; python3 $SMOKE/probe.py press "SuperEditr Settings" "Get Started" > /dev/null; sleep 0.5; done; cat /tmp/smoke-press; rm -f /tmp/smoke-press')"
   check "Try it now's Review button can be pressed" "$(ok has "$page" pressed)" "$page"
   vm 'wait_panel_text "[0-9]+ changes?" 15' > /dev/null
-  panel="$(vm d_panel)"
+  panel="$(vm panel_placed)"
   box="$(vm 'python3 $SMOKE/probe.py editable "SuperEditr Settings"' | jq -c '.rect // null')"
   where="$(next_to "$panel" "$win" "$box" "[-1,-1]")"
   check "the panel is next to the Try it now box" "$(ok has "$where" "^ok .*; selection at")" "box $box; ${where#* }"

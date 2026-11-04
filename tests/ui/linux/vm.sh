@@ -46,6 +46,14 @@ clip_digest() {
 
 clip_text() { timeout 2 wl-paste --no-newline --type text/plain 2> /dev/null; }
 
+# d_panel with the height SuperEditr last asked for. The compositor can report a taller window than
+# the card and its shadow fill, since GTK windows have a minimum size.
+panel_placed() {
+  local height
+  height="$(grep -E ' panel (opens|moves) at ' "$LOG" | tail -1 | sed -E 's/.*×([0-9]+).*/\1/')"
+  d_panel | jq -c --arg height "$height" 'if $height != "" and .size then .size[1] = ($height | tonumber) else . end'
+}
+
 panel_text() { timeout 10 python3 "$SMOKE/probe.py" panel | jq -r .text; }
 
 # wait_panel SECONDS: milliseconds until the panel is shown with keyboard focus, or "none".

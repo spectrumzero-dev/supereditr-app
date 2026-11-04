@@ -2,7 +2,10 @@
 """What the accessibility bus (AT-SPI) shows the smoke tests, as one JSON line.
 
   probe.py focused PID     the focused text field in the app with that pid: role, editable,
-                           password, its whole text and the selection
+                           password, its whole text, the selection and where the selection is, as
+                           the app reports it: [x, y, width, height], or null without a position
+  probe.py editable TITLE  the frame of the first editable text field in the SuperEditr window with
+                           that title, inside the window: [x, y, width, height]
   probe.py panel           the text of SuperEditr's suggestions panel, "" when it has none
   probe.py press TITLE BUTTON
                            presses a button in the SuperEditr window with that title
@@ -57,6 +60,15 @@ def walk(root):
                 stack.append(child)
 
 
+def range_rect(node, start, end):
+    """The same answer SuperEditr's own read accepts as a position (platform/linux/atspi.rs)."""
+    for coordinates in (Atspi.CoordType.SCREEN, Atspi.CoordType.WINDOW):
+        r = Atspi.Text.get_range_extents(node, start, max(end, start + 1), coordinates)
+        if r.width > 0 and r.height > 0 and r.x >= 0 and r.y >= 0 and (r.x, r.y) != (0, 0):
+            return [r.x, r.y, r.width, r.height]
+    return None
+
+
 def focused(pid):
     app = next((app for app, p, _ in apps() if p == pid), None)
     if app is None:
@@ -78,6 +90,7 @@ def focused(pid):
                 if Atspi.Text.get_n_selections(node) > 0:
                     r = Atspi.Text.get_selection(node, 0)
                     out["selection"] = [r.start_offset, r.end_offset]
+                    out["selection_rect"] = range_rect(node, r.start_offset, r.end_offset)
             return out
         except Exception as error:
             return {"error": str(error)}
@@ -124,10 +137,31 @@ def press(window_title, button):
     return {"error": f"no window {window_title!r}"}
 
 
+def editable(window_title):
+    for app, _, name in apps():
+        if "supereditr" not in name.lower():
+            continue
+        for w in range(app.get_child_count()):
+            window = app.get_child_at_index(w)
+            if window is None or window.get_name() != window_title:
+                continue
+            for node in walk(window):
+                try:
+                    if node.get_state_set().contains(Atspi.StateType.EDITABLE):
+                        r = Atspi.Component.get_extents(node, Atspi.CoordType.WINDOW)
+                        return {"rect": [r.x, r.y, r.width, r.height]}
+                except Exception as error:
+                    return {"error": str(error)}
+            return {"error": f"no editable field in {window_title!r}"}
+    return {"error": f"no window {window_title!r}"}
+
+
 def main():
     what = sys.argv[1] if len(sys.argv) > 1 else ""
     if what == "focused" and len(sys.argv) > 2:
         result = focused(int(sys.argv[2]))
+    elif what == "editable" and len(sys.argv) > 2:
+        result = editable(sys.argv[2])
     elif what == "panel":
         result = panel()
     elif what == "press" and len(sys.argv) > 3:

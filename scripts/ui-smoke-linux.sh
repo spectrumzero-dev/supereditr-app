@@ -122,6 +122,27 @@ placement() {
       + " card \($pw)x\($ph) at \($x),\($y) on \(if ($on | length) > 0 then $on[0].name else "no single monitor" end); window at \($w.at[0]),\($w.at[1]) \($w.size[0])x\($w.size[1])"'
 }
 
+# Whether the card is next to where it should open, whichever rule applies (capture.rs, anchor):
+# the selection if the app reports a position inside its window, else the pointer if it's over the
+# window, else near the window's top-left corner. A Wayland app's position is relative to its
+# window, and only an XWayland app's is on screen. "Next to" allows for the card's gap, for a line
+# of text and for being kept on screen.
+# next_to PANEL_JSON WINDOW_JSON RECT_JSON_OR_null POINTER_JSON prints "ok …" or "bad …".
+next_to() {
+  jq -nr --argjson p "$1" --argjson w "$2" --argjson rect "$3" --argjson pointer "$4" '
+    def inside($x; $y): $x >= $w.at[0] and $x < $w.at[0] + $w.size[0] and $y >= $w.at[1] and $y < $w.at[1] + $w.size[1];
+    def max2($a; $b): if $a > $b then $a else $b end;
+    (if $rect == null then null elif $w.xwayland then $rect else [$rect[0] + $w.at[0], $rect[1] + $w.at[1], $rect[2], $rect[3]] end) as $selection
+    | (if $selection != null and inside($selection[0]; $selection[1]) then {kind: "selection", at: $selection}
+       elif inside($pointer[0]; $pointer[1]) then {kind: "pointer", at: [$pointer[0] - 24, $pointer[1] - 10, 1, 20]}
+       else {kind: "window corner", at: [$w.at[0] + 24, $w.at[1] + 48, 1, 20]} end) as $want
+    | ($p.at[0] + 26) as $x | ($p.at[1] + 16) as $y | ($p.size[0] - 52) as $pw | ($p.size[1] - 54) as $ph
+    | max2(max2($x - ($want.at[0] + $want.at[2]); $want.at[0] - ($x + $pw)); 0) as $across
+    | max2(max2($y - ($want.at[1] + $want.at[3]); $want.at[1] - ($y + $ph)); 0) as $down
+    | (if $across <= 40 and $down <= 48 then "ok" else "bad" end)
+      + " card \($pw)x\($ph) at \($x),\($y); \($want.kind) at \($want.at | map(floor) | join(",")): \($across) across, \($down) down"'
+}
+
 # Steps --------------------------------------------------------------------------------------
 
 boot() {
@@ -219,9 +240,11 @@ set_clipboard() {
 # the selection in the window in front, waits for a suggestion and presses Alt+Enter. Sets
 # REVIEW_PANEL, REVIEW_READ and REVIEW_RESULT.
 review_and_apply() {
-  local label="$1" window="$2" app="$3" name="$4" mode="${5:-apply}" mark win panel_ms text where
+  local label="$1" window="$2" app="$3" name="$4" mode="${5:-apply}" mark win panel_ms text where rect pointer
   mark="$(vm log_mark)"
   win="$(vm "d_active")"
+  rect="$(vm "field $(jq -r .pid <<< "$win") | jq -c '.selection_rect // null'")"
+  pointer="$(vm d_cursor)"
   key meta_l-alt-e
   panel_ms="$(vm 'wait_panel 6')"
   check "$label: the review shortcut opens the panel with focus" "$(ok isnt "$panel_ms" none)" "after $panel_ms ms (including the key press)"
@@ -232,6 +255,8 @@ review_and_apply() {
   REVIEW_PANEL="$(vm d_panel)"
   where="$(placement "$REVIEW_PANEL" "$win")"
   check "$label: the panel is on one monitor, over the app" "$(ok has "$where" "^ok")" "${where#* }"
+  where="$(next_to "$REVIEW_PANEL" "$win" "${rect:-null}" "$pointer")"
+  check "$label: the panel is next to what was reviewed" "$(ok has "$where" "^ok")" "${where#* }"
   vm "shot $name-review"
   [[ "$window" == "-" ]] || true
   key alt-ret
@@ -410,7 +435,7 @@ editor_cases() {
 
 placement_case() {
   begin_case placement "the panel opens by the selection (or the pointer), on screen and over the app"
-  local e corner x y panel win where
+  local e corner x y panel win where rect
   e="$(vm "d_addr '^org.gnome.TextEditor'")"
   [[ "$e" != null ]] || e="$(start_editor "" smoke-sample.txt | tail -1)"
   vm "d_focus $e; sleep 0.3; d_keys $e CTRL Z; sleep 0.3; select_all $e"
@@ -422,16 +447,58 @@ placement_case() {
       x="$(jq -r '.at[0] + .size[0] - 40' <<< "$win")" y="$(jq -r '.at[1] + .size[1] - 40' <<< "$win")"
     fi
     vm "d_cursor_move $x $y"
+    rect="$(vm "field $(jq -r .pid <<< "$win") | jq -c '.selection_rect // null'")"
     key meta_l-alt-e
     vm 'wait_panel 6' > /dev/null || true
     sleep 0.5
     panel="$(vm d_panel)"
     where="$(placement "$panel" "$win")"
     check "pointer at the $corner: the panel is on screen, over the app" "$(ok has "$where" "^ok")" "pointer $x,$y; ${where#* }"
+    where="$(next_to "$panel" "$win" "${rect:-null}" "[$x,$y]")"
+    check "pointer at the $corner: the panel is next to what was reviewed" "$(ok has "$where" "^ok")" "${where#* }"
     vm "shot 45-placement-$corner"
     key esc
     vm 'wait_closed 3' || true
   done
+  # A notice has no selection to go by. It stays at the pointer after the panel takes focus, which
+  # can move the pointer.
+  vm "d_focus $e; sleep 0.3; d_keys $e '' Right; sleep 0.3"
+  x="$(jq -r '.at[0] + 60' <<< "$win")" y="$(jq -r '.at[1] + 80' <<< "$win")"
+  vm "d_cursor_move $x $y"
+  key meta_l-alt-e
+  vm 'wait_panel 6' > /dev/null || true
+  sleep 1
+  panel="$(vm d_panel)"
+  where="$(next_to "$panel" "$win" null "[$x,$y]")"
+  check "with nothing selected, the notice stays at the pointer" "$(ok has "$where" "^ok")" "${where#* }"
+  key esc
+  vm 'wait_closed 3' || true
+  end_case
+}
+
+# Settings' Try it now box, with Settings on the right of the screen: the box's position is inside
+# the window, so a panel placed as if it were on screen opens far to the left of it.
+try_it_case() {
+  begin_case try-it "Try it now's panel opens at its box, with Settings on the right"
+  local e win box panel where page
+  e="$(vm "d_addr '^org.gnome.TextEditor'")"
+  [[ "$e" != null ]] || e="$(start_editor "" smoke-sample.txt | tail -1)"
+  vm "d_focus $e; sleep 0.3"
+  vm 'app_start'
+  vm 'wait_for_window "^supereditr \| SuperEditr Settings$" 10' > /dev/null
+  win="$(vm 'sleep 1; d_windows' | jq -c '[.[] | select(.title == "SuperEditr Settings")][0] | {at, size, xwayland}')"
+  check "Settings is on the right of the screen" "$(ok below 300 "$(jq -r '.at[0]' <<< "$win")")" "$win"
+  page="$(vm 'for _ in $(seq 20); do python3 $SMOKE/probe.py press "SuperEditr Settings" "Review" | tee /tmp/smoke-press | grep -q pressed && break; python3 $SMOKE/probe.py press "SuperEditr Settings" "Get Started" > /dev/null; sleep 0.5; done; cat /tmp/smoke-press; rm -f /tmp/smoke-press')"
+  check "Try it now's Review button can be pressed" "$(ok has "$page" pressed)" "$page"
+  vm 'wait_panel_text "[0-9]+ changes?" 15' > /dev/null
+  panel="$(vm d_panel)"
+  box="$(vm 'python3 $SMOKE/probe.py editable "SuperEditr Settings"' | jq -c '.rect // null')"
+  where="$(next_to "$panel" "$win" "$box" "[-1,-1]")"
+  check "the panel is next to the Try it now box" "$(ok has "$where" "^ok .*; selection at")" "box $box; ${where#* }"
+  vm 'shot 46-try-it'
+  key esc
+  vm 'wait_closed 3' || true
+  vm "a=\$(d_addr '^supereditr \\| SuperEditr Settings\$'); d_focus \$a; hyprctl dispatch \"hl.dsp.window.close({ window = \\\"address:\$a\\\" })\" > /dev/null"
   end_case
 }
 
@@ -487,6 +554,7 @@ wants chromium-plain && chromium_plain_case
 wants foot && foot_case
 wants editor && editor_cases
 wants placement && placement_case
+wants try-it && try_it_case
 wants reload && reload_case
 if [[ "$HARD" == 1 ]]; then hard_cases; fi
 

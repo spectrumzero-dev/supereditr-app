@@ -34,6 +34,8 @@ Select text in any Mac app and get fixes in about half a second. Accept them wit
    | ⌘C | Copy instead of replacing |
    | esc | Close |
 
+   ⌥↩︎ and ↩︎ only ever replace. In text SuperEditr can't replace, such as a web page, the panel says so and ⌘C copies the fix.
+
 3. **⌃⌥⇧E** fixes the selection in place without showing anything.
 
 ### Your dictionary

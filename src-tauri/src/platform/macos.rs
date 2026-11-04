@@ -15,7 +15,7 @@ use core_foundation::dictionary::CFDictionary;
 use core_foundation::string::{CFString, CFStringRef};
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::c_void;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -179,6 +179,11 @@ impl Element {
 
     fn flag(&self, name: &str) -> Option<bool> {
         self.attr(name)?.downcast::<CFBoolean>().map(bool::from)
+    }
+
+    /// Whether a flag is on, for an app that may report it as a number.
+    fn is_on(&self, name: &str) -> bool {
+        self.flag(name).or_else(|| self.number(name).map(|n| n != 0)).unwrap_or(false)
     }
 
     fn press(&self) -> bool {
@@ -706,26 +711,45 @@ pub fn open_accessibility_settings() {
         .spawn();
 }
 
+/// How long reads wait for an app's accessibility tree after asking for it. Chrome 156 takes about
+/// 2 s to build one, even for a short page.
+const WEB_TREE_WAIT: Duration = Duration::from_secs(4);
+
+/// The flag VoiceOver sets, the only one Chromium's own runtime has: in Chrome, and in apps built
+/// directly on it. Electron adds `AXManualAccessibility`.
+const VOICEOVER_FLAG: &str = "AXEnhancedUserInterface";
+
 /// Apps whose web views only build an accessibility tree when asked. The flags are
-/// documented by Chromium and Electron and are scoped to the target process. Returns whether the
-/// flags were just sent, so the caller can give the tree a moment to appear.
-fn enable_web_accessibility(app: &Element, pid: i32, bundle_id: &str) -> bool {
-    static DONE: Mutex<Option<HashSet<i32>>> = Mutex::new(None);
-    let mut done = DONE.lock().unwrap();
-    let done = done.get_or_insert_with(HashSet::new);
-    if done.contains(&pid) {
-        return false;
+/// documented by Chromium and Electron and are scoped to the target process. Returns when reads
+/// should stop waiting for the tree: already past for an app that didn't take a flag, and the same
+/// moment for every read until then, so a second read can't overtake the first and give up early.
+fn enable_web_accessibility(app: &Element, pid: i32, bundle_id: &str) -> Instant {
+    static ASKED: Mutex<Option<HashMap<i32, (Instant, bool)>>> = Mutex::new(None);
+    let mut asked = ASKED.lock().unwrap();
+    let asked = asked.get_or_insert_with(HashMap::new);
+    // VoiceOver turns its flag off when it quits, which takes the tree away, so that flag is checked.
+    if let Some(&(deadline, voiceover_flag)) = asked.get(&pid)
+        && (!voiceover_flag || app.is_on(VOICEOVER_FLAG))
+    {
+        return deadline;
     }
     // Remembered only once accepted: a busy app can time out, and the next read should ask again.
     let yes = CFBoolean::true_value();
-    let mut accepted = app.set("AXManualAccessibility", yes.as_CFTypeRef());
-    if is_chromium_browser(bundle_id) {
-        accepted |= app.set("AXEnhancedUserInterface", yes.as_CFTypeRef());
+    let manual = app.set("AXManualAccessibility", yes.as_CFTypeRef());
+    let mut accepted = manual;
+    // Chrome 156 reports this write as not implemented yet acts on it, so the flag is read back
+    // rather than the write's result trusted.
+    if !manual && is_chromium_based(bundle_id, pid) {
+        app.set(VOICEOVER_FLAG, yes.as_CFTypeRef());
+        accepted = app.is_on(VOICEOVER_FLAG);
     }
-    if accepted {
-        done.insert(pid);
+    let now = Instant::now();
+    if !accepted {
+        return now;
     }
-    accepted
+    trace(format_args!("{bundle_id}: asked for the app's accessibility tree"));
+    asked.insert(pid, (now + WEB_TREE_WAIT, !manual));
+    now + WEB_TREE_WAIT
 }
 
 fn is_chromium_browser(bundle_id: &str) -> bool {
@@ -745,12 +769,22 @@ fn is_browser_or_electron(bundle_id: &str, pid: i32) -> bool {
     bundle_id == "com.apple.Safari" || bundle_id.starts_with("org.mozilla.") || is_chromium_based(bundle_id, pid)
 }
 
-/// Chrome-family browsers and Electron apps, which share Chromium's clipboard code.
+/// Chrome-family browsers and apps built on Chromium, which share its clipboard code.
 fn is_chromium_based(bundle_id: &str, pid: i32) -> bool {
     is_chromium_browser(bundle_id)
-        || app_bundle_path(pid).is_some_and(|path| {
-            std::path::Path::new(&path).join("Contents/Frameworks/Electron Framework.framework").exists()
+        || app_bundle_path(pid).is_some_and(|path| has_chromium_runtime(std::path::Path::new(&path)))
+}
+
+/// Whether the app at `bundle` carries Chromium, whatever its framework is called: `Electron
+/// Framework` in most, but `Codex Framework` in the Codex app. Any such framework holds Chromium's
+/// resource pack. Its `icudtl.dat` wouldn't tell them apart, because Flutter's framework has one too.
+fn has_chromium_runtime(bundle: &std::path::Path) -> bool {
+    std::fs::read_dir(bundle.join("Contents/Frameworks")).is_ok_and(|frameworks| {
+        frameworks.flatten().any(|framework| {
+            framework.file_name() == "Electron Framework.framework"
+                || framework.path().join("Resources/chrome_100_percent.pak").exists()
         })
+    })
 }
 
 fn running_app(pid: i32) -> Option<objc2::rc::Retained<objc2_app_kit::NSRunningApplication>> {
@@ -906,36 +940,57 @@ pub fn trace(message: std::fmt::Arguments) {
     }
 }
 
-fn capture_ax(app: &Element, pid: i32, bundle_id: &str, app_name: &str) -> Result<Capture, PlatformError> {
-    // Electron apps (Claude, Slack, VS Code) can report a focused window before their text fields
-    // are exposed, so ask for the tree before the first read rather than only when focus is missing.
-    if is_browser_or_electron(bundle_id, pid) && enable_web_accessibility(app, pid, bundle_id) {
-        std::thread::sleep(Duration::from_millis(150));
-    }
-    let mut focused = app.element("AXFocusedUIElement");
-    if focused.is_none() && enable_web_accessibility(app, pid, bundle_id) {
-        focused = app.element("AXFocusedUIElement");
-    }
-    let focused = focused.ok_or(PlatformError::NoSelection)?;
-
+/// One read of the selection: the element that owns it, and its text.
+fn read_selection(app: &Element) -> Result<(Element, String), PlatformError> {
     // Chromium reports focus on a descendant of the editable root; walk up to the element that
     // owns the selection.
-    let mut element = focused;
-    let mut text = None;
+    let mut element = app.element("AXFocusedUIElement").ok_or(PlatformError::NoSelection)?;
     for _ in 0..8 {
         if element.string("AXSubrole").as_deref() == Some("AXSecureTextField") {
             return Err(PlatformError::SecureField);
         }
         if let Some(selected) = element.selected_text() {
-            text = Some(selected);
-            break;
+            return Ok((element, selected));
         }
         match element.element("AXParent") {
             Some(parent) => element = parent,
             None => break,
         }
     }
-    let text = text.ok_or(PlatformError::NoSelection)?;
+    Err(PlatformError::NoSelection)
+}
+
+/// Reads until a read finds a selection, `deadline` passes, or `settled` says there is no point
+/// waiting. A read past the deadline still happens once.
+fn read_until<T>(
+    deadline: Instant,
+    settled: impl Fn() -> bool,
+    read: impl Fn() -> Result<T, PlatformError>,
+) -> Result<T, PlatformError> {
+    loop {
+        let result = read();
+        if !matches!(result, Err(PlatformError::NoSelection)) || Instant::now() >= deadline || settled() {
+            return result;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn capture_ax(app: &Element, pid: i32, bundle_id: &str, app_name: &str) -> Result<Capture, PlatformError> {
+    // Electron apps (Claude, Slack, VS Code) can report a focused window before their text fields
+    // are exposed, so ask for the tree before the first read rather than only when focus is missing.
+    let tree_deadline = if is_browser_or_electron(bundle_id, pid) || app.element("AXFocusedUIElement").is_none() {
+        enable_web_accessibility(app, pid, bundle_id)
+    } else {
+        Instant::now()
+    };
+    // While the tree is being built a read finds nothing, and the ⌘C read that would follow can't
+    // replace anything, so wait for it. Focus in a text field means it's there and nothing is selected.
+    let in_text_field = || {
+        let role = app.element("AXFocusedUIElement").and_then(|focused| focused.string("AXRole"));
+        matches!(role.as_deref(), Some("AXTextArea" | "AXTextField"))
+    };
+    let (element, text) = read_until(tree_deadline, in_text_field, || read_selection(app))?;
     // A text role alone isn't enough: terminals, consoles, and read-only text views are text areas
     // too. Editable fields let their value be set; web editors report an editable ancestor.
     let editable = element.settable("AXValue") || element.attr("AXEditableAncestor").is_some();
@@ -1717,9 +1772,12 @@ enum Key {
 
 static KEY_C: AtomicU16 = AtomicU16::new(8);
 static KEY_V: AtomicU16 = AtomicU16::new(9);
+/// What each key types with ⌘ held in the current layout.
+static COMMAND_KEYS: Mutex<Vec<(u16, char)>> = Mutex::new(Vec::new());
 
 /// Finds the key codes that type "c" and "v" in the current layout, so ⌘C/⌘V work on Dvorak,
-/// AZERTY and others. Text Input Sources must be queried on the main thread.
+/// AZERTY and others, and what each key means with ⌘ held. Text Input Sources must be queried on
+/// the main thread.
 pub fn refresh_keyboard_layout() {
     unsafe {
         let mut source = TISCopyCurrentKeyboardLayoutInputSource();
@@ -1742,20 +1800,28 @@ pub fn refresh_keyboard_layout() {
             let layout = CFData::wrap_under_get_rule(data as _);
             let ptr = layout.bytes().as_ptr();
             let kbd = LMGetKbdType() as u32;
-            for code in 0u16..128 {
+            let typed = |code: u16, modifiers: u32| {
                 let mut dead = 0u32;
                 let mut buf = [0u16; 4];
                 let mut len = 0usize;
-                if UCKeyTranslate(ptr, code, 3, 0, kbd, 1, &mut dead, buf.len(), &mut len, buf.as_mut_ptr()) == 0
-                    && len == 1
-                {
-                    match buf[0] {
-                        0x63 => KEY_C.store(code, Ordering::Relaxed),
-                        0x76 => KEY_V.store(code, Ordering::Relaxed),
-                        _ => {}
-                    }
+                let result =
+                    UCKeyTranslate(ptr, code, 3, modifiers, kbd, 1, &mut dead, buf.len(), &mut len, buf.as_mut_ptr());
+                (result == 0 && len == 1).then_some(buf[0])
+            };
+            let mut command_keys = Vec::new();
+            for code in 0u16..128 {
+                match typed(code, 0) {
+                    Some(0x63) => KEY_C.store(code, Ordering::Relaxed),
+                    Some(0x76) => KEY_V.store(code, Ordering::Relaxed),
+                    _ => {}
+                }
+                // 1 is ⌘ in the form UCKeyTranslate takes modifiers. Some layouts, such as Dvorak's
+                // "QWERTY ⌘", change their keys while it is held.
+                if let Some(key) = typed(code, 1).and_then(|unit| char::from_u32(unit.into())) {
+                    command_keys.push((code, key));
                 }
             }
+            *COMMAND_KEYS.lock().unwrap() = command_keys;
         }
         CFRelease(source as CFTypeRef);
     }
@@ -2097,8 +2163,15 @@ fn review_key(event: &CGEvent, code: u16) -> Option<crate::review_keys::Key> {
         126 => Some("ArrowUp"),
         _ => None,
     };
-    let key = match named {
-        Some(name) => name.to_string(),
+    let shortcut = || {
+        // ⌘ alone is named by what the key types with ⌘ held. The event's own text can't be relied
+        // on: a ⌘C posted to the session arrived without its "c", so it went to the app.
+        let command_keys = COMMAND_KEYS.lock().unwrap();
+        let key = command_keys.iter().find(|(c, _)| *c == code).map(|(_, key)| key.to_string());
+        key.filter(|_| modifiers(event.get_flags()) == double_press::COMMAND)
+    };
+    let key = match named.map(str::to_string).or_else(shortcut) {
+        Some(key) => key,
         None => {
             // The character the key types in the current layout, with ⇧ and ⌥ applied, as the web's
             // KeyboardEvent.key gives it.
@@ -2216,12 +2289,17 @@ pub fn start_double_press_tap(
                         let matched =
                             key.and_then(|key| chords.iter().position(|c| c.key == key && c.modifiers == mods));
                         // A double-press shortcut still works during a review (⌘E E starts a new one).
-                        if matched.is_none()
-                            && REVIEW_KEYS.load(Ordering::Relaxed)
-                            && let Some(key) = review_key(event, code)
-                        {
-                            on_review_key(key);
-                            return CallbackResult::Drop;
+                        if matched.is_none() && REVIEW_KEYS.load(Ordering::Relaxed) {
+                            let key = review_key(event, code);
+                            // Shortcuts are what can reach the wrong place. A key code, so never text.
+                            if mods & (double_press::COMMAND | double_press::CONTROL) != 0 {
+                                let to = if key.is_some() { "the panel" } else { "the app" };
+                                trace(format_args!("review: ⌘ or ⌃ with key code {code} goes to {to}"));
+                            }
+                            if let Some(key) = key {
+                                on_review_key(key);
+                                return CallbackResult::Drop;
+                            }
                         }
                         if chords.is_empty() {
                             return CallbackResult::Keep;
@@ -2363,6 +2441,61 @@ mod pasteboard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_chromium_whatever_its_framework_is_called() {
+        let root = std::env::temp_dir().join(format!("supereditr-runtime-{}", std::process::id()));
+        // A framework laid out as they ship: its Resources is a link into the current version.
+        let bundle = |app: &str, framework: &str, file: &str| {
+            let path = root.join(app);
+            let framework = path.join("Contents/Frameworks").join(framework);
+            std::fs::create_dir_all(framework.join("Versions/1/Resources")).unwrap();
+            std::fs::write(framework.join("Versions/1/Resources").join(file), "").unwrap();
+            std::os::unix::fs::symlink("1", framework.join("Versions/Current")).unwrap();
+            std::os::unix::fs::symlink("Versions/Current/Resources", framework.join("Resources")).unwrap();
+            path
+        };
+        let pack = "chrome_100_percent.pak";
+        assert!(has_chromium_runtime(&bundle("Electron.app", "Electron Framework.framework", pack)));
+        assert!(has_chromium_runtime(&bundle("Renamed.app", "Codex Framework.framework", pack)));
+        assert!(has_chromium_runtime(&bundle("Browser.app", "Google Chrome Framework.framework", pack)));
+        assert!(has_chromium_runtime(&bundle("Stripped.app", "Electron Framework.framework", "other.pak")));
+        assert!(!has_chromium_runtime(&bundle("Flutter.app", "FlutterMacOS.framework", "icudtl.dat")));
+        assert!(!has_chromium_runtime(&bundle("Native.app", "Sparkle.framework", "other.pak")));
+        assert!(!has_chromium_runtime(&root.join("NoFrameworks.app")));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_read_waits_for_the_selection_only_while_it_might_appear() {
+        use std::cell::Cell;
+        let later = Instant::now() + Duration::from_secs(60);
+        let reads = Cell::new(0);
+        let read = |result: fn(i32) -> Result<&'static str, PlatformError>| {
+            reads.set(reads.get() + 1);
+            result(reads.get())
+        };
+        let nothing_selected: fn(i32) -> Result<&'static str, PlatformError> = |_| Err(PlatformError::NoSelection);
+
+        // Tries again until the selection appears.
+        let third = |n| if n < 3 { Err(PlatformError::NoSelection) } else { Ok("text") };
+        assert_eq!(read_until(later, || false, || read(third)).unwrap(), "text");
+        assert_eq!(reads.replace(0), 3);
+
+        // Once the wait is over, or the field has settled, one read is all there is.
+        assert!(matches!(
+            read_until(Instant::now(), || false, || read(nothing_selected)),
+            Err(PlatformError::NoSelection)
+        ));
+        assert_eq!(reads.replace(0), 1);
+        assert!(matches!(read_until(later, || true, || read(nothing_selected)), Err(PlatformError::NoSelection)));
+        assert_eq!(reads.replace(0), 1);
+
+        // A password field never gets another read.
+        let secure: fn(i32) -> Result<&'static str, PlatformError> = |_| Err(PlatformError::SecureField);
+        assert!(matches!(read_until(later, || false, || read(secure)), Err(PlatformError::SecureField)));
+        assert_eq!(reads.get(), 1);
+    }
 
     #[test]
     fn a_window_inside_settings_main_window_is_a_prompt() {

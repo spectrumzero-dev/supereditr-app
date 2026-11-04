@@ -43,7 +43,7 @@ func skipEnvironment(_ reason: String) -> Never {
 
 let replayMark: Int64 = 0x5345_4454  // SuperEditr's marker on keys it replays ("SEDT")
 let keyE: CGKeyCode = 14, keyA: CGKeyCode = 0, keyEscape: CGKeyCode = 53, keyTab: CGKeyCode = 48, keySpace: CGKeyCode = 49
-let keyShift: CGKeyCode = 56, keyCommand: CGKeyCode = 55, keyRight: CGKeyCode = 124, keyUp: CGKeyCode = 126, keyReturn: CGKeyCode = 36, keyV: CGKeyCode = 9, keyR: CGKeyCode = 15, keyDown: CGKeyCode = 125
+let keyShift: CGKeyCode = 56, keyCommand: CGKeyCode = 55, keyRight: CGKeyCode = 124, keyUp: CGKeyCode = 126, keyReturn: CGKeyCode = 36, keyV: CGKeyCode = 9, keyR: CGKeyCode = 15, keyDown: CGKeyCode = 125, keyC: CGKeyCode = 8
 
 /// Holds Shift down (true) or lets it go (false), as a separate key, the way a person does.
 func shift(_ down: Bool) {
@@ -859,11 +859,16 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
     let chromeOpened = openFront(chromeApp, bundleID: chrome, file: page, newInstance: true,
                                  launchArguments: ["--user-data-dir=\(work)/chrome", "--no-first-run", "--no-default-browser-check"])
     check(chromeOpened, "Chrome opens the page with its fields")
+    let captureLog = home + "/Library/Logs/SuperEditr/capture.log"
+    func lastChromeRead() -> String {
+        let lines = (try? String(contentsOfFile: captureLog, encoding: .utf8))?.split(separator: "\n") ?? []
+        return lines.last { $0.contains("com.google.Chrome: read") }.map(String.init) ?? "none"
+    }
     // Keys go only to the test's own Chrome; stop here rather than type into another one.
     if chromeOpened {
         // Chrome builds its Accessibility tree only once asked, as SuperEditr does when it reads. Asking
-        // first, and waiting for the tree, makes SuperEditr read the field through Accessibility, as it
-        // does in an app whose tree is already on, instead of falling back to a copy-only ⌘C read.
+        // first, and waiting for the tree, lets this test read the fields itself, and skips the wait for
+        // the tree in SuperEditr's first read, which has a check of its own below.
         if let ours = launchedSinceStart(chrome).last {
             let element = AXUIElementCreateApplication(ours.processIdentifier)
             for flag in ["AXManualAccessibility", "AXEnhancedUserInterface"] {
@@ -871,13 +876,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             }
         }
         pump(2)
-        let captureLog = home + "/Library/Logs/SuperEditr/capture.log"
-        func lastChromeRead() -> String {
-            let lines = (try? String(contentsOfFile: captureLog, encoding: .utf8))?.split(separator: "\n") ?? []
-            return lines.last { $0.contains("com.google.Chrome: read") }.map(String.init) ?? "none"
-        }
-        // SuperEditr's first read in a new Chrome process can come before the tree is ready and fall back
-        // to a copy-only ⌘C read. One review closed straight away gets past it.
+        // One review closed straight away makes sure the tree is there for the control below.
         _ = selectAll()
         press(keyE, .maskCommand)
         pump(0.1)
@@ -1256,6 +1255,116 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             .filter { $0.contains("com.google.Chrome: pasted") }
         let tries = pastes.compactMap { line in line.range(of: #"\((\d) attempts?\)"#, options: .regularExpression).map { String(line[$0]) } }
         log("NOTE Chrome pastes by attempts: \(Dictionary(grouping: tries, by: { $0 }).mapValues(\.count).sorted { $0.key < $1.key })")
+    }
+    quitOpened(chrome)
+
+    // 6c-1. The first review in a Chromium app that has just started. Its text can't be read until
+    // SuperEditr asks, and then only after about 2 s, so that first read has to wait: giving up falls
+    // back to a read that can't replace anything. Nothing here asks for the tree first. Chrome stands in
+    // for any app on the same runtime that SuperEditr has no name for, such as the Codex app: they
+    // answer to the same flag, and the same code sends it (has_chromium_runtime has unit tests).
+    let chromeArguments = { (profile: String) in ["--user-data-dir=\(work)/\(profile)", "--no-first-run", "--no-default-browser-check"] }
+    let firstPage = work + "/first-review.html"
+    try! """
+    <!doctype html><meta charset="utf-8"><title>First review</title>
+    <textarea autofocus rows="3" cols="60">\(typo)</textarea>
+    """.write(toFile: firstPage, atomically: true, encoding: .utf8)
+    let firstOpened = openFront(chromeApp, bundleID: chrome, file: firstPage, newInstance: true, launchArguments: chromeArguments("chrome-first"))
+    check(firstOpened, "Chrome opens the page for the first review")
+    if firstOpened {
+        pump(3)  // long enough for the page to load, with no tree yet
+        press(keyA, .maskCommand)
+        pump(0.5)
+        press(keyE, .maskCommand)
+        pump(0.1)
+        press(keyE, .maskCommand)
+        // The review opens once the tree is there, so this waits longer than the others.
+        let panel = waitFor(10) { overlay() }
+        check(panel != nil, "⌘E E reviews a field in a Chromium app that has just started", "no overlay within 10 s")
+        if panel != nil {
+            pump(1.5)  // the rule-based checker's result
+            let read = lastChromeRead()
+            check(read.contains("via Accessibility"), "the first review reads the field through Accessibility", "last read: \(read)")
+            let replaceKey = waitFor(3) { () -> String? in
+                let text = panelText()
+                return text.contains("⌥↩") && text.range(of: #"\breplace\b"#, options: .regularExpression) != nil ? text : nil
+            }
+            check(replaceKey != nil, "the first review offers ⌥↩ replace", "panel text: \(panelText())")
+            screenshot(window: overlay(), to: outDir + "/first-review.png")
+            press(keyReturn, .maskAlternate)
+            let fixed = waitFor(5) { () -> String? in
+                let value = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
+                return !value.isEmpty && !value.contains(typo) ? value : nil
+            }
+            check(fixed != nil, "⌥↩ replaces the text in the first review", "the field still holds the typo")
+            if overlay() != nil {
+                press(keyEscape)
+                _ = waitFor(3) { overlay() == nil ? true : nil }
+            }
+        }
+    }
+    quitOpened(chrome)
+
+    // 6c-2. ⌥↩ means replace and nothing else. In text that can't be replaced, it changes nothing:
+    // the panel stays and says why, the clipboard is left alone, and ⌘C copies the fix.
+    let readOnlyPage = work + "/read-only.html"
+    try! """
+    <!doctype html><meta charset="utf-8"><title>Read only</title>
+    <p>\(typo)</p>
+    """.write(toFile: readOnlyPage, atomically: true, encoding: .utf8)
+    let readOnlyOpened = openFront(chromeApp, bundleID: chrome, file: readOnlyPage, newInstance: true, launchArguments: chromeArguments("chrome-read-only"))
+    check(readOnlyOpened, "Chrome opens the read-only page")
+    if readOnlyOpened {
+        pump(3)
+        press(keyA, .maskCommand)
+        pump(0.5)
+        press(keyE, .maskCommand)
+        pump(0.1)
+        press(keyE, .maskCommand)
+        let panel = waitFor(10) { overlay() }
+        check(panel != nil, "⌘E E reviews read-only text", "no overlay within 10 s")
+        if panel != nil {
+            pump(1.5)  // the rule-based checker's result
+            let saysWhy = waitFor(3) { () -> String? in
+                let text = panelText()
+                return text.contains("replace text here") ? text : nil
+            }
+            check(saysWhy != nil, "the panel says the text can't be replaced", "panel text: \(panelText())")
+            check(saysWhy.map { !$0.contains("⌥↩") && $0.contains("⌘C") } ?? false, "the panel offers ⌘C and not ⌥↩", "panel text: \(saysWhy ?? "")")
+            screenshot(window: overlay(), to: outDir + "/read-only.png")
+            let untouched = "On the clipboard before ⌥↩."
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(untouched, forType: .string)
+            press(keyReturn, .maskAlternate)
+            pump(1)
+            check(NSPasteboard.general.string(forType: .string) == untouched, "⌥↩ leaves the clipboard alone",
+                  "the clipboard holds \"\(NSPasteboard.general.string(forType: .string) ?? "")\"")
+            check(overlay() != nil, "⌥↩ leaves the panel open when it can't replace")
+            check(panelText().contains("Nothing replaced"), "⌥↩ says nothing was replaced", "panel text: \(panelText())")
+            screenshot(window: overlay(), to: outDir + "/read-only-pressed.png")
+            KeyLog.seen.removeAll()
+            press(keyC, .maskCommand)
+            let first = waitFor(3) { () -> String? in
+                let text = NSPasteboard.general.string(forType: .string) ?? ""
+                return text != untouched && !text.isEmpty ? text : nil
+            }
+            pump(0.5)  // for anything else that writes after the first change
+            let settled = NSPasteboard.general.string(forType: .string) ?? ""
+            let panelNow = overlay() != nil ? panelText() : ""
+            log("NOTE ⌘C in a review: clipboard first \"\(first ?? "unchanged")\", then \"\(settled)\"; panel \(overlay() != nil ? "open" : "closed")")
+            check(!KeyLog.seen.contains { $0.code == Int64(keyC) }, "⌘C in a review never reaches the app", "the app received ⌘C")
+            check(!settled.isEmpty && settled != untouched && !settled.contains(typo), "⌘C copies the fix", "the clipboard holds \"\(settled)\"")
+            check(panelNow.contains("Copied"), "⌘C says it copied", "panel text: \(panelNow)")
+            if overlay() != nil {
+                // The panel's other ⌘ shortcuts go the same way. Here ⌘R tries again, and doesn't reload the page.
+                KeyLog.seen.removeAll()
+                press(keyR, .maskCommand)
+                pump(0.5)
+                check(!KeyLog.seen.contains { $0.code == Int64(keyR) }, "⌘R in a review never reaches the app", "the app received ⌘R")
+                press(keyEscape)
+                _ = waitFor(3) { overlay() == nil ? true : nil }
+            }
+        }
     }
     quitOpened(chrome)
 }

@@ -31,6 +31,7 @@ pub fn dismiss(app: AppHandle, id: Option<u64>) {
 
 #[tauri::command]
 pub fn copy_text(text: String) {
+    platform::trace(format_args!("panel: copying {} characters", text.chars().count()));
     platform::copy_to_clipboard(&text);
 }
 

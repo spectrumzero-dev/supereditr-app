@@ -461,8 +461,11 @@ placement_case() {
     vm 'wait_closed 3' || true
   done
   # A notice has no selection to go by. It stays at the pointer after the panel takes focus, which
-  # can move the pointer.
-  vm "d_focus $e; sleep 0.3; d_keys $e '' Right; sleep 0.3"
+  # can move the pointer. Nothing is selected in a new terminal, so it gets one.
+  vm "d_exec \"foot -T smoke-notice\""
+  local terminal
+  terminal="$(vm 'wait_for_window "^foot \| smoke-notice" 10')"
+  win="$(vm "d_focus $terminal; sleep 0.5; d_active")"
   x="$(jq -r '.at[0] + 60' <<< "$win")" y="$(jq -r '.at[1] + 80' <<< "$win")"
   vm "d_cursor_move $x $y"
   key meta_l-alt-e
@@ -471,8 +474,10 @@ placement_case() {
   panel="$(vm d_panel)"
   where="$(next_to "$panel" "$win" null "[$x,$y]")"
   check "with nothing selected, the notice stays at the pointer" "$(ok has "$where" "^ok")" "${where#* }"
+  vm 'shot 45-placement-notice'
   key esc
   vm 'wait_closed 3' || true
+  vm "hyprctl dispatch 'hl.dsp.window.close({ window = \"address:$terminal\" })' > /dev/null"
   end_case
 }
 

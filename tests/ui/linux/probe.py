@@ -63,7 +63,10 @@ def walk(root):
 def range_rect(node, start, end):
     """The same answer SuperEditr's own read accepts as a position (platform/linux/atspi.rs)."""
     for coordinates in (Atspi.CoordType.SCREEN, Atspi.CoordType.WINDOW):
-        r = Atspi.Text.get_range_extents(node, start, max(end, start + 1), coordinates)
+        try:
+            r = Atspi.Text.get_range_extents(node, start, max(end, start + 1), coordinates)
+        except Exception:
+            continue
         if r.width > 0 and r.height > 0 and r.x >= 0 and r.y >= 0 and (r.x, r.y) != (0, 0):
             return [r.x, r.y, r.width, r.height]
     return None

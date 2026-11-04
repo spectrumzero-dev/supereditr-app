@@ -70,13 +70,31 @@ pub fn init(app: &AppHandle) {
     let _ = app;
 }
 
+/// Where the overlay last opened at the pointer.
+static POINTER_ANCHOR: std::sync::Mutex<Option<Rect>> = std::sync::Mutex::new(None);
+
 /// Places the overlay just below the selection, or above it when there's no room below.
 pub fn position(app: &AppHandle, anchor: Option<Rect>, height: f64) {
-    let Some(window) = window(app) else { return };
     let anchor = anchor.unwrap_or_else(|| {
         let (x, y) = platform::mouse_location();
-        Rect { x: x - 24.0, y: y - 10.0, width: 1.0, height: 20.0 }
+        let at_pointer = Rect { x: x - 24.0, y: y - 10.0, width: 1.0, height: 20.0 };
+        *POINTER_ANCHOR.lock().unwrap() = Some(at_pointer);
+        at_pointer
     });
+    place(app, anchor, height);
+}
+
+/// Places the overlay again at a new height. With no selection to go by, it stays where it opened
+/// instead of following the pointer: a desktop may move the pointer onto a window that takes focus.
+pub fn resize(app: &AppHandle, anchor: Option<Rect>, height: f64) {
+    match anchor.or(*POINTER_ANCHOR.lock().unwrap()) {
+        Some(anchor) => place(app, anchor, height),
+        None => position(app, None, height),
+    }
+}
+
+fn place(app: &AppHandle, anchor: Rect, height: f64) {
+    let Some(window) = window(app) else { return };
     let (sx, sy, sw, sh) = screen_for(app, anchor.x + 1.0, anchor.y + 1.0);
     // Placement is worked out for the card; the window extends past it by the shadow padding.
     let card_width = WIDTH - 2.0 * PAD_SIDE;

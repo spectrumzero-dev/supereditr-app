@@ -401,7 +401,7 @@ pub fn resize(app: &AppHandle, height: f64) {
             None => None,
         }
     };
-    overlay::position(app, anchor, height.clamp(90.0, 670.0));
+    overlay::resize(app, anchor, height.clamp(90.0, 670.0));
 }
 
 /// Quick fix: proofread the selection and replace it directly, with no overlay.

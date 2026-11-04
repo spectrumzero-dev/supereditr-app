@@ -1356,6 +1356,11 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             check(!settled.isEmpty && settled != untouched && !settled.contains(typo), "⌘C copies the fix", "the clipboard holds \"\(settled)\"")
             check(panelNow.contains("Copied"), "⌘C says it copied", "panel text: \(panelNow)")
             if overlay() != nil {
+                // The panel's other ⌘ shortcuts go the same way. Here ⌘R tries again, and doesn't reload the page.
+                KeyLog.seen.removeAll()
+                press(keyR, .maskCommand)
+                pump(0.5)
+                check(!KeyLog.seen.contains { $0.code == Int64(keyR) }, "⌘R in a review never reaches the app", "the app received ⌘R")
                 press(keyEscape)
                 _ = waitFor(3) { overlay() == nil ? true : nil }
             }

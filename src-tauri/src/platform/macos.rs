@@ -1772,9 +1772,12 @@ enum Key {
 
 static KEY_C: AtomicU16 = AtomicU16::new(8);
 static KEY_V: AtomicU16 = AtomicU16::new(9);
+/// What each key types with ⌘ held in the current layout.
+static COMMAND_KEYS: Mutex<Vec<(u16, char)>> = Mutex::new(Vec::new());
 
 /// Finds the key codes that type "c" and "v" in the current layout, so ⌘C/⌘V work on Dvorak,
-/// AZERTY and others. Text Input Sources must be queried on the main thread.
+/// AZERTY and others, and what each key means with ⌘ held. Text Input Sources must be queried on
+/// the main thread.
 pub fn refresh_keyboard_layout() {
     unsafe {
         let mut source = TISCopyCurrentKeyboardLayoutInputSource();
@@ -1797,20 +1800,28 @@ pub fn refresh_keyboard_layout() {
             let layout = CFData::wrap_under_get_rule(data as _);
             let ptr = layout.bytes().as_ptr();
             let kbd = LMGetKbdType() as u32;
-            for code in 0u16..128 {
+            let typed = |code: u16, modifiers: u32| {
                 let mut dead = 0u32;
                 let mut buf = [0u16; 4];
                 let mut len = 0usize;
-                if UCKeyTranslate(ptr, code, 3, 0, kbd, 1, &mut dead, buf.len(), &mut len, buf.as_mut_ptr()) == 0
-                    && len == 1
-                {
-                    match buf[0] {
-                        0x63 => KEY_C.store(code, Ordering::Relaxed),
-                        0x76 => KEY_V.store(code, Ordering::Relaxed),
-                        _ => {}
-                    }
+                let result =
+                    UCKeyTranslate(ptr, code, 3, modifiers, kbd, 1, &mut dead, buf.len(), &mut len, buf.as_mut_ptr());
+                (result == 0 && len == 1).then_some(buf[0])
+            };
+            let mut command_keys = Vec::new();
+            for code in 0u16..128 {
+                match typed(code, 0) {
+                    Some(0x63) => KEY_C.store(code, Ordering::Relaxed),
+                    Some(0x76) => KEY_V.store(code, Ordering::Relaxed),
+                    _ => {}
+                }
+                // 1 is ⌘ in the form UCKeyTranslate takes modifiers. Some layouts, such as Dvorak's
+                // "QWERTY ⌘", change their keys while it is held.
+                if let Some(key) = typed(code, 1).and_then(|unit| char::from_u32(unit.into())) {
+                    command_keys.push((code, key));
                 }
             }
+            *COMMAND_KEYS.lock().unwrap() = command_keys;
         }
         CFRelease(source as CFTypeRef);
     }
@@ -2152,8 +2163,15 @@ fn review_key(event: &CGEvent, code: u16) -> Option<crate::review_keys::Key> {
         126 => Some("ArrowUp"),
         _ => None,
     };
-    let key = match named {
-        Some(name) => name.to_string(),
+    let shortcut = || {
+        // ⌘ alone is named by what the key types with ⌘ held. The event's own text can't be relied
+        // on: a ⌘C posted to the session arrived without its "c", so it went to the app.
+        let command_keys = COMMAND_KEYS.lock().unwrap();
+        let key = command_keys.iter().find(|(c, _)| *c == code).map(|(_, key)| key.to_string());
+        key.filter(|_| modifiers(event.get_flags()) == double_press::COMMAND)
+    };
+    let key = match named.map(str::to_string).or_else(shortcut) {
+        Some(key) => key,
         None => {
             // The character the key types in the current layout, with ⇧ and ⌥ applied, as the web's
             // KeyboardEvent.key gives it.

@@ -11,7 +11,9 @@
 import AppKit
 import ApplicationServices
 import CoreGraphics
+import CryptoKit
 import Foundation
+import Network
 
 // MARK: Reporting
 
@@ -1494,6 +1496,257 @@ if binary.range(of: Data("SUPEREDITR_PREVIEW_GUIDE".utf8)) == nil {
     }
     stop(app)
     quitOpened("com.apple.systempreferences")
+}
+
+// 8. Check for Updates. A test build has no updater of its own, so a copy of this one gets the real
+// updater with a feed served from here and a key made for this run. The update is the app itself,
+// so its files change while its version doesn't.
+
+/// A throwaway updater key, in the minisign format the updater reads. Signatures use minisign's
+/// legacy mode ("Ed"), which signs a file's bytes rather than a hash of them.
+struct UpdateKey {
+    private let key = Curve25519.Signing.PrivateKey()
+    private let id = Data((0..<8).map { _ in UInt8.random(in: .min ... .max) })
+
+    /// What the updater takes as `pubkey`: a minisign public key file, in base64.
+    var publicKey: String {
+        let line = (Data("Ed".utf8) + id + key.publicKey.rawRepresentation).base64EncodedString()
+        return Data("untrusted comment: minisign public key\n\(line)\n".utf8).base64EncodedString()
+    }
+
+    /// What latest.json's `signature` holds for `file`: a minisign signature file, in base64. The
+    /// updater also requires the version, which the release tools write into the trusted comment.
+    func signature(of file: Data, version: String) -> String {
+        let signature = try! key.signature(for: file)
+        let comment = "timestamp:\(Int(Date().timeIntervalSince1970))\tfile:update.tar.gz\tversion:\(version)"
+        let global = try! key.signature(for: signature + Data(comment.utf8))
+        let line = (Data("Ed".utf8) + id + signature).base64EncodedString()
+        return Data("untrusted comment: signature\n\(line)\ntrusted comment: \(comment)\n\(global.base64EncodedString())\n".utf8).base64EncodedString()
+    }
+}
+
+/// The update feed and download, on this Mac only. `pause` holds the feed's answer for that long,
+/// and the download halfway for that long, so the window's in-between states can be seen.
+final class UpdateFeed {
+    enum Answer { case nothingNew, failure, offer(version: String, signature: String) }
+
+    private let queue = DispatchQueue(label: "update-feed")
+    private let archive: Data
+    private var listener: NWListener?
+    private var answer = Answer.nothingNew
+    private var pause = 0.0
+
+    init(archive: Data) { self.archive = archive }
+
+    /// Starts listening and returns the port, or nil if it can't.
+    func start() -> UInt16? {
+        let parameters = NWParameters.tcp
+        parameters.requiredInterfaceType = .loopback
+        guard let listener = try? NWListener(using: parameters, on: .any) else { return nil }
+        self.listener = listener
+        listener.newConnectionHandler = { [weak self] connection in
+            guard let self else { return }
+            connection.start(queue: self.queue)
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, _, _ in
+                let request = String(decoding: data ?? Data(), as: UTF8.self)
+                self.respond(on: connection, path: request.split(separator: " ").dropFirst().first.map(String.init) ?? "")
+            }
+        }
+        listener.start(queue: queue)
+        // The port reads 0 until the listener is ready.
+        return waitFor(5) { listener.port.flatMap { $0.rawValue == 0 ? nil : $0.rawValue } }
+    }
+
+    func stop() { listener?.cancel() }
+
+    func next(_ answer: Answer, pause: Double = 0) {
+        queue.sync {
+            self.answer = answer
+            self.pause = pause
+        }
+    }
+
+    private func respond(on connection: NWConnection, path: String) {
+        if path == "/update.tar.gz" {
+            let half = archive.count / 2
+            let head = Data("HTTP/1.1 200 OK\r\nContent-Length: \(archive.count)\r\nConnection: close\r\n\r\n".utf8)
+            connection.send(content: head + archive.prefix(half), completion: .contentProcessed { _ in })
+            queue.asyncAfter(deadline: .now() + pause) { [archive] in
+                self.finish(connection, Data(archive.dropFirst(half)))
+            }
+            return
+        }
+        queue.asyncAfter(deadline: .now() + pause) {
+            switch self.answer {
+            case .nothingNew: self.finish(connection, Data("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n".utf8))
+            case .failure: self.finish(connection, Data("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".utf8))
+            case let .offer(version, signature):
+                let port = self.listener?.port?.rawValue ?? 0
+                let download = ["url": "http://127.0.0.1:\(port)/update.tar.gz", "signature": signature]
+                let release: [String: Any] = [
+                    "version": version,
+                    "pub_date": "2026-01-01T00:00:00Z",
+                    "platforms": ["darwin-aarch64": download, "darwin-aarch64-app": download, "darwin-x86_64": download, "darwin-x86_64-app": download],
+                ]
+                let json = try! JSONSerialization.data(withJSONObject: release)
+                self.finish(connection, Data("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(json.count)\r\nConnection: close\r\n\r\n".utf8) + json)
+            }
+        }
+    }
+
+    private func finish(_ connection: NWConnection, _ data: Data) {
+        connection.send(content: data, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { _ in connection.cancel() })
+    }
+}
+
+/// SuperEditr restarts through LaunchServices, which doesn't pass on this test's environment, so the
+/// new copy runs with the real HOME and its settings. Only a disposable VM can take that.
+func inVirtualMachine() -> Bool {
+    var present: Int32 = 0
+    var size = MemoryLayout<Int32>.size
+    return sysctlbyname("kern.hv_vmm_present", &present, &size, nil, 0) == 0 && present == 1
+}
+
+func runTool(_ path: String, _ arguments: [String], environment: [String: String] = [:]) -> Bool {
+    let tool = Process()
+    tool.executableURL = URL(fileURLWithPath: path)
+    tool.arguments = arguments
+    tool.environment = ProcessInfo.processInfo.environment.merging(environment) { $1 }
+    guard (try? tool.run()) != nil else { return false }
+    tool.waitUntilExit()
+    return tool.terminationStatus == 0
+}
+
+func updateWindow() -> AXUIElement? {
+    guard let app = running(superEditr).first,
+          let list = attribute(AXUIElementCreateApplication(app.processIdentifier), kAXWindowsAttribute) as? [AXUIElement] else { return nil }
+    return list.first { attribute($0, kAXTitleAttribute) as? String == "SuperEditr Updates" }
+}
+func updateText() -> String { updateWindow().map { allText($0, levels: 40) } ?? "" }
+func updateSays(_ words: String, within seconds: Double = 20) -> Bool {
+    waitFor(seconds) { updateText().contains(words) ? true : nil } ?? false
+}
+func updateWindowClosed() -> Bool { waitFor(5) { updateWindow() == nil ? true : nil } ?? false }
+func screenshotUpdate(_ name: String) {
+    if let window = updateWindow() { screenshot(window: Window(frame: frame(of: window)), to: outDir + "/update-\(name).png") }
+}
+func pressUpdateButton(_ label: String) {
+    if let window = updateWindow(), let found = button(in: window, containing: label) {
+        AXUIElementPerformAction(found, kAXPressAction as CFString)
+    } else {
+        log("     no \(label) button in: \(updateText())")
+    }
+}
+
+let updateRoot = work + "/update", updateApp = updateRoot + "/SuperEditr.app", updateArchive = updateRoot + "/update.tar.gz"
+/// Changes when an update replaces the app's files.
+func updateAppFile() -> Int? {
+    (try? FileManager.default.attributesOfItem(atPath: updateApp + "/Contents/Info.plist"))?[.systemFileNumber] as? Int
+}
+try! FileManager.default.createDirectory(atPath: updateRoot, withIntermediateDirectories: true)
+let updatePrepared = runTool("/usr/bin/ditto", [appPath, updateApp])
+    && runTool("/usr/bin/tar", ["-czf", updateArchive, "-C", updateRoot, "SuperEditr.app"], environment: ["COPYFILE_DISABLE": "1"])
+let updateBytes = (try? Data(contentsOf: URL(fileURLWithPath: updateArchive))) ?? Data()
+let updateFeed = UpdateFeed(archive: updateBytes)
+let updatePort = updateFeed.start()
+check(updatePrepared && !updateBytes.isEmpty && updatePort != nil, "the update test has a copy of the app, an archive of it and a feed",
+      "prepared \(updatePrepared), \(updateBytes.count) bytes, port \(String(describing: updatePort))")
+cleanups.append { updateFeed.stop() }
+cleanups.append { quitOpened(superEditr) }
+if let updatePort {
+    let updateKey = UpdateKey(), newVersion = "99.0.0"
+    let installedVersion = Bundle(path: appPath)?.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+    let updateEnvironment = ["SUPEREDITR_TEST_UPDATE_FEED": "http://127.0.0.1:\(updatePort)/latest.json", "SUPEREDITR_TEST_UPDATE_KEY": updateKey.publicKey]
+    let goodOffer = UpdateFeed.Answer.offer(version: newVersion, signature: updateKey.signature(of: updateBytes, version: newVersion))
+    /// Waits for a copy just started to have its menu-bar icon, which the checks below click.
+    func waitForMenuIcon(_ copy: pid_t) {
+        _ = waitFor(15) {
+            attribute(AXUIElementCreateApplication(copy), "AXExtrasMenuBar").flatMap { attribute($0 as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement] }?.isEmpty == false ? true : nil
+        }
+        pump(1)
+    }
+    /// Waits for the restart: the old copy gone, and a new one running from the same place.
+    func restarted(from old: pid_t) -> Bool {
+        let wanted = URL(fileURLWithPath: updateApp).resolvingSymlinksInPath().path
+        return waitFor(20) {
+            running(superEditr).contains { $0.processIdentifier != old && $0.bundleURL?.resolvingSymlinksInPath().path == wanted } && !running(superEditr).contains { $0.processIdentifier == old } ? true : nil
+        } ?? false
+    }
+
+    app = launch(updateApp, home: home, environment: updateEnvironment)
+    let firstCopy = app.processIdentifier
+    waitForMenuIcon(firstCopy)
+
+    // Nothing new, answered slowly: the window opens straight away, then reports the result.
+    updateFeed.next(.nothingNew, pause: 4)
+    let chosen = chooseFromMenu("Check for Updates", screenshotTo: outDir + "/update-menu.png")
+    check(chosen != nil, "the menu-bar menu offers Check for Updates when there's an updater", "item: \(chosen ?? "none")")
+    check(updateSays("Checking for updates", within: 3), "choosing it opens the update window at once, saying it's checking", "window: \(updateText())")
+    screenshotUpdate("checking")
+    check(updateSays("You’re up to date") && updateText().contains(installedVersion), "the window says SuperEditr is up to date, and which version it has", "window: \(updateText())")
+    screenshotUpdate("up-to-date")
+    press(keyReturn)
+    check(updateWindowClosed(), "Return closes it, so it has the keyboard", "window: \(updateText())")
+
+    // The feed fails, then works when asked again.
+    updateFeed.next(.failure)
+    _ = chooseFromMenu("Check for Updates")
+    check(updateSays("Couldn’t check for updates"), "a feed that fails is reported in the window", "window: \(updateText())")
+    screenshotUpdate("check-failed")
+    updateFeed.next(.nothingNew)
+    pressUpdateButton("Try Again")
+    check(updateSays("You’re up to date"), "Try Again checks again", "window: \(updateText())")
+    press(keyEscape)
+    check(updateWindowClosed(), "Esc closes it", "window: \(updateText())")
+
+    // A download signed with another key is refused, and the app stays as it was.
+    let fileBefore = updateAppFile()
+    updateFeed.next(.offer(version: newVersion, signature: UpdateKey().signature(of: updateBytes, version: newVersion)))
+    _ = chooseFromMenu("Check for Updates")
+    check(updateSays("Couldn’t install SuperEditr \(newVersion)"), "a download with a bad signature is reported in the window", "window: \(updateText())")
+    screenshotUpdate("install-failed")
+    check(fileBefore != nil && updateAppFile() == fileBefore, "and the app's files are left alone")
+    pressUpdateButton("Close")
+    check(updateWindowClosed(), "Close closes it", "window: \(updateText())")
+
+    // A real update, chosen from the menu that now says it failed. It installs, Later keeps working,
+    // and the menu offers the restart.
+    updateFeed.next(goodOffer, pause: 3)
+    let retried = chooseFromMenu("Update Failed")
+    check(retried != nil, "the menu offers another try after a failed update", "item: \(retried ?? "none")")
+    check(updateSays("Downloading SuperEditr \(newVersion)"), "the window shows the download", "window: \(updateText())")
+    screenshotUpdate("downloading")
+    check(updateSays("SuperEditr \(newVersion) is ready"), "the window says when the update is ready", "window: \(updateText())")
+    screenshotUpdate("ready")
+    check(updateAppFile() != fileBefore, "the update replaced the app's files")
+    pressUpdateButton("Later")
+    check(updateWindowClosed() && app.isRunning, "Later closes the window and SuperEditr keeps running", "window: \(updateText())")
+    if inVirtualMachine() {
+        let offered = chooseFromMenu("Restart to Update to \(newVersion)", screenshotTo: outDir + "/update-menu-restart.png")
+        check(offered != nil, "the menu offers the restart", "item: \(offered ?? "none")")
+        check(restarted(from: firstCopy), "choosing it restarts SuperEditr from the same place")
+        quitOpened(superEditr)
+        stop(app)
+
+        // Closing the window doesn't stop a download, the menu shows it again, and Restart Now works.
+        app = launch(updateApp, home: home, environment: updateEnvironment)
+        let secondCopy = app.processIdentifier
+        waitForMenuIcon(secondCopy)
+        updateFeed.next(goodOffer, pause: 6)
+        _ = chooseFromMenu("Check for Updates")
+        check(updateSays("Downloading SuperEditr \(newVersion)"), "a second update starts downloading", "window: \(updateText())")
+        press(keyEscape)
+        check(updateWindowClosed(), "the window can close during a download", "window: \(updateText())")
+        let reopened = chooseFromMenu("Downloading SuperEditr")
+        check(reopened != nil, "the menu shows the download and reopens the window", "item: \(reopened ?? "none")")
+        check(updateSays("SuperEditr \(newVersion) is ready"), "the download finished with the window closed", "window: \(updateText())")
+        pressUpdateButton("Restart Now")
+        check(restarted(from: secondCopy), "Restart Now restarts SuperEditr from the same place")
+    } else {
+        log("SKIP restarting after an update: only in a virtual machine, because it runs with this Mac's real settings")
+    }
+    quitOpened(superEditr)
+    stop(app)
 }
 
 log(failures.isEmpty ? "All UI smoke tests passed." : "\(failures.count) UI smoke test(s) failed: \(failures.joined(separator: "; "))")

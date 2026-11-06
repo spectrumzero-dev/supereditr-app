@@ -181,3 +181,9 @@ export interface Candidate {
   /** The provider already added from this account, if any. */
   profileId: string | null;
 }
+
+/** Where updating has got to (`Status` in updater.rs). */
+export type UpdateStatus =
+  | { state: "idle" | "checking" | "check-failed" }
+  | { state: "downloading"; version: string; percent: number | null }
+  | { state: "ready" | "up-to-date" | "install-failed"; version: string };

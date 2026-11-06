@@ -593,6 +593,22 @@ pub fn close_guide(app: AppHandle) {
     crate::permission_guide::dismiss(&app);
 }
 
+#[tauri::command]
+pub fn update_status(app: AppHandle) -> crate::updater::Status {
+    crate::updater::status(&app)
+}
+
+/// The update window's main button: Restart Now or Try Again.
+#[tauri::command]
+pub fn update_now(app: AppHandle) {
+    crate::updater::on_menu(&app);
+}
+
+#[tauri::command]
+pub fn close_update_window(window: tauri::WebviewWindow) {
+    let _ = window.close();
+}
+
 /// Synchronous so it runs on the main thread while the mouse is still down.
 #[tauri::command]
 pub fn drag_app(window: tauri::WebviewWindow) -> CmdResult<()> {

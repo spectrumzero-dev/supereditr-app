@@ -194,11 +194,15 @@ vs_code_case() {
   pid="$(jq -r .pid <<< "$win")"
   value="$(vm "tr '\\0' ' ' < /proc/$pid/cmdline")"
   check "VS Code's launcher passes the flag" "$(ok has "$value" "--force-renderer-accessibility")" "${value:0:100}"
-  # VS Code exposes the editor a moment after it draws, and only once it's clicked.
+  # A new profile's welcome dialog opens over the editor a few seconds after the window, and Esc
+  # closes it. Any field can have focus until then, so wait for the editor's own text.
+  sleep 8
   for tries in 1 2 3 4 5 6 7 8 9 10; do
+    key esc
+    sleep 0.5
     click "$(jq -r '.at[0] + .size[0] / 2 | floor' <<< "$win")" "$(jq -r '.at[1] + .size[1] / 3 | floor' <<< "$win")"
     sleep 1
-    vm "field $pid | jq -e '.chars > 0'" > /dev/null && break
+    vm "field $pid | jq -e '.text | test(\"Their going\")'" > /dev/null && break
   done
   note "the editor exposed its text after $tries clicks"
   key ctrl-a

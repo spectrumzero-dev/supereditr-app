@@ -1486,12 +1486,22 @@ if binary.range(of: Data("SUPEREDITR_PREVIEW_GUIDE".utf8)) == nil {
     check(settingsWindow != nil && card != nil, "the guide card appears with System Settings",
           "System Settings window: \(String(describing: settingsWindow?.frame)), card: \(String(describing: card?.frame)); "
             + "window server: \(windowServerView("com.apple.systempreferences"))")
-    if let s = settingsWindow?.frame, let c = card?.frame {
-        let card = c.insetBy(dx: 28, dy: 28)
+    if var s = settingsWindow?.frame, var c = card?.frame {
         // Beside the window, the guide's whole window, shadow margin included, stays off the list.
-        let beside = !c.intersects(s.insetBy(dx: 1, dy: 1)) && card.intersects(s.insetBy(dx: -60, dy: -60))
-        let top = s.contains(card) && card.minY - s.minY < 60
-        check(beside || top, "the guide card sits beside System Settings, off the list", "card \(card) by window \(s)")
+        func placed() -> Bool {
+            let card = c.insetBy(dx: 28, dy: 28)
+            let beside = !c.intersects(s.insetBy(dx: 1, dy: 1)) && card.intersects(s.insetBy(dx: -60, dy: -60))
+            let top = s.contains(card) && card.minY - s.minY < 60
+            return beside || top
+        }
+        // The guide moves the card a moment after a window's frame changes, so a first look can catch
+        // it on its way. Both frames are read again until it arrives.
+        _ = waitFor(3) { () -> Bool? in
+            s = windows(bundleID: "com.apple.systempreferences").first { $0.frame.height > 200 }?.frame ?? s
+            c = guideCard()?.frame ?? c
+            return placed() ? true : nil
+        }
+        check(placed(), "the guide card sits beside System Settings, off the list", "card \(c.insetBy(dx: 28, dy: 28)) by window \(s)")
         screenshot(window: nil, rect: s.union(c), to: outDir + "/guide.png")
     }
     stop(app)
@@ -1626,6 +1636,12 @@ func updateText() -> String { updateWindow().map { allText($0, levels: 40) } ?? 
 func updateSays(_ words: String, within seconds: Double = 20) -> Bool {
     waitFor(seconds) { updateText().contains(words) ? true : nil } ?? false
 }
+/// The window's progress bar, when it's there and tall enough to see.
+func updateBar() -> AXUIElement? {
+    guard let window = updateWindow(),
+          let bar = findElement(window, { (attribute($0, kAXRoleAttribute) as? String) == kAXProgressIndicatorRole }) else { return nil }
+    return frame(of: bar).height >= 4 ? bar : nil
+}
 func updateWindowClosed() -> Bool { waitFor(5) { updateWindow() == nil ? true : nil } ?? false }
 func screenshotUpdate(_ name: String) {
     if let window = updateWindow() { screenshot(window: Window(frame: frame(of: window)), to: outDir + "/update-\(name).png") }
@@ -1687,6 +1703,7 @@ if let updatePort {
     let chosen = chooseFromMenu("Check for Updates", screenshotTo: outDir + "/update-menu.png")
     check(chosen != nil, "the menu-bar menu offers Check for Updates when there's an updater", "item: \(chosen ?? "none")")
     check(updateSays("Checking for updates", within: 3), "choosing it opens the update window at once, saying it's checking", "window: \(updateText())")
+    check(updateBar() != nil, "and a bar shows it's working", dumpTree(updateWindow() ?? AXUIElementCreateSystemWide()))
     screenshotUpdate("checking")
     check(updateSays("You’re up to date") && updateText().contains(installedVersion), "the window says SuperEditr is up to date, and which version it has", "window: \(updateText())")
     screenshotUpdate("up-to-date")
@@ -1720,6 +1737,8 @@ if let updatePort {
     let retried = chooseFromMenu("Update Failed")
     check(retried != nil, "the menu offers another try after a failed update", "item: \(retried ?? "none")")
     check(updateSays("Downloading SuperEditr \(newVersion)"), "the window shows the download", "window: \(updateText())")
+    let arrived = waitFor(2.5) { updateBar().flatMap { (attribute($0, kAXValueAttribute) as? NSNumber)?.doubleValue }.flatMap { $0 > 0 ? $0 : nil } }
+    check(arrived != nil, "a bar shows how much has arrived", dumpTree(updateWindow() ?? AXUIElementCreateSystemWide()))
     screenshotUpdate("downloading")
     check(updateSays("SuperEditr \(newVersion) is ready"), "the window says when the update is ready", "window: \(updateText())")
     screenshotUpdate("ready")

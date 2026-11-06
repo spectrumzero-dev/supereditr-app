@@ -183,7 +183,7 @@ fn show_window(app: &AppHandle) {
     let window = app.get_webview_window(WINDOW).map(Ok).unwrap_or_else(|| {
         WebviewWindowBuilder::new(app, WINDOW, WebviewUrl::App("update.html".into()))
             .title("SuperEditr Updates")
-            .inner_size(420.0, 170.0)
+            .inner_size(420.0, 200.0)
             .resizable(false)
             .minimizable(false)
             .maximizable(false)

@@ -98,7 +98,7 @@
     {#if view.detail}<p>{view.detail}</p>{/if}
     {#if view.progress !== undefined}<progress value={view.progress ?? undefined} max="100"></progress>{/if}
     <div class="buttons">
-      <button class="btn" class:primary={!view.action} onclick={close}>{view.dismiss}</button>
+      <button class="btn" class:primary={!view.action && view.progress === undefined} onclick={close}>{view.dismiss}</button>
       {#if view.action}<button class="btn primary" onclick={act}>{view.action}</button>{/if}
     </div>
   </div>
@@ -136,8 +136,10 @@
     color: var(--text-2);
   }
   progress {
+    flex-shrink: 0;
     width: 100%;
     margin-top: 4px;
+    accent-color: var(--accent);
   }
   .buttons {
     display: flex;

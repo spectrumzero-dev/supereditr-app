@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Permissions for SuperEditr's own windows",
-  "windows": ["overlay", "settings", "guide"],
+  "windows": ["overlay", "settings", "guide", "update"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",

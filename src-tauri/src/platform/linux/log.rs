@@ -38,7 +38,6 @@ pub fn set_trace(on: bool) {
 /// Appends a line to capture.log, when it's on. Lines hold app IDs, timings and lengths, never
 /// the text itself.
 pub fn trace(message: std::fmt::Arguments) {
-    use std::io::Write;
     if !TRACE_ON.load(Ordering::Relaxed) {
         return;
     }
@@ -48,17 +47,45 @@ pub fn trace(message: std::fmt::Arguments) {
     if std::fs::metadata(&path).is_ok_and(|m| m.len() > 256 * 1024) {
         let _ = std::fs::rename(&path, dir.join("capture.old.log"));
     }
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-        // Milliseconds, to time a review's steps against each other.
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-        let _ = writeln!(file, "{}.{:03} {message}", now.as_secs(), now.subsec_millis());
-    }
+    // Milliseconds, to time a review's steps against each other.
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let _ = append_line(&path, format_args!("{}.{:03} {message}", now.as_secs(), now.subsec_millis()));
+}
+
+/// Adds a line in one write, so lines from different threads can't mix: `writeln!` on a file writes
+/// each piece of the format separately.
+fn append_line(path: &Path, line: std::fmt::Arguments) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::OpenOptions::new().create(true).append(true).open(path)?.write_all(format!("{line}\n").as_bytes())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::state_dir;
+    use super::{append_line, state_dir};
     use std::path::PathBuf;
+
+    #[test]
+    fn lines_from_different_threads_stay_whole() {
+        let path = std::env::temp_dir().join(format!("supereditr-log-{}.log", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        std::thread::scope(|scope| {
+            for thread in 0..8 {
+                let path = &path;
+                scope.spawn(move || {
+                    for line in 0..500 {
+                        append_line(path, format_args!("{thread}.{line:03} shortcut {thread} let go")).unwrap();
+                    }
+                });
+            }
+        });
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(text.lines().count(), 4000);
+        for line in text.lines() {
+            let (thread, rest) = line.split_once('.').unwrap();
+            assert!(rest.ends_with(&format!(" shortcut {thread} let go")), "{line}");
+        }
+    }
 
     #[test]
     fn the_log_follows_xdg_state_home() {

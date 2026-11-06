@@ -1638,9 +1638,11 @@ func pressUpdateButton(_ label: String) {
     }
 }
 
-// By its real path: the temporary folder is under /var, a symlink, and Tauri refuses to update an
-// app whose path has one.
-let updateRoot = (realpath(work, nil).map { String(cString: $0) } ?? work) + "/update"
+// In the home folder: Tauri refuses to update an app whose path has a symlink, and the temporary
+// folder is under /var, which is one. Its real path doesn't help, because Process launches
+// /private/var/... as /var/...
+let updateRoot = NSHomeDirectory() + "/.supereditr-smoke-\(getpid())"
+cleanups.append { try? FileManager.default.removeItem(atPath: updateRoot) }
 let updateApp = updateRoot + "/SuperEditr.app", updateArchive = updateRoot + "/update.tar.gz"
 /// Changes when an update replaces the app's files.
 func updateAppFile() -> Int? {

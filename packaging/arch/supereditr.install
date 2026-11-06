@@ -6,6 +6,6 @@ post_install() {
 pre_remove() {
   echo "To take out what Set up Omarchy added (flag lines and opening at login), run"
   echo "\`supereditr uninstall-omarchy\` as yourself before removing the package, or remove"
-  echo "the lines marked SuperEditr in ~/.config/chromium-flags.conf and ~/.config/electron-flags.conf,"
-  echo "and ~/.config/autostart/supereditr.desktop."
+  echo "the lines marked SuperEditr in ~/.config/chromium-flags.conf, ~/.config/electron-flags.conf"
+  echo "and ~/.config/code-flags.conf, and delete ~/.config/autostart/supereditr.desktop."
 }

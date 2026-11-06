@@ -202,6 +202,9 @@ first_run() {
   made="$(vm 'python3 $SMOKE/probe.py press "SuperEditr Settings" "Make these changes"; sleep 2; shot 02-set-up-omarchy;
     grep -c -- --force-renderer-accessibility ~/.config/chromium-flags.conf; test -f ~/.config/autostart/supereditr.desktop && echo autostart')"
   check "Set up Omarchy adds the Chromium flag and open at login" "$(ok both has "$made" autostart has "$made" "^[1-9]")" "$(tr '\n' ' ' <<< "$made")"
+  local vs_code_flag
+  vs_code_flag="$(vm 'grep -c -- --force-renderer-accessibility ~/.config/code-flags.conf')"
+  check "Set up Omarchy adds the VS Code flag" "$(ok is "$vs_code_flag" 1)" "$vs_code_flag"
   # The tests need foot reviewed (copy-only) rather than skipped as an excluded app.
   vm 'app_quit; jq ".excluded_apps -= [\"foot\"]" "$SETTINGS" > "$SETTINGS.new" && mv "$SETTINGS.new" "$SETTINGS"'
   vm 'app_start'

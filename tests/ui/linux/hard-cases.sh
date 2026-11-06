@@ -183,6 +183,37 @@ restart_case() {
   end_case
 }
 
+# Installed here rather than kept in the baseline: it's large, and only this case needs it.
+vs_code_case() {
+  begin_case vs-code "VS Code, started with the flag Set up Omarchy added to its own flag file"
+  local e win pid value tries file=/tmp/smoke-vscode.txt
+  vm 'sudo pacman -Sy > /dev/null 2>&1; sudo pacman -S --noconfirm --needed visual-studio-code-bin > /dev/null 2>&1' || true
+  e="$(vm "printf '%s' \"$SAMPLE\" > $file; d_exec 'code --new-window --disable-workspace-trust $file'
+    e=\$(wait_for_window '^com.microsoft.VSCode \\| smoke-vscode' 45); d_focus \$e; echo \$e" | tail -1)"
+  win="$(vm d_active)"
+  pid="$(jq -r .pid <<< "$win")"
+  value="$(vm "tr '\\0' ' ' < /proc/$pid/cmdline")"
+  check "VS Code's launcher passes the flag" "$(ok has "$value" "--force-renderer-accessibility")" "${value:0:100}"
+  # VS Code exposes the editor a moment after it draws, and only once it's clicked.
+  for tries in 1 2 3 4 5 6 7 8 9 10; do
+    click "$(jq -r '.at[0] + .size[0] / 2 | floor' <<< "$win")" "$(jq -r '.at[1] + .size[1] / 3 | floor' <<< "$win")"
+    sleep 1
+    vm "field $pid | jq -e '.chars > 0'" > /dev/null && break
+  done
+  note "the editor exposed its text after $tries clicks"
+  key ctrl-a
+  sleep 0.5
+  review_and_apply "VS Code" "$e" com.microsoft.VSCode 70-vs-code
+  check "VS Code: read through AT-SPI, pasting allowed" "$(ok has "$REVIEW_READ" "via AT-SPI.*pasting allowed")" "${REVIEW_READ#* }"
+  check "VS Code: Alt+Enter applies" "$(ok has "$REVIEW_RESULT" ": applied")" "${REVIEW_RESULT#* }"
+  key ctrl-s
+  sleep 1
+  value="$(vm "cat $file")"
+  check "VS Code: the saved file holds the fix" "$(ok has "$value" "They're going")" "${value:0:80}"
+  vm 'pkill -x code; sleep 1' || true
+  end_case
+}
+
 hard_cases() {
   wants monitors && monitors_case
   wants xwayland && xwayland_case
@@ -190,4 +221,5 @@ hard_cases() {
   wants large && large_case
   wants frozen && frozen_case
   wants hyprland-restart && restart_case
+  wants vs-code && vs_code_case
 }

@@ -1,8 +1,8 @@
 //! The Linux setup page, and Set up Omarchy with its uninstall.
 //!
 //! Set up Omarchy changes only files in the user's own config folder, and says which before it
-//! does: it adds `--force-renderer-accessibility` to the Chromium and Electron flag files, so their
-//! pages expose text, and turns on opening at login. Each flag line it adds follows a comment that
+//! does: it adds `--force-renderer-accessibility` to the Chromium, Electron and VS Code flag files,
+//! so they expose text, and turns on opening at login. Each flag line it adds follows a comment that
 //! marks it as SuperEditr's, which is how `supereditr uninstall-omarchy` finds exactly what to take
 //! out. Omarchy's own files (`/usr/share/omarchy`) and the Hyprland config (`~/.config/hypr/`) are
 //! never touched: SuperEditr's binds and window rule exist only at runtime.
@@ -13,9 +13,11 @@ use std::path::{Path, PathBuf};
 
 /// Makes Chromium and Electron expose web page text to accessibility.
 pub const FLAG: &str = "--force-renderer-accessibility";
-/// The flag files Set up Omarchy adds the flag to, in the config folder. Arch's `chromium` launcher
-/// and `electron*` wrappers read them, and both skip lines starting with `#`.
-pub const FLAG_FILES: &[&str] = &["chromium-flags.conf", "electron-flags.conf"];
+/// The flag files Set up Omarchy adds the flag to, in the config folder. Arch's `chromium` launcher,
+/// `electron*` wrappers and `visual-studio-code-bin` launcher read them, and all skip `#` comments.
+pub const FLAG_FILES: &[&str] = &["chromium-flags.conf", "electron-flags.conf", VS_CODE_FLAGS];
+/// VS Code's launcher reads this file and not the Electron one.
+const VS_CODE_FLAGS: &str = "code-flags.conf";
 /// The autostart entry, in the config folder. The autostart plugin writes it.
 pub const AUTOSTART: &str = "autostart/supereditr.desktop";
 
@@ -115,6 +117,15 @@ pub struct Change {
     pub needed: bool,
 }
 
+/// What the flag does in the program that reads this flag file.
+fn flag_effect(name: &str) -> &'static str {
+    match name {
+        VS_CODE_FLAGS => "VS Code exposes its editor text",
+        name if name.starts_with("chromium") => "Chromium exposes web page text",
+        _ => "Electron apps expose web page text",
+    }
+}
+
 /// The flag-file changes, for the files under `config`.
 pub fn flag_changes(config: &Path) -> Vec<Change> {
     FLAG_FILES
@@ -122,13 +133,17 @@ pub fn flag_changes(config: &Path) -> Vec<Change> {
         .map(|name| {
             let path = config.join(name);
             let existing = std::fs::read_to_string(&path).ok();
-            let app = if name.starts_with("chromium") { "Chromium" } else { "Electron apps" };
-            let what = match (&existing, with_flag(existing.as_deref())) {
-                (_, None) => format!("{app} already expose web page text ({FLAG} is set)."),
-                (None, Some(_)) => format!("Create it with {FLAG}, so {app} expose web page text."),
-                (Some(_), Some(_)) => format!("Add {FLAG}, with a comment marking it as SuperEditr’s."),
+            let effect = flag_effect(name);
+            let needed = with_flag(existing.as_deref()).is_some();
+            let mut what = match (&existing, needed) {
+                (_, false) => format!("{FLAG} is already set, so {effect}."),
+                (None, true) => format!("Create it with {FLAG}, so {effect}."),
+                (Some(_), true) => format!("Add {FLAG}, with a comment marking it as SuperEditr’s, so {effect}."),
             };
-            Change { needed: with_flag(existing.as_deref()).is_some(), path: tilde(&path), what }
+            if needed && *name == VS_CODE_FLAGS {
+                what.push_str(" VS Code then shows “Screen Reader Optimized” in its status bar.");
+            }
+            Change { needed, path: tilde(&path), what }
         })
         .collect()
 }
@@ -160,7 +175,7 @@ pub fn remove_flags(config: &Path) -> std::io::Result<Vec<String>> {
         let path = config.join(name);
         let Ok(text) = std::fs::read_to_string(&path) else { continue };
         match without_flag(&text) {
-            Without::Unchanged => {}
+            Without::Unchanged => continue,
             Without::Text(text) => {
                 write_whole(&path, &text)?;
                 done.push(format!("Removed SuperEditr’s {FLAG} lines from {}", tilde(&path)));
@@ -169,6 +184,11 @@ pub fn remove_flags(config: &Path) -> std::io::Result<Vec<String>> {
                 std::fs::remove_file(&path)?;
                 done.push(format!("Deleted {}, which SuperEditr created", tilde(&path)));
             }
+        }
+        if *name == VS_CODE_FLAGS {
+            done.push(
+                "VS Code remembers its screen reader mode. To turn it off, set \"editor.accessibilitySupport\": \"off\" in VS Code’s settings.".into(),
+            );
         }
     }
     Ok(done)
@@ -248,7 +268,7 @@ pub fn flags_check(config: &Path) -> SetupCheck {
         })
         .collect();
     let mut detail = if missing.is_empty() {
-        format!("{FLAG} is set for Chromium and Electron apps")
+        format!("{FLAG} is set for Chromium, Electron apps and VS Code")
     } else {
         format!("{FLAG} isn’t in {}. Set up Omarchy adds it.", missing.join(" or "))
     };
@@ -427,20 +447,50 @@ mod tests {
         let config = folder("roundtrip");
         std::fs::write(config.join("chromium-flags.conf"), OMARCHY).unwrap();
         let changes = flag_changes(&config);
-        assert_eq!(changes.len(), 2);
+        assert_eq!(changes.len(), 3);
         assert!(changes.iter().all(|change| change.needed));
 
         let done = add_flags(&config).unwrap();
-        assert_eq!(done.len(), 2);
+        assert_eq!(done.len(), 3);
         assert!(flags_check(&config).ok);
         assert!(flag_changes(&config).iter().all(|change| !change.needed));
         assert!(add_flags(&config).unwrap().is_empty(), "a second run changes nothing");
 
-        let done = remove_flags(&config).unwrap();
-        assert_eq!(done.len(), 2);
+        remove_flags(&config).unwrap();
         assert_eq!(std::fs::read_to_string(config.join("chromium-flags.conf")).unwrap(), OMARCHY);
         assert!(!config.join("electron-flags.conf").exists());
+        assert!(!config.join(VS_CODE_FLAGS).exists());
         assert!(remove_flags(&config).unwrap().is_empty());
+        std::fs::remove_dir_all(config).unwrap();
+    }
+
+    #[test]
+    fn vs_codes_own_flag_file_is_set_up_and_its_lasting_mode_is_explained() {
+        let config = folder("vs-code");
+        let listed = flag_changes(&config);
+        let change = listed.iter().find(|change| change.path.ends_with(VS_CODE_FLAGS)).unwrap();
+        assert!(change.what.contains("Screen Reader Optimized"), "{}", change.what);
+
+        add_flags(&config).unwrap();
+        assert!(has_flag(&std::fs::read_to_string(config.join(VS_CODE_FLAGS)).unwrap()));
+        std::fs::remove_file(config.join(VS_CODE_FLAGS)).unwrap();
+        assert!(!flags_check(&config).ok, "the other two files aren't enough");
+
+        add_flags(&config).unwrap();
+        let done = remove_flags(&config).unwrap();
+        assert!(done.iter().any(|line| line.contains("editor.accessibilitySupport")), "{done:?}");
+        std::fs::remove_dir_all(config).unwrap();
+    }
+
+    #[test]
+    fn a_vs_code_flag_the_user_added_stays_and_needs_no_explaining() {
+        let config = folder("vs-code-theirs");
+        std::fs::write(config.join(VS_CODE_FLAGS), format!("{FLAG}\n")).unwrap();
+        let listed = flag_changes(&config);
+        assert!(listed.iter().any(|change| change.path.ends_with(VS_CODE_FLAGS) && !change.needed));
+        let done = remove_flags(&config).unwrap();
+        assert!(done.is_empty(), "{done:?}");
+        assert_eq!(std::fs::read_to_string(config.join(VS_CODE_FLAGS)).unwrap(), format!("{FLAG}\n"));
         std::fs::remove_dir_all(config).unwrap();
     }
 

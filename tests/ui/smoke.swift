@@ -1638,7 +1638,10 @@ func pressUpdateButton(_ label: String) {
     }
 }
 
-let updateRoot = work + "/update", updateApp = updateRoot + "/SuperEditr.app", updateArchive = updateRoot + "/update.tar.gz"
+// By its real path: the temporary folder is under /var, a symlink, and Tauri refuses to update an
+// app whose path has one.
+let updateRoot = (realpath(work, nil).map { String(cString: $0) } ?? work) + "/update"
+let updateApp = updateRoot + "/SuperEditr.app", updateArchive = updateRoot + "/update.tar.gz"
 /// Changes when an update replaces the app's files.
 func updateAppFile() -> Int? {
     (try? FileManager.default.attributesOfItem(atPath: updateApp + "/Contents/Info.plist"))?[.systemFileNumber] as? Int

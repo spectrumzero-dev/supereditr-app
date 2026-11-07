@@ -51,8 +51,8 @@ struct Args {
 const VALUE_FLAGS: &[&str] = &["preset", "provider", "model", "base-url", "steer", "words", "bench"];
 const SWITCHES: &[&str] = &["offline", "json", "no-local"];
 
-/// Parses the arguments after the program name. An unknown flag, a flag missing its value, or a
-/// `--bench` that isn't a whole number of at least 1 is an error.
+/// Parses the arguments after the program name. An unknown flag, a flag missing its value (nothing
+/// after it, or another `--flag`), or a `--bench` that isn't a whole number of at least 1 is an error.
 fn parse_args(raw: impl IntoIterator<Item = String>) -> Result<Args, String> {
     let mut raw = raw.into_iter();
     let command = raw.next().unwrap_or_else(|| "help".into());
@@ -63,7 +63,7 @@ fn parse_args(raw: impl IntoIterator<Item = String>) -> Result<Args, String> {
             let value = if SWITCHES.contains(&name) {
                 "1".into()
             } else if VALUE_FLAGS.contains(&name) {
-                raw.next().ok_or_else(|| format!("--{name} needs a value"))?
+                raw.next().filter(|v| !v.starts_with("--")).ok_or_else(|| format!("--{name} needs a value"))?
             } else {
                 return Err(format!("unknown flag --{name}"));
             };
@@ -313,5 +313,9 @@ mod tests {
     fn missing_value_is_an_error() {
         assert!(parse_strs(&["check", "--bench"]).is_err());
         assert!(parse_strs(&["models", "--provider"]).is_err());
+        // A value flag doesn't swallow the next flag, known or unknown.
+        assert!(parse_strs(&["check", "--words", "--offline", "text"]).is_err());
+        let err = parse_strs(&["check", "--words", "--provder", "Rhyan"]).err().unwrap();
+        assert!(err.contains("--words"), "{err}");
     }
 }

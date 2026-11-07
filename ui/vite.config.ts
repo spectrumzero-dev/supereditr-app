@@ -15,6 +15,7 @@ export default defineConfig({
         overlay: resolve(import.meta.dirname, "overlay.html"),
         settings: resolve(import.meta.dirname, "settings.html"),
         guide: resolve(import.meta.dirname, "guide.html"),
+        update: resolve(import.meta.dirname, "update.html"),
       },
     },
   },

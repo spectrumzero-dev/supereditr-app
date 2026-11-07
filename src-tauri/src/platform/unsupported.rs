@@ -46,6 +46,7 @@ pub enum SettingsWindow {
     #[allow(dead_code)]
     Front(Rect, i64),
     #[allow(dead_code)]
+    Prompt,
     Behind,
     Closed,
 }

@@ -1,6 +1,6 @@
 // The overlay's review state, kept free of UI code so its transitions can be tested.
 import { changes } from "../lib/diff";
-import type { DiffView, EngineEvent } from "../lib/types";
+import type { DiffView, EngineEvent, KeptTerm } from "../lib/types";
 
 export type Phase = "idle" | "local" | "streaming" | "done" | "failed";
 
@@ -17,7 +17,7 @@ export interface Review {
   error: string;
   changedTokens: string[];
   /** The author's own terms a rewrite would have dropped; those changes start out rejected. */
-  keptTerms: string[];
+  keptTerms: KeptTerm[];
   /** Why Apple Intelligence stood in for the chosen AI. */
   backupFor: string;
   /** Words the panel may offer to add to the word list. */
@@ -83,6 +83,11 @@ export function offerToKeep(
     if (word) return word;
   }
   return null;
+}
+
+/** The author's terms still kept: those with a change that drops them still rejected. */
+export function keptWording(review: Review, rejected: ReadonlySet<number>): string[] {
+  return review.keptTerms.filter((k) => k.changes.some((id) => rejected.has(id))).map((k) => k.term);
 }
 
 export function canUse(review: Review): boolean {

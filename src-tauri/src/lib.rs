@@ -152,7 +152,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             &quit,
         ],
     )?;
-    if updater::ENABLED {
+    if updater::available() {
         // Below Settings…
         menu.insert(&updater::menu_item(app)?, 7)?;
     }
@@ -355,7 +355,7 @@ pub fn run() {
         }
     }
     let mut builder = tauri::Builder::default();
-    if updater::ENABLED {
+    if updater::available() {
         builder = builder.plugin(updater::plugin());
     }
     // On Linux the compositor owns global keys (see `hotkeys`).
@@ -363,6 +363,8 @@ pub fn run() {
     {
         builder = builder.plugin(hotkeys::plugin());
     }
+    let mut context = tauri::generate_context!();
+    updater::use_test_feed(&mut context);
     builder
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| on_second_launch(app, &args)))
         .plugin(tauri_plugin_opener::init())
@@ -521,11 +523,14 @@ pub fn run() {
             commands::drag_app,
             commands::preview_review,
             commands::set_paused,
+            commands::update_status,
+            commands::update_now,
+            commands::close_update_window,
             commands::linux_setup,
             commands::set_up_omarchy,
             commands::remove_omarchy_setup,
         ]))
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("SuperEditr failed to start");
 }
 

@@ -11,7 +11,9 @@
 import AppKit
 import ApplicationServices
 import CoreGraphics
+import CryptoKit
 import Foundation
+import Network
 
 // MARK: Reporting
 
@@ -43,7 +45,7 @@ func skipEnvironment(_ reason: String) -> Never {
 
 let replayMark: Int64 = 0x5345_4454  // SuperEditr's marker on keys it replays ("SEDT")
 let keyE: CGKeyCode = 14, keyA: CGKeyCode = 0, keyEscape: CGKeyCode = 53, keyTab: CGKeyCode = 48, keySpace: CGKeyCode = 49
-let keyShift: CGKeyCode = 56, keyCommand: CGKeyCode = 55, keyRight: CGKeyCode = 124, keyUp: CGKeyCode = 126, keyReturn: CGKeyCode = 36, keyV: CGKeyCode = 9, keyR: CGKeyCode = 15, keyDown: CGKeyCode = 125
+let keyShift: CGKeyCode = 56, keyCommand: CGKeyCode = 55, keyRight: CGKeyCode = 124, keyUp: CGKeyCode = 126, keyReturn: CGKeyCode = 36, keyV: CGKeyCode = 9, keyR: CGKeyCode = 15, keyDown: CGKeyCode = 125, keyC: CGKeyCode = 8
 
 /// Holds Shift down (true) or lets it go (false), as a separate key, the way a person does.
 func shift(_ down: Bool) {
@@ -122,10 +124,11 @@ func windows(bundleID: String) -> [Window] {
 }
 
 let superEditr = "app.supereditr"
-/// SuperEditr’s suggestion panel: about 548 points wide (Settings is 900, the guide card 380).
+/// SuperEditr’s suggestion panel: about 548 points wide (Settings is 900, the guide card 424).
 func overlay() -> Window? { windows(bundleID: superEditr).first { (400...700).contains($0.frame.width) } }
-/// The permission guide card, about 380 points wide.
-func guideCard() -> Window? { windows(bundleID: superEditr).first { $0.frame.width < 400 } }
+/// The permission guide card's window, about 424 points wide: a 368-point card with 28 points around
+/// it for its shadow.
+func guideCard() -> Window? { windows(bundleID: superEditr).first { $0.frame.width < 470 } }
 
 /// What the window server's list shows of an app's windows. SuperEditr finds System Settings this
 /// way to place the guide card, so an empty list here explains a missing card.
@@ -858,11 +861,16 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
     let chromeOpened = openFront(chromeApp, bundleID: chrome, file: page, newInstance: true,
                                  launchArguments: ["--user-data-dir=\(work)/chrome", "--no-first-run", "--no-default-browser-check"])
     check(chromeOpened, "Chrome opens the page with its fields")
+    let captureLog = home + "/Library/Logs/SuperEditr/capture.log"
+    func lastChromeRead() -> String {
+        let lines = (try? String(contentsOfFile: captureLog, encoding: .utf8))?.split(separator: "\n") ?? []
+        return lines.last { $0.contains("com.google.Chrome: read") }.map(String.init) ?? "none"
+    }
     // Keys go only to the test's own Chrome; stop here rather than type into another one.
     if chromeOpened {
         // Chrome builds its Accessibility tree only once asked, as SuperEditr does when it reads. Asking
-        // first, and waiting for the tree, makes SuperEditr read the field through Accessibility, as it
-        // does in an app whose tree is already on, instead of falling back to a copy-only ⌘C read.
+        // first, and waiting for the tree, lets this test read the fields itself, and skips the wait for
+        // the tree in SuperEditr's first read, which has a check of its own below.
         if let ours = launchedSinceStart(chrome).last {
             let element = AXUIElementCreateApplication(ours.processIdentifier)
             for flag in ["AXManualAccessibility", "AXEnhancedUserInterface"] {
@@ -870,13 +878,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             }
         }
         pump(2)
-        let captureLog = home + "/Library/Logs/SuperEditr/capture.log"
-        func lastChromeRead() -> String {
-            let lines = (try? String(contentsOfFile: captureLog, encoding: .utf8))?.split(separator: "\n") ?? []
-            return lines.last { $0.contains("com.google.Chrome: read") }.map(String.init) ?? "none"
-        }
-        // SuperEditr's first read in a new Chrome process can come before the tree is ready and fall back
-        // to a copy-only ⌘C read. One review closed straight away gets past it.
+        // One review closed straight away makes sure the tree is there for the control below.
         _ = selectAll()
         press(keyE, .maskCommand)
         pump(0.1)
@@ -1257,6 +1259,116 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         log("NOTE Chrome pastes by attempts: \(Dictionary(grouping: tries, by: { $0 }).mapValues(\.count).sorted { $0.key < $1.key })")
     }
     quitOpened(chrome)
+
+    // 6c-1. The first review in a Chromium app that has just started. Its text can't be read until
+    // SuperEditr asks, and then only after about 2 s, so that first read has to wait: giving up falls
+    // back to a read that can't replace anything. Nothing here asks for the tree first. Chrome stands in
+    // for any app on the same runtime that SuperEditr has no name for, such as the Codex app: they
+    // answer to the same flag, and the same code sends it (has_chromium_runtime has unit tests).
+    let chromeArguments = { (profile: String) in ["--user-data-dir=\(work)/\(profile)", "--no-first-run", "--no-default-browser-check"] }
+    let firstPage = work + "/first-review.html"
+    try! """
+    <!doctype html><meta charset="utf-8"><title>First review</title>
+    <textarea autofocus rows="3" cols="60">\(typo)</textarea>
+    """.write(toFile: firstPage, atomically: true, encoding: .utf8)
+    let firstOpened = openFront(chromeApp, bundleID: chrome, file: firstPage, newInstance: true, launchArguments: chromeArguments("chrome-first"))
+    check(firstOpened, "Chrome opens the page for the first review")
+    if firstOpened {
+        pump(3)  // long enough for the page to load, with no tree yet
+        press(keyA, .maskCommand)
+        pump(0.5)
+        press(keyE, .maskCommand)
+        pump(0.1)
+        press(keyE, .maskCommand)
+        // The review opens once the tree is there, so this waits longer than the others.
+        let panel = waitFor(10) { overlay() }
+        check(panel != nil, "⌘E E reviews a field in a Chromium app that has just started", "no overlay within 10 s")
+        if panel != nil {
+            pump(1.5)  // the rule-based checker's result
+            let read = lastChromeRead()
+            check(read.contains("via Accessibility"), "the first review reads the field through Accessibility", "last read: \(read)")
+            let replaceKey = waitFor(3) { () -> String? in
+                let text = panelText()
+                return text.contains("⌥↩") && text.range(of: #"\breplace\b"#, options: .regularExpression) != nil ? text : nil
+            }
+            check(replaceKey != nil, "the first review offers ⌥↩ replace", "panel text: \(panelText())")
+            screenshot(window: overlay(), to: outDir + "/first-review.png")
+            press(keyReturn, .maskAlternate)
+            let fixed = waitFor(5) { () -> String? in
+                let value = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
+                return !value.isEmpty && !value.contains(typo) ? value : nil
+            }
+            check(fixed != nil, "⌥↩ replaces the text in the first review", "the field still holds the typo")
+            if overlay() != nil {
+                press(keyEscape)
+                _ = waitFor(3) { overlay() == nil ? true : nil }
+            }
+        }
+    }
+    quitOpened(chrome)
+
+    // 6c-2. ⌥↩ means replace and nothing else. In text that can't be replaced, it changes nothing:
+    // the panel stays and says why, the clipboard is left alone, and ⌘C copies the fix.
+    let readOnlyPage = work + "/read-only.html"
+    try! """
+    <!doctype html><meta charset="utf-8"><title>Read only</title>
+    <p>\(typo)</p>
+    """.write(toFile: readOnlyPage, atomically: true, encoding: .utf8)
+    let readOnlyOpened = openFront(chromeApp, bundleID: chrome, file: readOnlyPage, newInstance: true, launchArguments: chromeArguments("chrome-read-only"))
+    check(readOnlyOpened, "Chrome opens the read-only page")
+    if readOnlyOpened {
+        pump(3)
+        press(keyA, .maskCommand)
+        pump(0.5)
+        press(keyE, .maskCommand)
+        pump(0.1)
+        press(keyE, .maskCommand)
+        let panel = waitFor(10) { overlay() }
+        check(panel != nil, "⌘E E reviews read-only text", "no overlay within 10 s")
+        if panel != nil {
+            pump(1.5)  // the rule-based checker's result
+            let saysWhy = waitFor(3) { () -> String? in
+                let text = panelText()
+                return text.contains("replace text here") ? text : nil
+            }
+            check(saysWhy != nil, "the panel says the text can't be replaced", "panel text: \(panelText())")
+            check(saysWhy.map { !$0.contains("⌥↩") && $0.contains("⌘C") } ?? false, "the panel offers ⌘C and not ⌥↩", "panel text: \(saysWhy ?? "")")
+            screenshot(window: overlay(), to: outDir + "/read-only.png")
+            let untouched = "On the clipboard before ⌥↩."
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(untouched, forType: .string)
+            press(keyReturn, .maskAlternate)
+            pump(1)
+            check(NSPasteboard.general.string(forType: .string) == untouched, "⌥↩ leaves the clipboard alone",
+                  "the clipboard holds \"\(NSPasteboard.general.string(forType: .string) ?? "")\"")
+            check(overlay() != nil, "⌥↩ leaves the panel open when it can't replace")
+            check(panelText().contains("Nothing replaced"), "⌥↩ says nothing was replaced", "panel text: \(panelText())")
+            screenshot(window: overlay(), to: outDir + "/read-only-pressed.png")
+            KeyLog.seen.removeAll()
+            press(keyC, .maskCommand)
+            let first = waitFor(3) { () -> String? in
+                let text = NSPasteboard.general.string(forType: .string) ?? ""
+                return text != untouched && !text.isEmpty ? text : nil
+            }
+            pump(0.5)  // for anything else that writes after the first change
+            let settled = NSPasteboard.general.string(forType: .string) ?? ""
+            let panelNow = overlay() != nil ? panelText() : ""
+            log("NOTE ⌘C in a review: clipboard first \"\(first ?? "unchanged")\", then \"\(settled)\"; panel \(overlay() != nil ? "open" : "closed")")
+            check(!KeyLog.seen.contains { $0.code == Int64(keyC) }, "⌘C in a review never reaches the app", "the app received ⌘C")
+            check(!settled.isEmpty && settled != untouched && !settled.contains(typo), "⌘C copies the fix", "the clipboard holds \"\(settled)\"")
+            check(panelNow.contains("Copied"), "⌘C says it copied", "panel text: \(panelNow)")
+            if overlay() != nil {
+                // The panel's other ⌘ shortcuts go the same way. Here ⌘R tries again, and doesn't reload the page.
+                KeyLog.seen.removeAll()
+                press(keyR, .maskCommand)
+                pump(0.5)
+                check(!KeyLog.seen.contains { $0.code == Int64(keyR) }, "⌘R in a review never reaches the app", "the app received ⌘R")
+                press(keyEscape)
+                _ = waitFor(3) { overlay() == nil ? true : nil }
+            }
+        }
+    }
+    quitOpened(chrome)
 }
 // 6d. ↩ in a review applies the fix and never reaches the app: the panel doesn't take keyboard
 // focus, and SuperEditr's keyboard tap takes ↩ from the app instead. In a chat app, ↩ reaching the
@@ -1358,7 +1470,8 @@ stop(app)
 // What SuperEditr logged about each read and write (app IDs, timings and lengths, no text).
 try? FileManager.default.copyItem(atPath: home + "/Library/Logs/SuperEditr/capture.log", toPath: outDir + "/capture.log")
 
-// 7. The Accessibility guide card, when this build has it, sits at System Settings' bottom-right.
+// 7. The Accessibility guide card, when this build has it, sits beside System Settings' window, off
+// the list; with no room on the screen, over the window's top.
 let binary = (try? Data(contentsOf: URL(fileURLWithPath: "\(appPath)/Contents/MacOS/supereditr"))) ?? Data()
 if binary.range(of: Data("SUPEREDITR_PREVIEW_GUIDE".utf8)) == nil {
     log("SKIP guide card: not in this build")
@@ -1373,14 +1486,291 @@ if binary.range(of: Data("SUPEREDITR_PREVIEW_GUIDE".utf8)) == nil {
     check(settingsWindow != nil && card != nil, "the guide card appears with System Settings",
           "System Settings window: \(String(describing: settingsWindow?.frame)), card: \(String(describing: card?.frame)); "
             + "window server: \(windowServerView("com.apple.systempreferences"))")
-    if let s = settingsWindow?.frame, let c = card?.frame {
-        let inside = c.maxX <= s.maxX + 1 && c.maxY <= s.maxY + 1 && c.minX >= s.minX && c.minY >= s.minY
-        let corner = s.maxX - c.maxX < 60 && s.maxY - c.maxY < 60
-        check(inside && corner, "the guide card sits at System Settings' bottom-right", "card \(c) in window \(s)")
+    if var s = settingsWindow?.frame, var c = card?.frame {
+        // Beside the window, the guide's whole window, shadow margin included, stays off the list.
+        func placed() -> Bool {
+            let card = c.insetBy(dx: 28, dy: 28)
+            let beside = !c.intersects(s.insetBy(dx: 1, dy: 1)) && card.intersects(s.insetBy(dx: -60, dy: -60))
+            let top = s.contains(card) && card.minY - s.minY < 60
+            return beside || top
+        }
+        // The guide moves the card a moment after a window's frame changes, so a first look can catch
+        // it on its way. Both frames are read again until it arrives.
+        _ = waitFor(3) { () -> Bool? in
+            s = windows(bundleID: "com.apple.systempreferences").first { $0.frame.height > 200 }?.frame ?? s
+            c = guideCard()?.frame ?? c
+            return placed() ? true : nil
+        }
+        check(placed(), "the guide card sits beside System Settings, off the list", "card \(c.insetBy(dx: 28, dy: 28)) by window \(s)")
         screenshot(window: nil, rect: s.union(c), to: outDir + "/guide.png")
     }
     stop(app)
     quitOpened("com.apple.systempreferences")
+}
+
+// 8. Check for Updates. A test build has no updater of its own, so a copy of this one gets the real
+// updater with a feed served from here and a key made for this run. The update is the app itself,
+// so its files change while its version doesn't.
+
+/// A throwaway updater key, in the minisign format the updater reads. Signatures use minisign's
+/// legacy mode ("Ed"), which signs a file's bytes rather than a hash of them.
+struct UpdateKey {
+    private let key = Curve25519.Signing.PrivateKey()
+    private let id = Data((0..<8).map { _ in UInt8.random(in: .min ... .max) })
+
+    /// What the updater takes as `pubkey`: a minisign public key file, in base64.
+    var publicKey: String {
+        let line = (Data("Ed".utf8) + id + key.publicKey.rawRepresentation).base64EncodedString()
+        return Data("untrusted comment: minisign public key\n\(line)\n".utf8).base64EncodedString()
+    }
+
+    /// What latest.json's `signature` holds for `file`: a minisign signature file, in base64. The
+    /// updater also requires the version, which the release tools write into the trusted comment.
+    func signature(of file: Data, version: String) -> String {
+        let signature = try! key.signature(for: file)
+        let comment = "timestamp:\(Int(Date().timeIntervalSince1970))\tfile:update.tar.gz\tversion:\(version)"
+        let global = try! key.signature(for: signature + Data(comment.utf8))
+        let line = (Data("Ed".utf8) + id + signature).base64EncodedString()
+        return Data("untrusted comment: signature\n\(line)\ntrusted comment: \(comment)\n\(global.base64EncodedString())\n".utf8).base64EncodedString()
+    }
+}
+
+/// The update feed and download, on this Mac only. `pause` holds the feed's answer for that long,
+/// and the download halfway for that long, so the window's in-between states can be seen.
+final class UpdateFeed {
+    enum Answer { case nothingNew, failure, offer(version: String, signature: String) }
+
+    private let queue = DispatchQueue(label: "update-feed")
+    private let archive: Data
+    private var listener: NWListener?
+    private var answer = Answer.nothingNew
+    private var pause = 0.0
+
+    init(archive: Data) { self.archive = archive }
+
+    /// Starts listening and returns the port, or nil if it can't.
+    func start() -> UInt16? {
+        let parameters = NWParameters.tcp
+        parameters.requiredInterfaceType = .loopback
+        guard let listener = try? NWListener(using: parameters, on: .any) else { return nil }
+        self.listener = listener
+        listener.newConnectionHandler = { [weak self] connection in
+            guard let self else { return }
+            connection.start(queue: self.queue)
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, _, _ in
+                let request = String(decoding: data ?? Data(), as: UTF8.self)
+                self.respond(on: connection, path: request.split(separator: " ").dropFirst().first.map(String.init) ?? "")
+            }
+        }
+        listener.start(queue: queue)
+        // The port reads 0 until the listener is ready.
+        return waitFor(5) { listener.port.flatMap { $0.rawValue == 0 ? nil : $0.rawValue } }
+    }
+
+    func stop() { listener?.cancel() }
+
+    func next(_ answer: Answer, pause: Double = 0) {
+        queue.sync {
+            self.answer = answer
+            self.pause = pause
+        }
+    }
+
+    private func respond(on connection: NWConnection, path: String) {
+        if path == "/update.tar.gz" {
+            let half = archive.count / 2
+            let head = Data("HTTP/1.1 200 OK\r\nContent-Length: \(archive.count)\r\nConnection: close\r\n\r\n".utf8)
+            connection.send(content: head + archive.prefix(half), completion: .contentProcessed { _ in })
+            queue.asyncAfter(deadline: .now() + pause) { [archive] in
+                self.finish(connection, Data(archive.dropFirst(half)))
+            }
+            return
+        }
+        queue.asyncAfter(deadline: .now() + pause) {
+            switch self.answer {
+            case .nothingNew: self.finish(connection, Data("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n".utf8))
+            case .failure: self.finish(connection, Data("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".utf8))
+            case let .offer(version, signature):
+                let port = self.listener?.port?.rawValue ?? 0
+                let download = ["url": "http://127.0.0.1:\(port)/update.tar.gz", "signature": signature]
+                let release: [String: Any] = [
+                    "version": version,
+                    "pub_date": "2026-01-01T00:00:00Z",
+                    "platforms": ["darwin-aarch64": download, "darwin-aarch64-app": download, "darwin-x86_64": download, "darwin-x86_64-app": download],
+                ]
+                let json = try! JSONSerialization.data(withJSONObject: release)
+                self.finish(connection, Data("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(json.count)\r\nConnection: close\r\n\r\n".utf8) + json)
+            }
+        }
+    }
+
+    private func finish(_ connection: NWConnection, _ data: Data) {
+        connection.send(content: data, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { _ in connection.cancel() })
+    }
+}
+
+/// SuperEditr restarts through LaunchServices, which doesn't pass on this test's environment, so the
+/// new copy runs with the real HOME and its settings. Only a disposable VM can take that.
+func inVirtualMachine() -> Bool {
+    var present: Int32 = 0
+    var size = MemoryLayout<Int32>.size
+    return sysctlbyname("kern.hv_vmm_present", &present, &size, nil, 0) == 0 && present == 1
+}
+
+func runTool(_ path: String, _ arguments: [String], environment: [String: String] = [:]) -> Bool {
+    let tool = Process()
+    tool.executableURL = URL(fileURLWithPath: path)
+    tool.arguments = arguments
+    tool.environment = ProcessInfo.processInfo.environment.merging(environment) { $1 }
+    guard (try? tool.run()) != nil else { return false }
+    tool.waitUntilExit()
+    return tool.terminationStatus == 0
+}
+
+func updateWindow() -> AXUIElement? {
+    guard let app = running(superEditr).first,
+          let list = attribute(AXUIElementCreateApplication(app.processIdentifier), kAXWindowsAttribute) as? [AXUIElement] else { return nil }
+    return list.first { attribute($0, kAXTitleAttribute) as? String == "SuperEditr Updates" }
+}
+func updateText() -> String { updateWindow().map { allText($0, levels: 40) } ?? "" }
+func updateSays(_ words: String, within seconds: Double = 20) -> Bool {
+    waitFor(seconds) { updateText().contains(words) ? true : nil } ?? false
+}
+/// The window's progress bar, when it's there and tall enough to see.
+func updateBar() -> AXUIElement? {
+    guard let window = updateWindow(),
+          let bar = findElement(window, { (attribute($0, kAXRoleAttribute) as? String) == kAXProgressIndicatorRole }) else { return nil }
+    return frame(of: bar).height >= 4 ? bar : nil
+}
+func updateWindowClosed() -> Bool { waitFor(5) { updateWindow() == nil ? true : nil } ?? false }
+func screenshotUpdate(_ name: String) {
+    if let window = updateWindow() { screenshot(window: Window(frame: frame(of: window)), to: outDir + "/update-\(name).png") }
+}
+func pressUpdateButton(_ label: String) {
+    if let window = updateWindow(), let found = button(in: window, containing: label) {
+        AXUIElementPerformAction(found, kAXPressAction as CFString)
+    } else {
+        log("     no \(label) button in: \(updateText())")
+    }
+}
+
+// In the home folder: Tauri refuses to update an app whose path has a symlink, and the temporary
+// folder is under /var, which is one. Its real path doesn't help, because Process launches
+// /private/var/... as /var/...
+let updateRoot = NSHomeDirectory() + "/.supereditr-smoke-\(getpid())"
+cleanups.append { try? FileManager.default.removeItem(atPath: updateRoot) }
+let updateApp = updateRoot + "/SuperEditr.app", updateArchive = updateRoot + "/update.tar.gz"
+/// Changes when an update replaces the app's files.
+func updateAppFile() -> Int? {
+    (try? FileManager.default.attributesOfItem(atPath: updateApp + "/Contents/Info.plist"))?[.systemFileNumber] as? Int
+}
+try! FileManager.default.createDirectory(atPath: updateRoot, withIntermediateDirectories: true)
+let updatePrepared = runTool("/usr/bin/ditto", [appPath, updateApp])
+    && runTool("/usr/bin/tar", ["-czf", updateArchive, "-C", updateRoot, "SuperEditr.app"], environment: ["COPYFILE_DISABLE": "1"])
+let updateBytes = (try? Data(contentsOf: URL(fileURLWithPath: updateArchive))) ?? Data()
+let updateFeed = UpdateFeed(archive: updateBytes)
+let updatePort = updateFeed.start()
+check(updatePrepared && !updateBytes.isEmpty && updatePort != nil, "the update test has a copy of the app, an archive of it and a feed",
+      "prepared \(updatePrepared), \(updateBytes.count) bytes, port \(String(describing: updatePort))")
+cleanups.append { updateFeed.stop() }
+cleanups.append { quitOpened(superEditr) }
+if let updatePort {
+    let updateKey = UpdateKey(), newVersion = "99.0.0"
+    let installedVersion = Bundle(path: appPath)?.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+    let updateEnvironment = ["SUPEREDITR_TEST_UPDATE_FEED": "http://127.0.0.1:\(updatePort)/latest.json", "SUPEREDITR_TEST_UPDATE_KEY": updateKey.publicKey]
+    let goodOffer = UpdateFeed.Answer.offer(version: newVersion, signature: updateKey.signature(of: updateBytes, version: newVersion))
+    /// Waits for a copy just started to have its menu-bar icon, which the checks below click.
+    func waitForMenuIcon(_ copy: pid_t) {
+        _ = waitFor(15) {
+            attribute(AXUIElementCreateApplication(copy), "AXExtrasMenuBar").flatMap { attribute($0 as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement] }?.isEmpty == false ? true : nil
+        }
+        pump(1)
+    }
+    /// Waits for the restart: the old copy gone, and a new one running from the same place.
+    func restarted(from old: pid_t) -> Bool {
+        let wanted = URL(fileURLWithPath: updateApp).resolvingSymlinksInPath().path
+        return waitFor(20) {
+            running(superEditr).contains { $0.processIdentifier != old && $0.bundleURL?.resolvingSymlinksInPath().path == wanted } && !running(superEditr).contains { $0.processIdentifier == old } ? true : nil
+        } ?? false
+    }
+
+    app = launch(updateApp, home: home, environment: updateEnvironment)
+    let firstCopy = app.processIdentifier
+    waitForMenuIcon(firstCopy)
+
+    // Nothing new, answered slowly: the window opens straight away, then reports the result.
+    updateFeed.next(.nothingNew, pause: 4)
+    let chosen = chooseFromMenu("Check for Updates", screenshotTo: outDir + "/update-menu.png")
+    check(chosen != nil, "the menu-bar menu offers Check for Updates when there's an updater", "item: \(chosen ?? "none")")
+    check(updateSays("Checking for updates", within: 3), "choosing it opens the update window at once, saying it's checking", "window: \(updateText())")
+    check(updateBar() != nil, "and a bar shows it's working", dumpTree(updateWindow() ?? AXUIElementCreateSystemWide()))
+    screenshotUpdate("checking")
+    check(updateSays("You’re up to date") && updateText().contains(installedVersion), "the window says SuperEditr is up to date, and which version it has", "window: \(updateText())")
+    screenshotUpdate("up-to-date")
+    press(keyReturn)
+    check(updateWindowClosed(), "Return closes it, so it has the keyboard", "window: \(updateText())")
+
+    // The feed fails, then works when asked again.
+    updateFeed.next(.failure)
+    _ = chooseFromMenu("Check for Updates")
+    check(updateSays("Couldn’t check for updates"), "a feed that fails is reported in the window", "window: \(updateText())")
+    screenshotUpdate("check-failed")
+    updateFeed.next(.nothingNew)
+    pressUpdateButton("Try Again")
+    check(updateSays("You’re up to date"), "Try Again checks again", "window: \(updateText())")
+    press(keyEscape)
+    check(updateWindowClosed(), "Esc closes it", "window: \(updateText())")
+
+    // A download signed with another key is refused, and the app stays as it was.
+    let fileBefore = updateAppFile()
+    updateFeed.next(.offer(version: newVersion, signature: UpdateKey().signature(of: updateBytes, version: newVersion)))
+    _ = chooseFromMenu("Check for Updates")
+    check(updateSays("Couldn’t install SuperEditr \(newVersion)"), "a download with a bad signature is reported in the window", "window: \(updateText())")
+    screenshotUpdate("install-failed")
+    check(fileBefore != nil && updateAppFile() == fileBefore, "and the app's files are left alone")
+    pressUpdateButton("Close")
+    check(updateWindowClosed(), "Close closes it", "window: \(updateText())")
+
+    // A real update, chosen from the menu that now says it failed. It installs, Later keeps working,
+    // and the menu offers the restart.
+    updateFeed.next(goodOffer, pause: 3)
+    let retried = chooseFromMenu("Update Failed")
+    check(retried != nil, "the menu offers another try after a failed update", "item: \(retried ?? "none")")
+    check(updateSays("Downloading SuperEditr \(newVersion)"), "the window shows the download", "window: \(updateText())")
+    let arrived = waitFor(2.5) { updateBar().flatMap { (attribute($0, kAXValueAttribute) as? NSNumber)?.doubleValue }.flatMap { $0 > 0 ? $0 : nil } }
+    check(arrived != nil, "a bar shows how much has arrived", dumpTree(updateWindow() ?? AXUIElementCreateSystemWide()))
+    screenshotUpdate("downloading")
+    check(updateSays("SuperEditr \(newVersion) is ready"), "the window says when the update is ready", "window: \(updateText())")
+    screenshotUpdate("ready")
+    check(updateAppFile() != fileBefore, "the update replaced the app's files")
+    pressUpdateButton("Later")
+    check(updateWindowClosed() && app.isRunning, "Later closes the window and SuperEditr keeps running", "window: \(updateText())")
+    if inVirtualMachine() {
+        let offered = chooseFromMenu("Restart to Update to \(newVersion)", screenshotTo: outDir + "/update-menu-restart.png")
+        check(offered != nil, "the menu offers the restart", "item: \(offered ?? "none")")
+        check(restarted(from: firstCopy), "choosing it restarts SuperEditr from the same place")
+        quitOpened(superEditr)
+        stop(app)
+
+        // Closing the window doesn't stop a download, the menu shows it again, and Restart Now works.
+        app = launch(updateApp, home: home, environment: updateEnvironment)
+        let secondCopy = app.processIdentifier
+        waitForMenuIcon(secondCopy)
+        updateFeed.next(goodOffer, pause: 6)
+        _ = chooseFromMenu("Check for Updates")
+        check(updateSays("Downloading SuperEditr \(newVersion)"), "a second update starts downloading", "window: \(updateText())")
+        press(keyEscape)
+        check(updateWindowClosed(), "the window can close during a download", "window: \(updateText())")
+        let reopened = chooseFromMenu("Downloading SuperEditr")
+        check(reopened != nil, "the menu shows the download and reopens the window", "item: \(reopened ?? "none")")
+        check(updateSays("SuperEditr \(newVersion) is ready"), "the download finished with the window closed", "window: \(updateText())")
+        pressUpdateButton("Restart Now")
+        check(restarted(from: secondCopy), "Restart Now restarts SuperEditr from the same place")
+    } else {
+        log("SKIP restarting after an update: only in a virtual machine, because it runs with this Mac's real settings")
+    }
+    quitOpened(superEditr)
+    stop(app)
 }
 
 log(failures.isEmpty ? "All UI smoke tests passed." : "\(failures.count) UI smoke test(s) failed: \(failures.joined(separator: "; "))")

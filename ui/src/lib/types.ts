@@ -39,11 +39,17 @@ export type EngineEvent =
       backupFor: string | null;
       /** Changes that would drop the author's own terms; they start out rejected. */
       kept: number[];
-      keptTerms: string[];
+      keptTerms: KeptTerm[];
       /** Words the dictionary doesn't know and the word list doesn't have; see `offerToKeep`. */
       learnable: string[];
     }
   | { type: "failed"; message: string; localOnly: boolean };
+
+/** One of the author's terms a revision would have dropped, and the changes (by id) that drop it. */
+export interface KeptTerm {
+  term: string;
+  changes: number[];
+}
 
 export interface PresetInfo {
   id: string;
@@ -198,3 +204,9 @@ export interface LinuxSetup {
   /** Running apps SuperEditr can't read until they restart. */
   restart: { name: string; reason: string }[];
 }
+
+/** Where updating has got to (`Status` in updater.rs). */
+export type UpdateStatus =
+  | { state: "idle" | "checking" | "check-failed" }
+  | { state: "downloading"; version: string; percent: number | null }
+  | { state: "ready" | "up-to-date" | "install-failed"; version: string };

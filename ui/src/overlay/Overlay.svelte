@@ -5,7 +5,7 @@
   import { applyView, changeLabel, changes, sourceLabel, summarize } from "../lib/diff";
   import type { EngineEvent, SessionPayload, StatusPayload } from "../lib/types";
   import { ipc } from "./ipc";
-  import { canUse, emptyReview, offerToKeep, reduce, type Review } from "./review";
+  import { canUse, emptyReview, keptWording, offerToKeep, reduce, type Review } from "./review";
   import { words } from "../lib/platform";
 
   let session = $state<SessionPayload | null>(null);
@@ -34,7 +34,7 @@
   const timing = $derived(review.timing);
   const error = $derived(review.error);
   const changedTokens = $derived(review.changedTokens);
-  const keptTerms = $derived(review.keptTerms);
+  const keptTerms = $derived(keptWording(review, rejected));
   const backupFor = $derived(review.backupFor);
   const usable = $derived(canUse(review));
   const list = $derived(changes(view));
@@ -109,7 +109,12 @@
   async function apply() {
     // Only a finished result can be applied: never a revision that is still streaming or failed.
     if (!session || !usable) return;
-    if (!session.canApply) return copy();
+    // ↩ and ⌥↩ mean the same in every app: they replace. Copying is what ⌘C is for. Only a replacement
+    // that fails leaves the fix on the clipboard, so it isn't lost, and the backend says so.
+    if (!session.canApply) {
+      showFlash(`Nothing replaced. Press ${words().copyKey} to copy the fix.`, 2500);
+      return;
+    }
     const text = result;
     const id = session.id;
     session = null;
@@ -384,8 +389,11 @@
         </div>
       {/if}
 
+      {#if !session.canApply && !unchanged}
+        <p class="tips">SuperEditr can’t replace text here. Press <kbd>{words().copyKey}</kbd> to copy the fix.</p>
+      {/if}
       {#if showTips && keyboard && phase === "done" && list.length}
-        <p class="tips">Tip: <kbd>{words().applyKey}</kbd> {session.canApply ? "replaces your text with" : "copies"} everything you see · <kbd>tab</kbd> steps through changes · <kbd>␣</kbd> switches a change between yours and the suggestion · <kbd>esc</kbd> closes</p>
+        <p class="tips">Tip: {#if session.canApply}<kbd>{words().applyKey}</kbd> replaces your text with{:else}<kbd>{words().copyKey}</kbd> copies{/if} everything you see · <kbd>tab</kbd> steps through changes · <kbd>␣</kbd> switches a change between yours and the suggestion · <kbd>esc</kbd> closes</p>
       {/if}
       <footer>
         <div class="status" title={[summarize(view), sourceLabel(source, view), timing].filter(Boolean).join(" · ")}>
@@ -404,14 +412,17 @@
           {#if session.showTiming && timing}<span class="muted time">· {timing}</span>{/if}
         </div>
         <!-- ⌥↩ works in every panel, so it is the one replace key shown; ↩ also works in a review
-             the user opened. Nothing to replace, nothing to show. -->
+             the user opened. Nothing to replace, nothing to show. Text that can't be replaced shows
+             the key that does something with the fix. -->
         <div class="keys">
           {#if keyboard}
             {#if list.length > 1}<span><kbd>tab</kbd> next</span>{/if}
             {#if focusedId != null}<span><kbd>␣</kbd> {rejected.has(focusedId) ? "restore" : "keep original"}</span>{/if}
             <span><kbd>/</kbd> instruct</span>
           {/if}
-          {#if !unchanged}<span><kbd>{words().applyKey}</kbd> {session.canApply ? "replace" : "copy fix"}</span>{/if}
+          {#if !unchanged}
+            {#if session.canApply}<span><kbd>{words().applyKey}</kbd> replace</span>{:else}<span><kbd>{words().copyKey}</kbd> copy</span>{/if}
+          {/if}
           {#if keyboard}
             <span><kbd>esc</kbd></span>
           {:else}

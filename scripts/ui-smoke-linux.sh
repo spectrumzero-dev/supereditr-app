@@ -569,6 +569,12 @@ if [[ "$HARD" == 1 ]]; then hard_cases; fi
 
 mkdir -p "$OUT/shots"
 "${SSH[@]}" "$VM" 'tar -C ~/supereditr-smoke/out -cf - .' | tar -C "$OUT/shots" -xf -
-"${SSH[@]}" "$VM" 'cat ~/.local/state/supereditr/capture.log' > "$OUT/capture.log" 2> /dev/null || true
+# capture.old.log first: the log moves there when it grows past 256 KB.
+"${SSH[@]}" "$VM" 'cd ~/.local/state/supereditr && cat capture.old.log capture.log 2> /dev/null' > "$OUT/capture.log" 2> /dev/null || true
+# SuperEditr's watchdog logs each time its main thread goes 5 s without answering.
+begin_case watchdog "SuperEditr's main thread kept answering"
+stalls="$(grep -F "main thread hasn’t answered" "$OUT/capture.log" || true)"
+check "the main thread never went 5 s without answering" "$(ok [ -z "$stalls" ])" "${stalls:0:400}"
+end_case
 log "" "$PASSED passed, $FAILED failed in $((($(now_ms) - STARTED) / 1000)) s"
 ((FAILED == 0))

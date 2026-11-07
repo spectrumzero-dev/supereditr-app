@@ -314,6 +314,18 @@ fn desktop_set_up() -> bool {
 
 /// SuperEditr was started again while running. `supereditr review` and `supereditr quick-fix` act as
 /// the shortcuts do, for a desktop's own key binding to run; anything else shows Settings.
+/// Runs the app's commands, marking each as running on the main thread while it does: the watchdog
+/// names it when the main thread stops answering.
+fn named_commands(
+    handler: impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static,
+) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
+    move |invoke| {
+        #[cfg(target_os = "linux")]
+        let _running = platform::watchdog::running_command(invoke.message.command());
+        handler(invoke)
+    }
+}
+
 fn on_second_launch(app: &AppHandle, args: &[String]) {
     match args.get(1).map(String::as_str) {
         Some("review") => review::on_review_hotkey(app),
@@ -393,6 +405,7 @@ pub fn run() {
                 // Before the shortcuts are registered: they go through the desktop this finds.
                 let shortcut_app = handle.clone();
                 platform::start(move |action| hotkeys::on_linux_shortcut(&shortcut_app, action));
+                platform::watchdog::start(&handle);
                 let switch_app = handle.clone();
                 platform::start_app_switch_watcher(move |pid| {
                     review::on_app_switch(&switch_app, pid);
@@ -468,7 +481,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(named_commands(tauri::generate_handler![
             commands::run_preset,
             commands::apply_text,
             commands::dismiss,
@@ -511,7 +524,7 @@ pub fn run() {
             commands::linux_setup,
             commands::set_up_omarchy,
             commands::remove_omarchy_setup,
-        ])
+        ]))
         .run(tauri::generate_context!())
         .expect("SuperEditr failed to start");
 }

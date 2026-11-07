@@ -20,6 +20,7 @@ mod replace;
 pub mod setup;
 #[cfg(test)]
 mod testing;
+pub mod watchdog;
 
 pub use log::{log_path, set_trace, trace};
 

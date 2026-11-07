@@ -44,36 +44,54 @@ struct Args {
     command: String,
     flags: std::collections::HashMap<String, String>,
     positional: Vec<String>,
+    bench: usize,
 }
 
-fn parse() -> Args {
-    let mut raw = std::env::args().skip(1);
+/// Flags that take a value, and switches that don't.
+const VALUE_FLAGS: &[&str] = &["preset", "provider", "model", "base-url", "steer", "words", "bench"];
+const SWITCHES: &[&str] = &["offline", "json", "no-local"];
+
+/// Parses the arguments after the program name. An unknown flag, a flag missing its value, or a
+/// `--bench` that isn't a whole number of at least 1 is an error.
+fn parse_args(raw: impl IntoIterator<Item = String>) -> Result<Args, String> {
+    let mut raw = raw.into_iter();
     let command = raw.next().unwrap_or_else(|| "help".into());
     let mut flags = std::collections::HashMap::new();
     let mut positional = Vec::new();
-    let rest: Vec<String> = raw.collect();
-    let mut i = 0;
-    while i < rest.len() {
-        if let Some(name) = rest[i].strip_prefix("--") {
-            let takes_value = !matches!(name, "offline" | "json" | "no-local");
-            let value = if takes_value {
-                i += 1;
-                rest.get(i).cloned().unwrap_or_default()
-            } else {
+    while let Some(arg) = raw.next() {
+        if let Some(name) = arg.strip_prefix("--") {
+            let value = if SWITCHES.contains(&name) {
                 "1".into()
+            } else if VALUE_FLAGS.contains(&name) {
+                raw.next().ok_or_else(|| format!("--{name} needs a value"))?
+            } else {
+                return Err(format!("unknown flag --{name}"));
             };
             flags.insert(name.to_string(), value);
         } else {
-            positional.push(rest[i].clone());
+            positional.push(arg);
         }
-        i += 1;
     }
-    Args { command, flags, positional }
+    let bench = match flags.get("bench") {
+        None => 1,
+        Some(n) => match n.parse::<usize>() {
+            Ok(n) if n >= 1 => n,
+            _ => return Err(format!("--bench needs a whole number of at least 1, not {n:?}")),
+        },
+    };
+    Ok(Args { command, flags, positional, bench })
+}
+
+fn parse() -> Args {
+    parse_args(std::env::args().skip(1)).unwrap_or_else(|message| {
+        eprintln!("error: {message}");
+        usage()
+    })
 }
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  supereditr check [--preset proofread|polish|shorter|friendly|professional|simplify|english]\n                   [--provider anthropic|openai|gemini|ollama|compatible|claude-cli|apple] [--model M]\n                   [--base-url URL] [--steer TEXT] [--words LIST] [--bench N] [--offline] [--json] [TEXT]\n  supereditr detect\n  supereditr models --provider KIND [--base-url URL]"
+        "usage:\n  supereditr check [--preset proofread|polish|shorter|friendly|professional|simplify|english]\n                   [--provider anthropic|openai|gemini|ollama|compatible|claude-cli|apple] [--model M]\n                   [--base-url URL] [--steer TEXT] [--words LIST] [--bench N] [--offline] [--no-local] [--json] [TEXT]\n  supereditr detect\n  supereditr models --provider KIND [--base-url URL]"
     );
     std::process::exit(2)
 }
@@ -139,7 +157,7 @@ async fn check(args: Args) {
             profile.as_ref().map(|p| format!("{} / {}", p.label, p.model)).unwrap_or_else(|| "offline checker".into())
         );
     }
-    let runs: usize = args.flags.get("bench").and_then(|n| n.parse().ok()).unwrap_or(1);
+    let runs = args.bench;
     let mut firsts = Vec::new();
     let mut totals = Vec::new();
     for run in 0..runs {
@@ -235,5 +253,65 @@ async fn models(args: Args) {
             eprintln!("error: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_strs(args: &[&str]) -> Result<Args, String> {
+        parse_args(args.iter().map(|a| a.to_string()))
+    }
+
+    #[test]
+    fn valid_flags_parse() {
+        let args = parse_strs(&[
+            "check",
+            "--provider",
+            "openai",
+            "--model",
+            "m",
+            "--bench",
+            "3",
+            "--offline",
+            "--no-local",
+            "--json",
+            "Rhyan wrote",
+            "this",
+        ])
+        .unwrap();
+        assert_eq!(args.command, "check");
+        assert_eq!(args.flags["provider"], "openai");
+        assert_eq!(args.flags["model"], "m");
+        assert!(args.flags.contains_key("offline"));
+        assert!(args.flags.contains_key("no-local"));
+        assert!(args.flags.contains_key("json"));
+        assert_eq!(args.bench, 3);
+        assert_eq!(args.positional, ["Rhyan wrote", "this"]);
+    }
+
+    #[test]
+    fn bench_defaults_to_one() {
+        assert_eq!(parse_strs(&["check", "text"]).unwrap().bench, 1);
+    }
+
+    #[test]
+    fn unknown_flag_is_an_error() {
+        let err = parse_strs(&["check", "--provder", "openai"]).err().unwrap();
+        assert!(err.contains("--provder"), "{err}");
+    }
+
+    #[test]
+    fn bad_bench_is_an_error() {
+        for bad in ["abc", "0", "-1", "2.5", ""] {
+            assert!(parse_strs(&["check", "--bench", bad]).is_err(), "--bench {bad:?} should fail");
+        }
+    }
+
+    #[test]
+    fn missing_value_is_an_error() {
+        assert!(parse_strs(&["check", "--bench"]).is_err());
+        assert!(parse_strs(&["models", "--provider"]).is_err());
     }
 }

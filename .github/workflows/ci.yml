@@ -2,7 +2,8 @@ name: CI
 
 # Checks for the public source repository, where pull requests from forks arrive. It runs on
 # GitHub-hosted runners with a read-only token, so contributor code never reaches the machines that
-# sign official builds. The job runs only in this repository; forks skip it.
+# sign official builds. The jobs run only in this repository; forks skip them. Each platform has its
+# own job, and they run at the same time.
 
 on:
   pull_request:
@@ -40,6 +41,37 @@ jobs:
       # toolchain. A run whose key already exists saves nothing. Pushes to main and pull requests
       # from branches of this repository save; pull requests from forks only restore. A pull
       # request's cache is visible only to that pull request, never to main.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+      - name: Run every check
+        run: ./scripts/check.sh
+
+  check-linux:
+    if: github.repository == 'spectrumzero-dev/supereditr-app'
+    runs-on: ubuntu-latest
+    # Arch Linux, as Omarchy is: the app builds against the same WebKitGTK and GTK it ships with.
+    container: archlinux:latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      REQUIRE_SHELLCHECK: 1
+    steps:
+      # Installed before checkout, which needs git to fetch the repository rather than a tarball.
+      # pacman's download sandbox can't set up its system-call filter in a container; packages are
+      # still checked against their signatures.
+      - name: Install the build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed --disable-sandbox base-devel git rustup nodejs npm shellcheck \
+            webkit2gtk-4.1 gtk3 libayatana-appindicator at-spi2-core librsvg
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}

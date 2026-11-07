@@ -142,7 +142,7 @@ static CHAIN: Mutex<()> = Mutex::new(());
 /// across logins), follows focus through AT-SPI, and sets up the desktop's events and shortcuts.
 pub fn start(on_shortcut: impl Fn(Action) + Send + Sync + 'static) {
     tauri::async_runtime::spawn(async {
-        if let Err(error) = ::atspi::connection::set_session_accessibility(true).await {
+        if let Err(error) = atspi_connection::set_session_accessibility(true).await {
             eprintln!("SuperEditr: couldn’t turn on accessibility for this session: {error}");
         }
         if let Err(error) = ATSPI.follow_focus().await {
@@ -442,7 +442,7 @@ pub async fn setup_report() -> SetupReport {
     };
 
     let limit = std::time::Duration::from_secs(2);
-    let enabled = tokio::time::timeout(limit, ::atspi::connection::read_session_accessibility()).await;
+    let enabled = tokio::time::timeout(limit, atspi_connection::read_session_accessibility()).await;
     let registered = tokio::time::timeout(limit, ATSPI.registered_pids()).await;
     checks.push(SetupCheck {
         name: "Accessibility".into(),

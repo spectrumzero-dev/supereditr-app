@@ -20,7 +20,8 @@
 #   --only "CASE ..."  run only these cases (setup always runs)
 #   --keep-install     skip installing and the first launch: test the SuperEditr already set up there
 #   --hard             also run the hard cases (more monitors, scaling, XWayland, an input method,
-#                      a large field, a frozen app, Hyprland restarting)
+#                      a large field, a frozen app, a silent program on the accessibility bus,
+#                      Hyprland restarting)
 #
 # Exit status: 0 when every check passed, 1 otherwise. OUT/summary.txt lists every check with its
 # time, OUT/results.tsv has one line per check, and OUT/shots holds the screenshots.

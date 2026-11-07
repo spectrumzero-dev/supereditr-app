@@ -156,7 +156,7 @@ fn limit<T, E: Into<ReadError>>(
 /// The session's accessibility bus.
 #[derive(Default)]
 pub struct Atspi {
-    connection: tokio::sync::OnceCell<atspi::AccessibilityConnection>,
+    connection: tokio::sync::OnceCell<atspi_connection::AccessibilityConnection>,
     /// The object that most recently reported getting focus in each app (by bus name), from
     /// AT-SPI's events.
     last_focus: Mutex<HashMap<String, FieldId>>,
@@ -165,10 +165,12 @@ pub struct Atspi {
 }
 
 impl Atspi {
-    async fn connection(&self) -> Result<&atspi::AccessibilityConnection, ReadError> {
+    async fn connection(&self) -> Result<&atspi_connection::AccessibilityConnection, ReadError> {
         self.connection
             .get_or_try_init(|| async {
-                match tokio::time::timeout(Duration::from_secs(2), atspi::AccessibilityConnection::new()).await {
+                match tokio::time::timeout(Duration::from_secs(2), atspi_connection::AccessibilityConnection::new())
+                    .await
+                {
                     Ok(connection) => connection.map_err(|e| ReadError::Unavailable(e.to_string())),
                     Err(_) => Err(ReadError::Timeout),
                 }

@@ -151,6 +151,27 @@ frozen_case() {
   end_case
 }
 
+# A client that joins the accessibility bus and never answers, while other programs come and go:
+# SuperEditr still reads fields. Each program coming or going is a name change on the bus, and 80 of
+# them are more than a blocked reader of those changes can queue.
+silent_client_case() {
+  begin_case silent-client "a program on the accessibility bus never answers, while others come and go"
+  local e client
+  e="$(start_editor "" smoke-silent.txt | tail -1)"
+  client="$(vm 'nohup python3 ~/supereditr-smoke/silent-bus-client.py > /dev/null 2>&1 < /dev/null & echo $!')"
+  sleep 1
+  vm "a=\$(busctl --user call org.a11y.Bus /org/a11y/bus org.a11y.Bus GetAddress | cut -d'\"' -f2)
+    for _ in \$(seq 40); do
+      busctl --address=\"\$a\" call org.a11y.atspi.Registry /org/a11y/atspi/accessible/root org.a11y.atspi.Accessible GetChildren > /dev/null 2>&1
+    done
+    sleep 1; d_focus $e; sleep 0.3; select_all $e; sleep 0.3"
+  review_and_apply "silent client" "$e" org.gnome.TextEditor 82-silent-client
+  check "silent client: read through AT-SPI, pasting allowed" "$(ok has "$REVIEW_READ" "via AT-SPI.*pasting allowed")" "${REVIEW_READ#* }"
+  check "silent client: Alt+Enter applies" "$(ok has "$REVIEW_RESULT" ": applied")" "${REVIEW_RESULT#* }"
+  vm "kill $client; editor_quit" || true
+  end_case
+}
+
 # Under uwsm, Hyprland exiting ends the desktop session: SuperEditr is stopped with it, and the next
 # login starts it again from its autostart entry.
 restart_case() {
@@ -224,6 +245,7 @@ hard_cases() {
   wants fcitx5 && fcitx_case
   wants large && large_case
   wants frozen && frozen_case
+  wants silent-client && silent_client_case
   wants hyprland-restart && restart_case
   wants vs-code && vs_code_case
 }

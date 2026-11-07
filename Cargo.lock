@@ -340,7 +340,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6bf601cccedfffec598ec2db1f9d6745885458bccc0e8916d7023f017c94b3d0"
 dependencies = [
  "atspi-common",
- "atspi-connection",
  "atspi-proxies",
  "zbus 5.19.0",
 ]
@@ -6917,6 +6916,7 @@ dependencies = [
  "ashpd",
  "async-trait",
  "atspi",
+ "atspi-connection",
  "block2",
  "core-foundation 0.10.1",
  "core-graphics 0.25.0",

@@ -200,6 +200,12 @@ fn parse_version(version: &Value) -> Option<(u32, u32, u32)> {
     Some((parts.next()??, parts.next()??, parts.next().flatten().unwrap_or(0)))
 }
 
+/// The top-left corner of the focused monitor, from `monitors`.
+fn focused_origin(monitors: &Value) -> Option<(f64, f64)> {
+    let focused = monitors.as_array()?.iter().find(|m| m["focused"].as_bool() == Some(true))?;
+    Some((focused["x"].as_f64()?, focused["y"].as_f64()?))
+}
+
 /// A window from `activewindow` or `clients`; `None` for an empty answer (no window in front).
 fn parse_window(window: &Value) -> Option<WindowRef> {
     let handle = window["address"].as_str().filter(|a| !a.is_empty())?.to_string();
@@ -278,12 +284,17 @@ impl Desktop for HyprlandDesktop {
     }
 
     fn place_overlay(&self, at: Rect, shown: bool) -> Result<(), DesktopError> {
-        if shown {
-            return self.dispatch(&lua::move_overlay(at.x.round() as i32, at.y.round() as i32));
-        }
-        let rule = lua::overlay_rule(at);
+        // A rule's position counts from the corner of the monitor the window opens on, the focused
+        // one; a move's counts from the desktop's.
+        let (x, y) = self.json("monitors").ok().and_then(|all| focused_origin(&all)).unwrap_or((0.0, 0.0));
+        let rule = lua::overlay_rule(Rect { x: at.x - x, y: at.y - y, ..at });
         self.eval(&rule)?;
         self.runtime.lock().unwrap().overlay = Some(rule);
+        // GTK calls the panel shown before Hyprland maps it. A move sent in between is lost, and the
+        // rule above places the panel instead, so the rule is kept up to date as well.
+        if shown {
+            self.dispatch(&lua::move_overlay(at.x.round() as i32, at.y.round() as i32))?;
+        }
         Ok(())
     }
 
@@ -402,6 +413,87 @@ mod tests {
         assert_eq!(modmask(COMMAND | CONTROL), 68);
         assert_eq!(modmask(COMMAND | ALT | SHIFT), 73);
         assert_eq!(modmask(COMMAND | ALT), 72);
+    }
+
+    /// `hyprctl -j monitors` on Hyprland 0.56.2 with a second monitor added and focused, trimmed.
+    const MONITORS: &str = r#"[
+        {"id": 0, "name": "Virtual-1", "width": 1280, "height": 800, "x": 2240, "y": 0, "scale": 1, "focused": false},
+        {"id": 1, "name": "HEADLESS-2", "width": 1600, "height": 900, "x": 1280, "y": 0, "scale": 1.6666666, "focused": true}
+    ]"#;
+
+    /// A Hyprland that records each command and answers it, at a socket in a new directory.
+    fn fake_hyprland(answer: fn(&str) -> String) -> (HyprlandDesktop, Arc<Mutex<Vec<String>>>) {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "supereditr-hyprland-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(dir.join(".socket.sock")).unwrap();
+        let commands = Arc::new(Mutex::new(Vec::new()));
+        let seen = commands.clone();
+        std::thread::spawn(move || {
+            for mut socket in listener.incoming().map_while(Result::ok) {
+                let mut buffer = [0; 16384];
+                let n = socket.read(&mut buffer).unwrap_or(0);
+                let command = String::from_utf8_lossy(&buffer[..n]).into_owned();
+                let _ = socket.write_all(answer(&command).as_bytes());
+                seen.lock().unwrap().push(command);
+            }
+        });
+        let desktop = HyprlandDesktop {
+            commands: dir.join(".socket.sock"),
+            events: dir.join(".socket2.sock"),
+            version: (0, 56, 2),
+            runtime: Mutex::default(),
+            watchers: Arc::default(),
+        };
+        (desktop, commands)
+    }
+
+    fn answer_with_monitors(command: &str) -> String {
+        if command == "j/monitors" { MONITORS.into() } else { "ok".into() }
+    }
+
+    #[test]
+    fn the_focused_monitor_is_found() {
+        assert_eq!(focused_origin(&serde_json::from_str(MONITORS).unwrap()), Some((1280.0, 0.0)));
+        assert_eq!(focused_origin(&serde_json::from_str("[]").unwrap()), None);
+    }
+
+    #[test]
+    fn the_panels_rule_counts_from_the_focused_monitor() {
+        let (desktop, commands) = fake_hyprland(answer_with_monitors);
+        let at = Rect { x: 1278.0, y: 108.0, width: 548.0, height: 210.0 };
+        desktop.place_overlay(at, false).unwrap();
+        let rule = lua::overlay_rule(Rect { x: -2.0, ..at });
+        assert_eq!(*commands.lock().unwrap(), ["j/monitors".to_string(), format!("eval {rule}")]);
+        assert_eq!(desktop.runtime.lock().unwrap().overlay, Some(rule));
+    }
+
+    #[test]
+    fn a_shown_panel_moves_and_its_rule_follows() {
+        // GTK calls the panel shown before Hyprland maps it, and the rule places it at the map.
+        let (desktop, commands) = fake_hyprland(answer_with_monitors);
+        let at = Rect { x: 1290.0, y: 297.0, width: 548.0, height: 531.0 };
+        desktop.place_overlay(at, true).unwrap();
+        assert_eq!(
+            *commands.lock().unwrap(),
+            [
+                "j/monitors".to_string(),
+                format!("eval {}", lua::overlay_rule(Rect { x: 10.0, ..at })),
+                format!("dispatch {}", lua::move_overlay(1290, 297)),
+            ]
+        );
+    }
+
+    #[test]
+    fn without_a_focused_monitor_the_rule_counts_from_the_desktops_corner() {
+        let (desktop, commands) = fake_hyprland(|_| "ok".into());
+        let at = Rect { x: 590.0, y: 415.0, width: 548.0, height: 210.0 };
+        desktop.place_overlay(at, false).unwrap();
+        assert_eq!(commands.lock().unwrap()[1], format!("eval {}", lua::overlay_rule(at)));
     }
 
     #[test]

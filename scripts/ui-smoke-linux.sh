@@ -263,18 +263,35 @@ review_and_apply() {
   check "$label: the panel is next to what was reviewed" "$(ok has "$where" "^ok")" "${where#* }"
   vm "shot $name-review"
   [[ "$window" == "-" ]] || true
-  key alt-ret
-  REVIEW_RESULT="$(vm "wait_log $mark 'replace $app: ' 6")"
-  if [[ "$mode" == copy ]]; then REVIEW_RESULT="copy"; fi
+  if [[ "$mode" == copy ]]; then
+    # Alt+Enter only ever replaces: where it can't, the panel says so and stays open, and Ctrl+C
+    # copies the fix.
+    local before after
+    before="$(vm clip_digest)"
+    key alt-ret
+    text="$(vm "wait_panel_text 'Nothing replaced' 3")"
+    check "$label: Alt+Enter says nothing was replaced" "$(ok has "$text" "Nothing replaced")" "${text:0:120}"
+    after="$(vm 'sleep 0.3; clip_digest')"
+    clip_same "$before" "$after" "$label: Alt+Enter leaves the clipboard alone"
+    key ctrl-c
+    text="$(vm "wait_panel_text 'Copied' 3")"
+    check "$label: Ctrl+C in the panel copies the fix" "$(ok has "$text" "Copied")" "${text:0:120}"
+    key esc
+    REVIEW_RESULT="copy"
+  else
+    key alt-ret
+    REVIEW_RESULT="$(vm "wait_log $mark 'replace $app: ' 6")"
+  fi
   vm 'wait_closed 3' || true
   sleep 0.5
 }
 
-# clip_same BEFORE AFTER LABEL: the same types with the same bytes. The restore may add the
-# password-manager hint, so clipboard history doesn't record the user's own copy a second time.
+# clip_same BEFORE AFTER LABEL: the same types with the same bytes. A restore may add the
+# password-manager hint, so clipboard history doesn't record the user's own copy a second time, and
+# either side may be such a restore, so the hint isn't compared.
 clip_same() {
   local diff
-  diff="$(diff <(echo "$1") <(grep -v '^x-kde-passwordManagerHint ' <<< "$2") | grep '^[<>]' | head -4 | tr '\n' ' ')"
+  diff="$(diff <(grep -v '^x-kde-passwordManagerHint ' <<< "$1") <(grep -v '^x-kde-passwordManagerHint ' <<< "$2") | grep '^[<>]' | head -4 | tr '\n' ' ')"
   check "$3" "$(ok both is "$diff" "" isnt "$1" "")" "$(wc -l <<< "$1" | tr -d ' ') types${diff:+; differs: $diff}"
 }
 
@@ -351,7 +368,7 @@ chromium_plain_case() {
   review_and_apply "plain Chromium" page chromium-browser 20-chromium-plain copy
   check "plain Chromium: read with a guarded copy, copy-only" "$(ok has "$REVIEW_READ" "guarded copy.*copy-only")" "${REVIEW_READ#* }"
   during="$(vm clip_text)"
-  check "plain Chromium: Alt+Enter copies the fix" "$(ok has "$during" "They're going")" "clipboard: ${during:0:80}"
+  check "plain Chromium: the clipboard holds the fix" "$(ok has "$during" "They're going")" "clipboard: ${during:0:80}"
   after="$(vm "CDP_PORT=9223 cdp_value plain")"
   check "plain Chromium: the field is unchanged" "$(ok has "$after" "Their going")" "${after:0:80}"
   note "the clipboard held $(wc -l <<< "$before" | tr -d ' ') types before the review"
@@ -384,10 +401,18 @@ foot_case() {
   text="$(vm "wait_panel_text '[0-9]+ changes?' 15")"
   check "foot: the panel shows a fix" "$(ok has "$text" "[0-9]+ changes?")" "${text:0:100}"
   vm 'shot 30-foot-review'
+  local cleared
+  cleared="$(vm clip_digest)"
   key alt-ret
+  text="$(vm "wait_panel_text 'Nothing replaced' 3")"
+  check "foot: Alt+Enter says nothing was replaced" "$(ok has "$text" "Nothing replaced")" "${text:0:120}"
+  clip_same "$cleared" "$(vm 'sleep 0.3; clip_digest')" "foot: Alt+Enter leaves the clipboard alone"
+  key ctrl-c
+  vm "wait_panel_text 'Copied' 3" > /dev/null || true
+  key esc
   vm 'wait_closed 3' || true
   after="$(vm 'sleep 0.3; clip_text')"
-  check "foot: Alt+Enter copies the fix, and nothing is typed into the terminal" "$(ok has "$after" "They're going")" "clipboard: ${after:0:80}; $(vm "log_since $mark | grep -c 'replace foot'") replace attempts"
+  check "foot: Ctrl+C copies the fix, and nothing is typed into the terminal" "$(ok has "$after" "They're going")" "clipboard: ${after:0:80}; $(vm "log_since $mark | grep -c 'replace foot'") replace attempts"
   vm 'shot 31-foot-after; pkill -x foot' || true
   end_case
 }

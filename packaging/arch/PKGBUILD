@@ -1,7 +1,7 @@
 # Installs SuperEditr from its Linux release tarball. scripts/linux-release.sh builds the tarball and
 # writes its SHA-256 here.
 pkgname=supereditr-bin
-pkgver=0.1.1
+pkgver=0.1.5
 pkgrel=1
 pkgdesc="Instant, keyboard-first proofreading for any text field"
 arch=(x86_64)
@@ -17,7 +17,7 @@ conflicts=(supereditr)
 options=(!strip !debug)
 install=supereditr.install
 source=("$url/releases/download/v$pkgver/supereditr-$pkgver-x86_64.tar.gz")
-sha256sums=('5de66ab4abf3bd4bb159f976df0b6ff7d14dfa2bc4354a3bb3a852112a5420a3')
+sha256sums=('09fb702db8403149972408891d42038fb2fc2b3344fddf1f76ea40bb9e6d988c')
 
 package() {
   cd "supereditr-$pkgver-x86_64"

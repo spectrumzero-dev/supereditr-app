@@ -87,7 +87,10 @@ pub fn position(app: &AppHandle, anchor: Option<Rect>, height: f64) {
 /// Places the overlay again at a new height. With no selection to go by, it stays where it opened
 /// instead of following the pointer: a desktop may move the pointer onto a window that takes focus.
 pub fn resize(app: &AppHandle, anchor: Option<Rect>, height: f64) {
-    match anchor.or(*POINTER_ANCHOR.lock().unwrap()) {
+    // Read on its own line: a lock taken in a match's scrutinee is held until the match ends, and
+    // `position` below takes it again, which would hang the main thread.
+    let at_pointer = *POINTER_ANCHOR.lock().unwrap();
+    match anchor.or(at_pointer) {
         Some(anchor) => place(app, anchor, height),
         None => position(app, None, height),
     }

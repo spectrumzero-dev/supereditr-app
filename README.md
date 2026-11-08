@@ -131,7 +131,7 @@ How it differs from macOS:
 - SuperEditr reads text through the AT-SPI accessibility bus. Where an app exposes no text, such as a terminal, it copies the selection and puts your clipboard back afterwards; it can't replace text there, so Ctrl+C in the panel copies the fix.
 - Alt+Enter replaces your text, and Ctrl+C copies the fix.
 - Settings → Set up Omarchy lists what it will change before it does: it adds `--force-renderer-accessibility` to the Chromium, Electron and VS Code flag files in `~/.config`, so web pages and Electron apps expose their text, and turns on opening at login. `supereditr uninstall-omarchy` takes out exactly what it added.
-- API keys are saved in the Secret Service keyring (GNOME Keyring on Omarchy), not in SuperEditr's settings. Omarchy's default keyring has no password, so any program you run can read them; Settings → Set up Omarchy says so, and Seahorse (Passwords and Keys) can set one.
+- API keys are saved in the Secret Service keyring (GNOME Keyring on Omarchy), not in SuperEditr's settings. Omarchy's default keyring has no password, so any program you run can read them; Settings → Desktop setup says so, and Seahorse (Passwords and Keys) can set one.
 - There are no in-app updates: the package manager installs new versions, and SuperEditr never contacts the update server.
 - The diagnostic log is `~/.local/state/supereditr/capture.log`.
 

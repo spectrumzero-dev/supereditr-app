@@ -159,6 +159,20 @@ impl HyprlandShortcuts {
             .map(|(_, _, what)| what)
     }
 
+    /// Splits keys SuperEditr bound into those it can unbind and those something else uses now,
+    /// with what. Hyprland unbinds a key whole, so unbinding one of the second would remove the
+    /// other bind too.
+    fn still_ours(&self, bound: &[Binding]) -> (Vec<Binding>, Vec<(Binding, String)>) {
+        let (mut ours, mut given_away) = (Vec::new(), Vec::new());
+        for binding in bound {
+            match self.taken_by(binding) {
+                None => ours.push(binding.clone()),
+                Some(what) => given_away.push((binding.clone(), what)),
+            }
+        }
+        (ours, given_away)
+    }
+
     fn apply(&self, wanted: &[Binding]) -> Vec<String> {
         let mut state = self.state.lock().unwrap();
         let route = state.route;
@@ -183,17 +197,13 @@ impl HyprlandShortcuts {
             add.push(lua::bind(&binding.shortcut, action, binding.action.description()));
             bound.push(binding.clone());
         }
-        // Hyprland unbinds a key whole, so a key something else uses is never unbound, even one
-        // SuperEditr bound before that: unbinding it would remove the other bind too.
-        let mut before = Vec::new();
-        for binding in &state.bound {
-            match self.taken_by(binding) {
-                None => before.push(binding.clone()),
-                Some(what) if !wanted.iter().any(|w| w.shortcut == binding.shortcut) => problems.push(format!(
+        let (before, given_away) = self.still_ours(&state.bound);
+        for (binding, what) in given_away {
+            if !wanted.iter().any(|w| w.shortcut == binding.shortcut) {
+                problems.push(format!(
                     "{} is also used for “{what}” now, so SuperEditr left the key as it is",
                     binding.shortcut.label()
-                )),
-                Some(_) => {}
+                ));
             }
         }
         let remove = unbinds(&before, &bound);
@@ -256,7 +266,8 @@ impl ShortcutBackend for HyprlandShortcuts {
 
     fn uninstall(&self) {
         let mut state = self.state.lock().unwrap();
-        let unbinds: Vec<String> = state.bound.drain(..).map(|b| lua::unbind(&b.shortcut)).collect();
+        let (ours, _) = self.still_ours(&std::mem::take(&mut state.bound));
+        let unbinds: Vec<String> = ours.iter().map(|b| lua::unbind(&b.shortcut)).collect();
         self.hyprland.remove_all(&unbinds);
     }
 
@@ -306,6 +317,24 @@ mod tests {
         let commands = commands.lock().unwrap();
         assert!(!commands.iter().any(|c| c == r#"eval hl.unbind("SUPER + ALT + E")"#), "{commands:?}");
         assert!(commands.iter().any(|c| c == r#"eval hl.unbind("SUPER + ALT + R")"#), "{commands:?}");
+    }
+
+    #[test]
+    fn quitting_leaves_a_key_something_else_uses_now() {
+        let (desktop, commands) = super::super::hyprland::tests::fake_hyprland(answer_with_binds);
+        let shortcuts = HyprlandShortcuts::new(Arc::new(desktop));
+        {
+            let mut state = shortcuts.state.lock().unwrap();
+            state.route = Route::Exec;
+            // SuperEditr bound both keys; since then the user gave Super+Alt+E to the emoji picker.
+            state.bound =
+                vec![binding(Action::Review, "Super+Alt+E"), binding(Action::QuickFix, "Super+Control+Alt+E")];
+        }
+        shortcuts.uninstall();
+        let commands = commands.lock().unwrap();
+        assert!(!commands.iter().any(|c| c == r#"eval hl.unbind("SUPER + ALT + E")"#), "{commands:?}");
+        assert!(commands.iter().any(|c| c == r#"eval hl.unbind("SUPER + CTRL + ALT + E")"#), "{commands:?}");
+        assert!(shortcuts.state.lock().unwrap().bound.is_empty());
     }
 
     /// Hyprland's binds: Super+Alt+E is the user's own, Super+Control+Alt+E is a SuperEditr bind

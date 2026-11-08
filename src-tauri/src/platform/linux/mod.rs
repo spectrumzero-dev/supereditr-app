@@ -166,7 +166,7 @@ pub fn start(on_shortcut: impl Fn(Action) + Send + Sync + 'static) {
             let _ = SHORTCUTS.set(shortcuts.clone());
             tauri::async_runtime::spawn(shortcuts.start());
         }
-        None => trace(format_args!("desktop: not Hyprland; suggestions go to the clipboard")),
+        None => trace(format_args!("desktop: not Hyprland; shortcuts and the panel need Hyprland")),
     }
 }
 

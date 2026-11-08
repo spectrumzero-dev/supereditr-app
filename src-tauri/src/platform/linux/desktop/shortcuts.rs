@@ -165,7 +165,6 @@ impl HyprlandShortcuts {
         if route == Route::Pending {
             return Vec::new();
         }
-        let remove = unbinds(&state.bound, wanted);
         let command = command();
         let mut problems = Vec::new();
         let mut bound = Vec::new();
@@ -184,6 +183,8 @@ impl HyprlandShortcuts {
             add.push(lua::bind(&binding.shortcut, action, binding.action.description()));
             bound.push(binding.clone());
         }
+        // Only keys SuperEditr bound or is binding: a taken key's unbind would remove the other bind.
+        let remove = unbinds(&state.bound, &bound);
         problems.extend(self.hyprland.set_binds(&remove, add));
         state.bound = bound;
         problems
@@ -191,7 +192,8 @@ impl HyprlandShortcuts {
 }
 
 /// What to unbind before binding `wanted`: the keys bound before, and the ones about to be. A
-/// SuperEditr that was killed leaves its binds behind, and a key bound twice runs twice.
+/// SuperEditr that was killed leaves its binds behind, and a key bound twice runs twice. `wanted`
+/// holds only keys nothing else uses ([`HyprlandShortcuts::taken_by`]).
 fn unbinds(bound: &[Binding], wanted: &[Binding]) -> Vec<String> {
     let mut remove: Vec<String> = Vec::new();
     for binding in bound.iter().chain(wanted) {
@@ -275,5 +277,32 @@ mod tests {
         );
         // After a restart nothing is bound yet, but a killed SuperEditr's binds may still be there.
         assert_eq!(unbinds(&[], &before).len(), 2);
+    }
+
+    /// Hyprland's binds: Super+Alt+E is the user's own, Super+Control+Alt+E is a SuperEditr bind
+    /// a killed SuperEditr left behind.
+    fn answer_with_binds(command: &str) -> String {
+        if command == "j/binds" {
+            r#"[
+                {"modmask": 72, "submap": "", "key": "E", "description": "Emoji picker", "dispatcher": "exec"},
+                {"modmask": 76, "submap": "", "key": "E", "description": "SuperEditr: Quick fix", "dispatcher": "exec"}
+            ]"#
+            .into()
+        } else {
+            "ok".into()
+        }
+    }
+
+    #[test]
+    fn a_key_something_else_uses_is_left_bound_to_it() {
+        let (desktop, commands) = super::super::hyprland::tests::fake_hyprland(answer_with_binds);
+        let shortcuts = HyprlandShortcuts::new(Arc::new(desktop));
+        shortcuts.state.lock().unwrap().route = Route::Exec;
+        let wanted = [binding(Action::Review, "Super+Alt+E"), binding(Action::QuickFix, "Super+Control+Alt+E")];
+        let problems = shortcuts.install(&wanted);
+        assert_eq!(problems, ["Super+Alt+E is already used for “Emoji picker”"]);
+        let commands = commands.lock().unwrap();
+        assert!(!commands.iter().any(|c| c == r#"eval hl.unbind("SUPER + ALT + E")"#), "{commands:?}");
+        assert!(commands.iter().any(|c| c == r#"eval hl.unbind("SUPER + CTRL + ALT + E")"#), "{commands:?}");
     }
 }

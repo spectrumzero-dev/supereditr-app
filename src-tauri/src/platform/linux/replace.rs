@@ -62,15 +62,13 @@ async fn attempt(services: &Services<'_>, capture: &Capture, text: &str) -> Repl
         Err(_) => return copy_only(),
     }
     let limits = Limits::default();
-    let Ok(transaction) = Transaction::begin(services.clipboard, &limits) else { return copy_only() };
-    if !transaction.before().skipped.is_empty() {
-        trace(format_args!(
-            "replace {}: kept {} clipboard types aside, not {:?}",
-            capture.bundle_id,
-            transaction.before().types().count(),
-            transaction.before().skipped
-        ));
-    }
+    let transaction = match Transaction::begin(services.clipboard, &limits) {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            trace(format_args!("replace {}: {error}", capture.bundle_id));
+            return copy_only();
+        }
+    };
     if transaction.put_text(text).is_err() {
         transaction.restore();
         return copy_only();

@@ -114,7 +114,7 @@ cargo run --release -p supereditr-cli -- check --provider anthropic --bench 5 "T
 
 ## Linux (Omarchy)
 
-SuperEditr also runs on [Omarchy](https://omarchy.org), the Arch Linux setup built on the Hyprland compositor, on x86-64. Other Wayland desktops get a basic mode, with the review shortcut registered through the desktop's GlobalShortcuts portal where it has one. There's no Linux download yet; build it from source.
+SuperEditr also runs on [Omarchy](https://omarchy.org), the Arch Linux setup built on the Hyprland compositor, on x86-64. Other Linux desktops aren't supported yet: SuperEditr starts there, but its shortcuts and panel need Hyprland. There's no Linux download yet; build it from source.
 
 Requirements: Arch Linux on x86-64, Rust (via `rustup`), Node.js 22+, and the packages `base-devel webkit2gtk-4.1 gtk3 libayatana-appindicator at-spi2-core librsvg`.
 

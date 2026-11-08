@@ -337,7 +337,7 @@ impl Desktop for HyprlandDesktop {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// `hyprctl -j activewindow` on Omarchy 4.0.6's Hyprland 0.56.2, with SuperEditr's Settings in
@@ -422,7 +422,7 @@ mod tests {
     ]"#;
 
     /// A Hyprland that records each command and answers it, at a socket in a new directory.
-    fn fake_hyprland(answer: fn(&str) -> String) -> (HyprlandDesktop, Arc<Mutex<Vec<String>>>) {
+    pub(crate) fn fake_hyprland(answer: fn(&str) -> String) -> (HyprlandDesktop, Arc<Mutex<Vec<String>>>) {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
             "supereditr-hyprland-{}-{}",

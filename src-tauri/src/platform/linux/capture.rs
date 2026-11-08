@@ -12,7 +12,7 @@
 
 use super::apps::{self, Profile, Write};
 use super::atspi::{Field, Fields, ReadError};
-use super::clipboard::{DataControl, Limits, Transaction};
+use super::clipboard::{ClipboardError, DataControl, Limits, Transaction};
 use super::desktop::{Desktop, Shortcut, WindowRef};
 use super::replace::words;
 use super::{Capture, Source, trace};
@@ -157,7 +157,10 @@ async fn guarded_copy(services: &Services<'_>, window: &WindowRef, profile: Prof
     // Asked before the marker goes on the clipboard, which is a change too.
     let just_copied =
         profile.terminal && services.clipboard.last_change().is_some_and(|at| at.elapsed() < TERMINAL_PROGRAM_COPY);
-    let transaction = Transaction::begin(services.clipboard, &limits).map_err(|_| cant_read())?;
+    let transaction = Transaction::begin(services.clipboard, &limits).map_err(|error| match error {
+        ClipboardError::CantKeep(_) => PlatformError::Other(format!("{error}.")),
+        _ => cant_read(),
+    })?;
     let program_copy = just_copied.then(|| transaction.before().text()).flatten();
     transaction.put_marker().map_err(|_| cant_read())?;
     // Terminals take Ctrl+C as an interrupt; Ctrl+Insert copies there, as Omarchy's own copy key does.

@@ -1,5 +1,5 @@
 //! A desktop SuperEditr has no integration for. It can't tell which window is in front, place the
-//! panel or send keys, so every suggestion goes to the clipboard, for the user to paste.
+//! panel or send keys, so reviews don't work there; the setup page says so.
 
 use super::{Capabilities, Desktop, DesktopError, SetupCheck, Shortcut, Subscription, WindowRef};
 use crate::platform::Rect;
@@ -49,7 +49,9 @@ impl Desktop for FallbackDesktop {
         vec![SetupCheck {
             name: "Desktop".into(),
             ok: false,
-            detail: "SuperEditr can’t place its panel or send keys on this desktop, so suggestions go to the clipboard: paste them with Ctrl+V.".into(),
+            detail:
+                "SuperEditr works with Hyprland, as on Omarchy. On this desktop its shortcuts and panel don’t work yet."
+                    .into(),
         }]
     }
 }

@@ -61,6 +61,9 @@ pub enum ClipboardError {
     Timeout,
     #[error("the clipboard holds more than SuperEditr keeps aside")]
     TooLarge,
+    /// Some of the clipboard's types couldn't be put aside, so it was left as it was.
+    #[error("SuperEditr couldn’t put your clipboard aside ({}), so it left it alone", .0.join(", "))]
+    CantKeep(Vec<String>),
     #[error("{0}")]
     Failed(String),
 }
@@ -84,8 +87,8 @@ pub trait DataControl: Send + Sync {
 #[derive(Debug, Default)]
 pub struct Snapshot {
     items: Vec<(String, Vec<u8>)>,
-    /// Types that couldn't be kept (too many, too large, or the app didn't answer): a restore
-    /// leaves them out.
+    /// Types that couldn't be kept (too many, too large, or the app didn't answer). A transaction
+    /// doesn't start with any, since its restore would lose them.
     pub skipped: Vec<String>,
 }
 
@@ -133,7 +136,7 @@ impl Snapshot {
 /// What a transaction's restore did.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Restore {
-    /// The user's clipboard is back, every type it had (less [`Snapshot::skipped`]).
+    /// The user's clipboard is back, every type it had.
     Restored,
     /// Something newer was copied after SuperEditr's content, so the clipboard was left alone.
     Superseded,
@@ -148,8 +151,13 @@ pub struct Transaction<'a> {
 }
 
 impl<'a> Transaction<'a> {
+    /// Puts the user's clipboard aside. Fails, leaving the clipboard unchanged, unless every type
+    /// can be put back.
     pub fn begin(clipboard: &'a dyn DataControl, limits: &Limits) -> Result<Self, ClipboardError> {
         let before = Snapshot::take(clipboard, limits)?;
+        if !before.skipped.is_empty() {
+            return Err(ClipboardError::CantKeep(before.skipped));
+        }
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(Self { clipboard, before, marker: format!("{MARKER}{}-{id}", std::process::id()) })
@@ -527,6 +535,18 @@ mod tests {
         assert_eq!(transaction.read_text(&limits).unwrap(), "Their going too the store");
         assert_eq!(transaction.restore_after_copy(), Restore::Restored);
         assert_eq!(clipboard.get("chromium/x-source-url").unwrap(), b"https://quillpoint.example/okr");
+    }
+
+    #[test]
+    fn a_clipboard_that_cant_all_be_put_aside_is_left_alone() {
+        let clipboard =
+            FakeClipboard::holding(&[("image/png", &[7u8; 64][..]), ("text/plain;charset=utf-8", b"Kyndal")]);
+        let limits = Limits { max_bytes_per_type: 32, ..Limits::default() };
+        assert!(
+            matches!(Transaction::begin(&clipboard, &limits), Err(ClipboardError::CantKeep(types)) if types == ["image/png"])
+        );
+        assert_eq!(clipboard.types(), ["image/png", "text/plain;charset=utf-8"]);
+        assert_eq!(clipboard.get("image/png").unwrap(), [7; 64]);
     }
 
     #[test]

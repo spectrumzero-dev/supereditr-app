@@ -35,6 +35,7 @@ development:
           - scripts/check.sh
           - scripts/count-lines.sh
           - .markdownlint.json
+          - rustfmt.toml
 
 # Any changed file outside the rows above ships every platform.
 shared:
@@ -64,3 +65,4 @@ shared:
           - '!scripts/check.sh'
           - '!scripts/count-lines.sh'
           - '!.markdownlint.json'
+          - '!rustfmt.toml'

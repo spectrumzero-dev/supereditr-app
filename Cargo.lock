@@ -6911,7 +6911,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "supereditr"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "ashpd",
  "async-trait",
@@ -6953,7 +6953,7 @@ dependencies = [
 
 [[package]]
 name = "supereditr-cli"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "serde_json",
  "supereditr-core",
@@ -6962,7 +6962,7 @@ dependencies = [
 
 [[package]]
 name = "supereditr-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "futures-util",
  "harper-core",

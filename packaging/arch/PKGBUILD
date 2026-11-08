@@ -1,5 +1,5 @@
-# Installs SuperEditr from its Linux release tarball. scripts/linux-release.sh builds the tarball and
-# writes its SHA-256 here.
+# Installs SuperEditr from its Linux release tarball. pkgver and sha256sums name the release that last
+# shipped Linux; scripts/linux-release.sh writes a copy with a new build's values to build/arch/.
 pkgname=supereditr-bin
 pkgver=0.1.5
 pkgrel=1

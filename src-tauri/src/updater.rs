@@ -23,7 +23,13 @@ use tauri::menu::MenuItem;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_updater::UpdaterExt;
 
-pub const ENABLED: bool = option_env!("SUPEREDITR_RELEASE_BUILD").is_some();
+/// Release builds update themselves on macOS only. Linux has no in-app updater: the package manager
+/// installs new versions.
+pub const ENABLED: bool = updates_itself(option_env!("SUPEREDITR_RELEASE_BUILD").is_some(), cfg!(target_os = "macos"));
+
+const fn updates_itself(release_build: bool, macos: bool) -> bool {
+    release_build && macos
+}
 
 /// How long after launch the first automatic check waits, and how often it repeats.
 const FIRST_CHECK: Duration = Duration::from_secs(60);
@@ -110,9 +116,9 @@ impl UpdateItem {
     }
 }
 
-/// The feed and key the UI smoke tests give a test build. Official builds ignore them.
+/// The feed and key the UI smoke tests give a test build. Official builds and Linux ignore them.
 fn test_feed() -> Option<(String, String)> {
-    if ENABLED {
+    if ENABLED || !cfg!(target_os = "macos") {
         return None;
     }
     Some((std::env::var("SUPEREDITR_TEST_UPDATE_FEED").ok()?, std::env::var("SUPEREDITR_TEST_UPDATE_KEY").ok()?))
@@ -259,6 +265,13 @@ fn percent_of(received: u64, total: Option<u64>) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_macos_release_builds_update_themselves() {
+        assert!(updates_itself(true, true));
+        assert!(!updates_itself(true, false), "a Linux release build");
+        assert!(!updates_itself(false, true), "a source build");
+    }
 
     fn v(text: &str) -> Version {
         Version::parse(text).unwrap()

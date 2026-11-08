@@ -120,10 +120,10 @@ Requirements: Arch Linux on x86-64, Rust (via `rustup`), Node.js 22+, and the pa
 
 ```bash
 ./scripts/linux-release.sh
-cd packaging/arch && cp ../../build/supereditr-*-x86_64.tar.gz . && makepkg -si
+cd build/arch && makepkg -si
 ```
 
-`linux-release.sh` builds `build/supereditr-<version>-x86_64.tar.gz` and writes its version and SHA-256 into `packaging/arch/PKGBUILD`, which installs it as the `supereditr-bin` package. `check.sh` runs the same checks as on macOS.
+`linux-release.sh` builds `build/supereditr-<version>-x86_64.tar.gz`, and puts it in `build/arch/` beside a copy of `packaging/arch/PKGBUILD` with its version and SHA-256, which installs it as the `supereditr-bin` package. `check.sh` runs the same checks as on macOS.
 
 How it differs from macOS:
 

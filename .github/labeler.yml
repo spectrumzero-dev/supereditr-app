@@ -1,0 +1,68 @@
+# Labels each pull request by the platforms its files ship, following the table in docs/versioning.md.
+# .github/release.yml groups the release notes by these labels. Keep the globs in step with that table.
+
+macos:
+  - changed-files:
+      - any-glob-to-any-file:
+          - src-tauri/src/platform/macos.rs
+          - src-tauri/Info.plist
+          - src-tauri/tauri.macos.conf.json
+          - src-tauri/icons/icon.icns
+          - src-tauri/icons/64x64.png
+          - helpers/foundation-models/**
+          - scripts/build.sh
+
+linux:
+  - changed-files:
+      - any-glob-to-any-file:
+          - src-tauri/src/platform/linux/**
+          - src-tauri/src/tray_linux.rs
+          - src-tauri/icons/tray-light.png
+          - packaging/arch/**
+          - packaging/linux/**
+          - scripts/linux-release.sh
+
+development:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '**/*.md'
+          - tests/**
+          - '**/tests/**'
+          - '**/tests.rs'
+          - '**/*.test.ts'
+          - scripts/ui-smoke*.sh
+          - .github/**
+          - scripts/check.sh
+          - scripts/count-lines.sh
+          - .markdownlint.json
+          - rustfmt.toml
+
+# Any changed file outside the rows above ships every platform.
+shared:
+  - changed-files:
+      - all-globs-to-any-file:
+          - '**'
+          - '!src-tauri/src/platform/macos.rs'
+          - '!src-tauri/Info.plist'
+          - '!src-tauri/tauri.macos.conf.json'
+          - '!src-tauri/icons/icon.icns'
+          - '!src-tauri/icons/64x64.png'
+          - '!helpers/foundation-models/**'
+          - '!scripts/build.sh'
+          - '!src-tauri/src/platform/linux/**'
+          - '!src-tauri/src/tray_linux.rs'
+          - '!src-tauri/icons/tray-light.png'
+          - '!packaging/arch/**'
+          - '!packaging/linux/**'
+          - '!scripts/linux-release.sh'
+          - '!**/*.md'
+          - '!tests/**'
+          - '!**/tests/**'
+          - '!**/tests.rs'
+          - '!**/*.test.ts'
+          - '!scripts/ui-smoke*.sh'
+          - '!.github/**'
+          - '!scripts/check.sh'
+          - '!scripts/count-lines.sh'
+          - '!.markdownlint.json'
+          - '!rustfmt.toml'

@@ -72,6 +72,8 @@ export interface StatusPayload {
   id: number;
   kind: "notice" | "applied" | "error";
   message: string;
+  /** A suggestion the notice offers to copy, when it couldn't be confirmed in the app. */
+  copy?: string | null;
 }
 
 export type ProviderKind = "anthropic" | "open_ai" | "gemini" | "ollama" | "open_ai_compatible" | "claude_cli" | "apple_intelligence";
@@ -143,6 +145,8 @@ export interface SettingsPayload {
   accessibility: boolean;
   version: string;
   platform: string;
+  /** Where capture.log is written. */
+  logPath: string | null;
   /** The revision `config` was saved at; see `save_settings` in commands.rs. */
   revision: number;
 }
@@ -180,6 +184,25 @@ export interface Candidate {
   ready: boolean;
   /** The provider already added from this account, if any. */
   profileId: string | null;
+}
+
+/** One line of the Linux setup page. */
+export interface SetupCheck {
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+
+/** The Linux setup page's report (`linux_setup`). */
+export interface LinuxSetup {
+  /** Such as "Omarchy 4.0.6 on Hyprland 0.56.2". */
+  desktop: string;
+  omarchy: boolean;
+  checks: SetupCheck[];
+  /** What Set up Omarchy changes; `needed` is false for what's already in place. */
+  changes: { path: string; what: string; needed: boolean }[];
+  /** Running apps SuperEditr can't read until they restart. */
+  restart: { name: string; reason: string }[];
 }
 
 /** Where updating has got to (`Status` in updater.rs). */

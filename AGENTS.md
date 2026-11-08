@@ -1,10 +1,14 @@
 # AGENTS.md
 
-SuperEditr: a Rust/Tauri macOS proofreading app. `README.md` describes the layout and how to build.
+SuperEditr: a Rust/Tauri proofreading app for macOS and Linux. `README.md` describes the layout and how to build.
 
 ## Checks
 
 Run `./scripts/check.sh` before every commit.
+
+## Versions
+
+Before bumping the version or preparing a release, read `docs/versioning.md`: one version line for every platform, and each release ships only the platforms whose code changed since that platform's last stable release.
 
 ## Markdown
 

@@ -11,6 +11,7 @@
 use std::time::{Duration, Instant};
 
 /// How long the first press waits for the second.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const WINDOW: Duration = Duration::from_millis(300);
 
 pub const COMMAND: u8 = 1;
@@ -64,6 +65,7 @@ fn parse_chord(text: &str) -> Result<Chord, String> {
 
 /// What to do with one key press.
 #[derive(Debug, PartialEq, Eq, Default)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub struct Step {
     /// Replay this held chord to the app first (index into the registered chords).
     pub replay: Option<usize>,
@@ -76,18 +78,21 @@ pub struct Step {
     pub hold: Option<u64>,
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 struct Held {
     chord: usize,
     at: Instant,
     generation: u64,
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Default)]
 pub struct Detector {
     held: Option<Held>,
     generation: u64,
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 impl Detector {
     /// `matched` is the index of the registered chord this press is, if any.
     pub fn press(&mut self, matched: Option<usize>, autorepeat: bool, now: Instant) -> Step {

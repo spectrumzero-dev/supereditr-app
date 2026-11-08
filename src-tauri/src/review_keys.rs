@@ -31,6 +31,7 @@ impl Key {
     /// when the panel had keyboard focus, so nothing lands in the selection under review. So do ↩
     /// and esc with any modifier: ⌘↩ sends the message in many chat apps. Other shortcuts with ⌘
     /// or ⌃ still reach the app.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn for_panel(&self) -> bool {
         if self.key == "Enter" || self.key == "Escape" {
             true

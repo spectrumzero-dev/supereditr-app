@@ -8,10 +8,12 @@
   import Shortcuts from "./Shortcuts.svelte";
   import Styles from "./Styles.svelte";
   import Welcome from "./Welcome.svelte";
+  import LinuxSetup from "./LinuxSetup.svelte";
   import { api } from "./ipc";
   import { mergeUnsaved, saveUntilCurrent } from "./merge";
+  import { isMac, setPlatform } from "../lib/platform";
 
-  type Section = "welcome" | "models" | "styles" | "dictionary" | "general" | "shortcuts" | "privacy" | "about";
+  type Section = "welcome" | "setup" | "models" | "styles" | "dictionary" | "general" | "shortcuts" | "privacy" | "about";
   // The pages about the writing, then a gap, then the app's own.
   const nav: { id: Section; name: string; icon: string; gap?: boolean }[] = [
     { id: "welcome", name: "Get Started", icon: "✦" },
@@ -19,7 +21,8 @@
     { id: "styles", name: "Styles", icon: "¶" },
     { id: "dictionary", name: "Dictionary", icon: "Aa" },
     { id: "general", name: "General", icon: "⚙", gap: true },
-    { id: "shortcuts", name: "Shortcuts", icon: "⌘" },
+    ...(isMac() ? [] : [{ id: "setup" as Section, name: "Desktop setup", icon: "▣" }]),
+    { id: "shortcuts", name: "Shortcuts", icon: isMac() ? "⌘" : "⌨" },
     { id: "privacy", name: "Privacy", icon: "⚿" },
     { id: "about", name: "About", icon: "ⓘ" },
   ];
@@ -49,6 +52,7 @@
 
   async function reload() {
     const fresh = await api.get();
+    setPlatform(fresh.platform);
     const latest = structuredClone(fresh.config);
     // Changes waiting to be saved, or still being saved, survive a reload.
     if (config && base && edits !== savedEdits) {
@@ -155,9 +159,11 @@
       {:else if section === "dictionary"}
         <Dictionary bind:config {onchange} />
       {:else if section === "general"}
-        <General bind:config {onchange} />
+        <General bind:config logPath={payload.logPath} {onchange} />
       {:else if section === "shortcuts"}
         <Shortcuts bind:config {problems} {onchange} />
+      {:else if section === "setup"}
+        <LinuxSetup />
       {:else if section === "privacy"}
         <Privacy bind:config accessibility={payload.accessibility} {onchange} />
       {:else}
@@ -254,5 +260,15 @@
   }
   main :global(.page) {
     max-width: 720px;
+  }
+  /* Narrow, as when a tiling desktop puts Settings beside another window: less room for the sidebar
+     and the margins, so the page keeps its width. */
+  @media (max-width: 700px) {
+    .shell {
+      grid-template-columns: 168px minmax(0, 1fr);
+    }
+    main {
+      padding: 0 18px 32px;
+    }
   }
 </style>

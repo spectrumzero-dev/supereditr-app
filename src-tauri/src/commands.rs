@@ -93,6 +93,8 @@ pub struct SettingsPayload {
     accessibility: bool,
     version: &'static str,
     platform: &'static str,
+    /// Where capture.log is written.
+    log_path: Option<String>,
     hotkey_problems: Vec<String>,
     /// The revision `config` was saved at, for `save_settings`.
     revision: u64,
@@ -126,6 +128,7 @@ pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> SettingsPaylo
         accessibility: platform::accessibility_trusted(false),
         version: env!("SUPEREDITR_VERSION_LABEL"),
         platform: std::env::consts::OS,
+        log_path: platform::log_path().map(|path| path.display().to_string()),
         hotkey_problems: Vec::new(),
         revision,
     }
@@ -460,6 +463,10 @@ pub fn check_shortcut(app: AppHandle, state: State<'_, AppState>, accelerator: S
     {
         return Some(problem);
     }
+    #[cfg(target_os = "linux")]
+    if let Some(what) = platform::shortcut_taken(&accelerator) {
+        return Some(format!("Your desktop already uses this for “{what}”."));
+    }
     hotkeys::taken_by_another_app(&app, &accelerator).then(|| "Another app already uses this shortcut.".into())
 }
 
@@ -472,6 +479,10 @@ pub fn default_presets() -> Vec<supereditr_core::prompts::Preset> {
 /// Apple Intelligence, the AI SuperEditr uses unless another is chosen.
 #[tauri::command]
 pub async fn builtin_ai(state: State<'_, AppState>) -> CmdResult<BuiltinAi> {
+    // Apple Intelligence exists only on a Mac; elsewhere the setup screens never mention it.
+    if cfg!(not(target_os = "macos")) {
+        return Ok(BuiltinAi { supported: false, available: false, message: None });
+    }
     let status = state.engine.providers.apple_status(&ProviderProfile::new(ProviderKind::AppleIntelligence)).await;
     let unsupported = matches!(status.reason.as_deref(), Some("osTooOld" | "deviceNotEligible" | "missing"));
     Ok(BuiltinAi { supported: !unsupported, available: status.available, message: status.message() })
@@ -490,6 +501,7 @@ pub fn open_apple_intelligence_settings() {
 /// (window.screenX/screenY) is wrong in this app. Synchronous, so it runs on the main thread.
 #[tauri::command]
 pub fn review_playground(app: AppHandle, window: tauri::WebviewWindow, text: String, rect: platform::Rect) {
+    #[cfg(target_os = "macos")]
     let mut bounds = rect;
     #[cfg(target_os = "macos")]
     if let Ok(ptr) = window.ns_window() {
@@ -502,7 +514,10 @@ pub fn review_playground(app: AppHandle, window: tauri::WebviewWindow, text: Str
         bounds.y += primary - (frame.origin.y + frame.size.height);
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = window;
+    let bounds = {
+        let _ = window;
+        rect
+    };
     review::review_playground(&app, text, bounds);
 }
 
@@ -548,7 +563,64 @@ pub fn set_launch_at_login(app: AppHandle, enabled: bool) -> CmdResult<bool> {
     let launcher = app.autolaunch();
     let result = if enabled { launcher.enable() } else { launcher.disable() };
     result.map_err(|e| format!("Couldn't change opening at login: {e}"))?;
+    #[cfg(target_os = "linux")]
+    platform::setup::reload_autostart();
     launcher.is_enabled().map_err(|e| e.to_string())
+}
+
+/// The Linux setup page's report; `None` on other systems.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub async fn linux_setup() -> Option<platform::SetupReport> {
+    Some(platform::setup_report().await)
+}
+
+#[cfg(not(target_os = "linux"))]
+#[tauri::command]
+pub async fn linux_setup() -> Option<()> {
+    None
+}
+
+/// Set up Omarchy: adds the flag lines and turns on opening at login. Returns what it did.
+#[tauri::command]
+pub fn set_up_omarchy(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<String>> {
+    #[cfg(target_os = "linux")]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        let config_home = platform::setup::config_home().ok_or("HOME isn’t set")?;
+        let mut done = platform::setup::add_flags(&config_home).map_err(|e| format!("Couldn’t add the flag: {e}"))?;
+        if !platform::setup::autostart_check(&config_home).ok {
+            app.autolaunch().enable().map_err(|e| format!("Couldn’t turn on opening at login: {e}"))?;
+            platform::setup::reload_autostart();
+            done.push("Turned on opening at login".into());
+        }
+        let mut config = state.config();
+        if !config.offered_launch_at_login {
+            config.offered_launch_at_login = true;
+            state.save_config(config).map_err(|e| e.to_string())?;
+        }
+        Ok(done)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (app, state);
+        Err("Set up Omarchy is for Linux.".into())
+    }
+}
+
+/// Takes out what Set up Omarchy added, as `supereditr uninstall-omarchy` does. Returns what it did.
+#[tauri::command]
+pub fn remove_omarchy_setup() -> CmdResult<Vec<String>> {
+    #[cfg(target_os = "linux")]
+    {
+        let config_home = platform::setup::config_home().ok_or("HOME isn’t set")?;
+        let mut done = platform::setup::remove_flags(&config_home).map_err(|e| e.to_string())?;
+        done.extend(platform::setup::remove_autostart(&config_home).map_err(|e| e.to_string())?);
+        platform::setup::reload_autostart();
+        Ok(done)
+    }
+    #[cfg(not(target_os = "linux"))]
+    Err("Set up Omarchy is for Linux.".into())
 }
 
 #[tauri::command]

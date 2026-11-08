@@ -16,7 +16,8 @@ pub struct Hotkeys {
 }
 
 /// Apps where SuperEditr never reads text: password managers, and terminals, whose output reads
-/// like text and where pasting a revision would run it as input.
+/// like text and where pasting a revision would run it as input. macOS bundle IDs.
+#[cfg(not(target_os = "linux"))]
 const DEFAULT_EXCLUSIONS: &[&str] = &[
     "com.1password.1password",
     "com.nordsec.nordpass",
@@ -35,6 +36,7 @@ const DEFAULT_EXCLUSIONS: &[&str] = &[
 ];
 
 /// The terminals among the default exclusions.
+#[cfg(not(target_os = "linux"))]
 const TERMINALS: &[&str] = &[
     "com.apple.Terminal",
     "com.googlecode.iterm2",
@@ -46,24 +48,77 @@ const TERMINALS: &[&str] = &[
     "com.github.wez.wezterm",
 ];
 
+/// On Linux, apps are known by their Wayland app ID (Hyprland's window class).
+#[cfg(target_os = "linux")]
+const DEFAULT_EXCLUSIONS: &[&str] = &[
+    "1Password",
+    "Bitwarden",
+    "org.keepassxc.KeePassXC",
+    "org.gnome.seahorse.Application",
+    "foot",
+    "Alacritty",
+    "com.mitchellh.ghostty",
+    "kitty",
+    "org.wezfurlong.wezterm",
+    "org.gnome.Ptyxis",
+    "org.kde.konsole",
+];
+
+#[cfg(target_os = "linux")]
+const TERMINALS: &[&str] = &[
+    "foot",
+    "Alacritty",
+    "com.mitchellh.ghostty",
+    "kitty",
+    "org.wezfurlong.wezterm",
+    "org.gnome.Ptyxis",
+    "org.kde.konsole",
+];
+
 /// True for a terminal SuperEditr excludes by default.
 pub fn is_terminal(bundle_id: &str) -> bool {
     TERMINALS.iter().any(|t| t.eq_ignore_ascii_case(bundle_id))
 }
 
 /// The defaults in the first release, before `offered_exclusions` was recorded.
+#[cfg(not(target_os = "linux"))]
 fn first_default_exclusions() -> Vec<String> {
     DEFAULT_EXCLUSIONS[..6].iter().map(|s| s.to_string()).collect()
 }
 
+/// Every Linux release has recorded `offered_exclusions`.
+#[cfg(target_os = "linux")]
+fn first_default_exclusions() -> Vec<String> {
+    DEFAULT_EXCLUSIONS.iter().map(|s| s.to_string()).collect()
+}
+
+/// Hold ⌘ and press E twice. A single ⌘E still reaches the app, a moment later.
+#[cfg(not(target_os = "linux"))]
 const REVIEW_SHORTCUT: &str = "Command+E Command+E";
+#[cfg(not(target_os = "linux"))]
+const QUICK_FIX_SHORTCUT: &str = "Control+Alt+Shift+E";
 /// The first default, replaced because ⌃⌥E clashes with other apps.
+#[cfg(not(target_os = "linux"))]
 const OLD_REVIEW_SHORTCUT: &str = "Control+Alt+E";
+
+/// Single chords: a double press needs a keyboard tap, which Wayland doesn't allow. Both are free in
+/// Omarchy's own bindings (Super+Alt+Shift+E opens its email app).
+#[cfg(target_os = "linux")]
+const REVIEW_SHORTCUT: &str = "Super+Alt+E";
+#[cfg(target_os = "linux")]
+const QUICK_FIX_SHORTCUT: &str = "Super+Control+Alt+E";
+
+/// Where the settings file keeps this OS's shortcuts. Each OS has its own key, so a settings file
+/// synced from a Mac doesn't bring ⌘ shortcuts to Linux, and a save on one keeps the other's.
+#[cfg(target_os = "linux")]
+const HOTKEYS_KEY: &str = "linux_hotkeys";
+#[cfg(not(target_os = "linux"))]
+const HOTKEYS_KEY: &str = "hotkeys";
+const ALL_HOTKEYS_KEYS: &[&str] = &["hotkeys", "linux_hotkeys"];
 
 impl Default for Hotkeys {
     fn default() -> Self {
-        // Hold ⌘ and press E twice. A single ⌘E still reaches the app, a moment later.
-        Self { review: REVIEW_SHORTCUT.into(), quick_fix: "Control+Alt+Shift+E".into() }
+        Self { review: REVIEW_SHORTCUT.into(), quick_fix: QUICK_FIX_SHORTCUT.into() }
     }
 }
 
@@ -124,7 +179,8 @@ impl Default for Config {
             style_notes: String::new(),
             dialect: "American English".into(),
             hotkeys: Hotkeys::default(),
-            auto_popup: true,
+            // On Linux, only the shortcut starts a review.
+            auto_popup: cfg!(not(target_os = "linux")),
             auto_min_chars: 12,
             select_sentence: true,
             keep_formatting: true,
@@ -141,11 +197,24 @@ impl Default for Config {
 
 impl Config {
     pub fn load(path: &Path) -> Self {
-        let mut config: Config =
-            std::fs::read_to_string(path).ok().and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_default();
+        let mut config: Config = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|mut raw| {
+                // This OS's shortcuts, or the defaults: never another OS's.
+                if let Some(fields) = raw.as_object_mut() {
+                    match fields.remove(HOTKEYS_KEY) {
+                        Some(own) => fields.insert("hotkeys".into(), own),
+                        None => fields.remove("hotkeys"),
+                    };
+                }
+                serde_json::from_value(raw).ok()
+            })
+            .unwrap_or_default();
         config.merge_new_builtins();
         config.merge_new_exclusions();
         config.drop_builtin_ai();
+        #[cfg(not(target_os = "linux"))]
         if config.hotkeys.review == OLD_REVIEW_SHORTCUT {
             config.hotkeys.review = REVIEW_SHORTCUT.into();
         }
@@ -157,8 +226,21 @@ impl Config {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        let mut raw = serde_json::to_value(self).map_err(std::io::Error::other)?;
+        let previous: Option<serde_json::Value> =
+            std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok());
+        if let Some(fields) = raw.as_object_mut() {
+            if let Some(own) = fields.remove("hotkeys") {
+                fields.insert(HOTKEYS_KEY.into(), own);
+            }
+            for key in ALL_HOTKEYS_KEYS.iter().filter(|key| **key != HOTKEYS_KEY) {
+                if let Some(other) = previous.as_ref().and_then(|p| p.get(*key)) {
+                    fields.insert(key.to_string(), other.clone());
+                }
+            }
+        }
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?)?;
+        std::fs::write(&tmp, serde_json::to_vec_pretty(&raw).map_err(std::io::Error::other)?)?;
         std::fs::rename(tmp, path)
     }
 
@@ -307,6 +389,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn apple_intelligence_profiles_become_the_builtin_default() {
         let dir = std::env::temp_dir().join(format!("supereditr-builtin-{}", std::process::id()));
@@ -324,6 +407,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn new_default_exclusions_reach_existing_settings_once() {
         let dir = std::env::temp_dir().join(format!("supereditr-exclusions-{}", std::process::id()));
@@ -344,6 +428,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn excludes_password_managers_and_terminals_by_default() {
         let config = Config::default();
@@ -354,12 +439,53 @@ mod tests {
         assert!(!config.is_excluded(""));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_defaults_use_wayland_app_ids_and_single_chords() {
+        let config = Config::default();
+        assert!(config.is_excluded("foot"), "Omarchy's terminal");
+        assert!(config.is_excluded("org.keepassxc.keepassxc"));
+        assert!(!config.is_excluded("chromium"));
+        assert!(is_terminal("FOOT"));
+        assert!(!is_terminal("1Password"));
+        assert_eq!(config.hotkeys.review, "Super+Alt+E");
+        assert_eq!(config.hotkeys.quick_fix, "Super+Control+Alt+E");
+        assert!(!config.auto_popup, "no automatic suggestions on Linux");
+    }
+
+    #[test]
+    fn each_os_keeps_its_own_shortcuts_in_a_shared_settings_file() {
+        let dir = std::env::temp_dir().join(format!("supereditr-hotkeys-{}", std::process::id()));
+        let path = dir.join("settings.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Saved on the other OS, with that OS's shortcuts.
+        let other = if HOTKEYS_KEY == "hotkeys" { "linux_hotkeys" } else { "hotkeys" };
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"{other}": {{"review": "Brynlee+Q", "quick_fix": "Kyndal+Q"}}, "dialect": "British English"}}"#
+            ),
+        )
+        .unwrap();
+        let mut config = Config::load(&path);
+        assert_eq!(config.dialect, "British English");
+        assert_eq!(config.hotkeys.review, Hotkeys::default().review, "another OS's shortcuts never apply here");
+
+        config.hotkeys.review = "Rhyan+R".into();
+        config.save(&path).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved[HOTKEYS_KEY]["review"], "Rhyan+R");
+        assert_eq!(saved[other]["review"], "Brynlee+Q", "the other OS's shortcuts are kept");
+        assert_eq!(Config::load(&path).hotkeys.review, "Rhyan+R");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn every_terminal_is_excluded_by_default() {
         let config = Config::default();
         assert!(TERMINALS.iter().all(|t| config.is_excluded(t)));
-        assert!(is_terminal("COM.APPLE.TERMINAL"));
-        assert!(!is_terminal("com.1password.1password"), "a password manager isn't a terminal");
+        assert!(TERMINALS.iter().all(|t| is_terminal(&t.to_uppercase())));
+        assert!(!is_terminal(DEFAULT_EXCLUSIONS[0]), "a password manager isn't a terminal");
         assert!(!is_terminal(""));
     }
 
@@ -375,7 +501,7 @@ mod tests {
         assert!(config.set_excluded("com.apple.TextEdit", false));
         assert!(!config.is_excluded("com.apple.TextEdit"), "every spelling is removed");
         assert!(!config.set_excluded("com.apple.TextEdit", false));
-        assert!(config.is_excluded("com.1password.1password"), "other apps stay excluded");
+        assert!(config.is_excluded(DEFAULT_EXCLUSIONS[0]), "other apps stay excluded");
 
         assert!(!config.set_excluded("", true), "an app without a bundle ID can't be listed");
         assert!(!config.excluded_apps.iter().any(String::is_empty));
@@ -385,7 +511,7 @@ mod tests {
     fn missing_file_gives_defaults() {
         let config = Config::load(Path::new("/nonexistent/supereditr.json"));
         assert_eq!(config.default_preset().id, "proofread");
-        assert!(config.auto_popup);
+        assert_eq!(config.auto_popup, cfg!(not(target_os = "linux")));
     }
 
     #[test]

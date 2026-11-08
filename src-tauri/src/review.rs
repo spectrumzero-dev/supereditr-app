@@ -7,7 +7,7 @@
 
 use crate::app_toggle;
 use crate::overlay;
-use crate::platform::{self, Capture, PlatformError, SelectionGesture, WatchEvent};
+use crate::platform::{self, Capture, PlatformError, ReplaceOutcome, SelectionGesture, WatchEvent};
 use crate::state::{AppState, Session};
 use serde::Serialize;
 use std::sync::atomic::Ordering;
@@ -53,6 +53,8 @@ pub struct StatusPayload {
     pub id: u64,
     pub kind: &'static str,
     pub message: String,
+    /// A suggestion the notice offers to copy, when it couldn't be confirmed in the app.
+    pub copy: Option<String>,
 }
 
 fn state(app: &AppHandle) -> tauri::State<'_, AppState> {
@@ -170,13 +172,43 @@ pub async fn start_manual(app: &AppHandle, preset_id: Option<String>) {
 
 /// Shows a standalone message (no selection to work on) near the pointer.
 pub fn show_error(app: &AppHandle, message: String) {
+    show_notice(app, message, None);
+}
+
+/// Says what became of a replacement that didn't apply: a copy-only one puts the suggestion on the
+/// clipboard; an uncertain one, or one that couldn't put the clipboard aside, leaves the clipboard
+/// alone and offers the suggestion to copy.
+fn show_outcome(app: &AppHandle, outcome: ReplaceOutcome, suggestion: String) -> Option<String> {
+    if copies_suggestion(&outcome) {
+        platform::copy_to_clipboard(&suggestion);
+    }
+    match outcome {
+        ReplaceOutcome::Applied => None,
+        ReplaceOutcome::CopyOnly(error) => {
+            show_error(app, error.to_string());
+            Some(error.to_string())
+        }
+        ReplaceOutcome::Uncertain(error) | ReplaceOutcome::ClipboardKept(error) => {
+            show_notice(app, error.to_string(), Some(suggestion));
+            Some(error.to_string())
+        }
+    }
+}
+
+/// Whether a replacement's outcome puts the suggestion on the clipboard: only when nothing was
+/// written. After a write that may have landed, the clipboard is the user's.
+fn copies_suggestion(outcome: &ReplaceOutcome) -> bool {
+    matches!(outcome, ReplaceOutcome::CopyOnly(_))
+}
+
+fn show_notice(app: &AppHandle, message: String, copy: Option<String>) {
     let state = state(app);
     let id = state.next_session_id();
     if let Some(mut old) = state.session.lock().unwrap().take() {
         old.cancel();
     }
     state.notice_visible.store(true, Ordering::Relaxed);
-    let _ = app.emit_to("overlay", "overlay:status", StatusPayload { id, kind: "notice", message });
+    let _ = app.emit_to("overlay", "overlay:status", StatusPayload { id, kind: "notice", message, copy });
     overlay::position(app, None, 126.0);
     overlay::show(app, true);
 }
@@ -309,24 +341,19 @@ pub async fn apply(app: &AppHandle, id: u64, text: String) -> Result<String, Str
     }
     *state.quiet_until.lock().unwrap() = Instant::now() + Duration::from_millis(800);
     tokio::time::sleep(Duration::from_millis(40)).await;
+    let suggestion = text.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        if captured.text == text {
-            return Ok(None);
-        }
-        platform::replace(&captured, &text, proofread).map(Some).inspect_err(|_| {
-            platform::copy_to_clipboard(&text);
-        })
+        (captured.text != text).then(|| ReplaceOutcome::from(platform::replace(&captured, &text, proofread)))
     })
     .await
     .map_err(|e| e.to_string())?;
     state.session.lock().unwrap().take();
     match result {
-        Ok(None) => Ok("No changes needed.".into()),
-        Ok(Some(_)) => Ok("Replaced.".into()),
-        Err(error) => {
-            show_error(app, error.to_string());
-            Err(error.to_string())
-        }
+        None => Ok("No changes needed.".into()),
+        Some(outcome) => match show_outcome(app, outcome, suggestion) {
+            None => Ok("Replaced.".into()),
+            Some(error) => Err(error),
+        },
     }
 }
 
@@ -375,7 +402,7 @@ pub fn resize(app: &AppHandle, height: f64) {
             None => None,
         }
     };
-    overlay::position(app, anchor, height.clamp(90.0, 670.0));
+    overlay::resize(app, anchor, height.clamp(90.0, 670.0));
 }
 
 /// Quick fix: proofread the selection and replace it directly, with no overlay.
@@ -436,15 +463,18 @@ pub async fn quick_fix(app: &AppHandle) {
     let text = revised.clone();
     let proofread = config.keep_formatting && is_proofread(&config.default_preset().id, None);
     let result = tauri::async_runtime::spawn_blocking(move || platform::replace(&captured, &text, proofread)).await;
-    if let Ok(Err(error)) = result {
-        platform::copy_to_clipboard(&revised);
-        show_error(app, error.to_string());
+    match result {
+        Ok(result) => {
+            show_outcome(app, result.into(), revised);
+        }
+        Err(error) => show_error(app, error.to_string()),
     }
 }
 
 /// Another app came to the front (⌘Tab, the Dock): the panel belongs to the app whose text it
 /// reviews, so it closes. ⌘Tab never reaches the selection watcher, which only sees the user's
 /// typing and clicks.
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 pub fn on_app_switch(app: &AppHandle, pid: i32) {
     let state = state(app);
     if pid == platform::own_pid() {
@@ -455,12 +485,16 @@ pub fn on_app_switch(app: &AppHandle, pid: i32) {
     platform::selection_app_switched();
     let reviewing = state.session.lock().unwrap().as_ref().map(|s| s.capture.pid);
     let notice = state.notice_visible.load(Ordering::Relaxed);
-    if reviewing.is_some_and(|source| source != pid) || (reviewing.is_none() && notice) {
+    // On Linux the panel has keyboard focus during a review, so any other window coming to the
+    // front, the reviewed app's included, means the user has moved on.
+    let moved_on = reviewing.is_some_and(|source| cfg!(target_os = "linux") || source != pid);
+    if moved_on || (reviewing.is_none() && notice) {
         dismiss(app, None);
     }
 }
 
 /// Reacts to activity in other apps: dismiss transient overlays, start automatic reviews.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
     let state = state(app);
     match event {
@@ -661,8 +695,12 @@ mod tests {
             excluded_message(&config, "com.apple.Notes", "Notes"),
             "SuperEditr is turned off in Notes. Turn it on from the pen icon in the menu bar, or in Settings → Privacy."
         );
+        #[cfg(not(target_os = "linux"))]
+        let terminal = "com.apple.Terminal";
+        #[cfg(target_os = "linux")]
+        let terminal = "foot";
         assert_eq!(
-            excluded_message(&config, "com.apple.Terminal", "Terminal"),
+            excluded_message(&config, terminal, "Terminal"),
             "SuperEditr is turned off in Terminal. Change this in Settings → Privacy.",
             "the menu doesn't offer to turn a terminal on"
         );
@@ -716,6 +754,16 @@ mod tests {
         ] {
             assert!(check_selection(text, true, 12).is_none(), "{text}");
         }
+    }
+
+    #[test]
+    fn only_a_replacement_that_wrote_nothing_takes_the_clipboard() {
+        assert!(copies_suggestion(&ReplaceOutcome::CopyOnly(PlatformError::CopyOnly)));
+        assert!(copies_suggestion(&ReplaceOutcome::CopyOnly(PlatformError::Stale)));
+        assert!(!copies_suggestion(&ReplaceOutcome::Uncertain(PlatformError::Unverified)), "a paste may have landed");
+        let kept = ReplaceOutcome::ClipboardKept(PlatformError::ClipboardNotKept("image/png".into()));
+        assert!(!copies_suggestion(&kept), "the user's clipboard couldn't be put aside");
+        assert!(!copies_suggestion(&ReplaceOutcome::Applied));
     }
 
     #[test]

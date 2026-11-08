@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { acceleratorFromEvent } from "../lib/accelerator";
   import { keySymbols } from "../lib/diff";
+  import { isMac } from "../lib/platform";
   import { api } from "./ipc";
 
   interface Props {
@@ -84,7 +85,7 @@
     if (!accelerator) {
       // A plain key would fire whenever it's typed; modifier keys alone are just the start.
       if (!["Shift", "Control", "Alt", "Meta", "CapsLock", "Fn"].includes(e.key)) {
-        problem = "Add ⌘, ⌃, or ⌥ to that key, or use a function key such as F6.";
+        problem = isMac() ? "Add ⌘, ⌃, or ⌥ to that key, or use a function key such as F6." : "Add Super, Ctrl or Alt to that key, or use a function key such as F6.";
       }
       return;
     }

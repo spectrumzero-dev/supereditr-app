@@ -112,6 +112,29 @@ The `supereditr` CLI runs the same engine from a terminal, which is useful for m
 cargo run --release -p supereditr-cli -- check --provider anthropic --bench 5 "This are a test."
 ```
 
+## Linux (Omarchy)
+
+SuperEditr also runs on [Omarchy](https://omarchy.org), the Arch Linux setup built on the Hyprland compositor, on x86-64. Other Linux desktops aren't supported yet: SuperEditr starts there, but its shortcuts and panel need Hyprland. There's no Linux download yet; build it from source.
+
+Requirements: Arch Linux on x86-64, Rust (via `rustup`), Node.js 22+, and the packages `base-devel webkit2gtk-4.1 gtk3 libayatana-appindicator at-spi2-core librsvg`.
+
+```bash
+./scripts/linux-release.sh
+cd build/arch && makepkg -si
+```
+
+`linux-release.sh` builds `build/supereditr-<version>-x86_64.tar.gz`, and puts it in `build/arch/` beside a copy of `packaging/arch/PKGBUILD` with its version and SHA-256, which installs it as the `supereditr-bin` package. `check.sh` runs the same checks as on macOS.
+
+How it differs from macOS:
+
+- The review shortcut is Super+Alt+E. On Hyprland, SuperEditr adds its binds and the panel's window rule while it runs and never edits `~/.config/hypr/`.
+- SuperEditr reads text through the AT-SPI accessibility bus. Where an app exposes no text, such as a terminal, it copies the selection and puts your clipboard back afterwards; it can't replace text there, so Ctrl+C in the panel copies the fix.
+- Alt+Enter replaces your text, and Ctrl+C copies the fix.
+- Settings → Set up Omarchy lists what it will change before it does: it adds `--force-renderer-accessibility` to the Chromium, Electron and VS Code flag files in `~/.config`, so web pages and Electron apps expose their text, and turns on opening at login. `supereditr uninstall-omarchy` takes out exactly what it added.
+- The diagnostic log is `~/.local/state/supereditr/capture.log`.
+
+`scripts/ui-smoke-linux.sh` runs the live Linux UI tests against SuperEditr in a desktop virtual machine on a Proxmox host, pressing real keys through the host; see the script's header for its options.
+
 ## Architecture
 
 | Part | Path | Role |
@@ -120,6 +143,7 @@ cargo run --release -p supereditr-cli -- check --provider anthropic --bench 5 "T
 | CLI | `crates/cli` | Terminal front end for the engine. |
 | Desktop shell | `src-tauri` | Tauri 2 app: menu-bar item, global shortcuts, overlay panel, settings window, keychain. |
 | macOS layer | `src-tauri/src/platform/macos.rs` | Accessibility capture and replacement, clipboard transactions, keyboard-layout-aware ⌘C/⌘V, selection watcher. |
+| Linux layer | `src-tauri/src/platform/linux` | AT-SPI capture and replacement, clipboard transactions, the Hyprland and portal shortcuts and panel placement, Set up Omarchy. |
 | UI | `ui` | Svelte 5 overlay and settings pages. |
 | Apple Intelligence helper | `helpers/foundation-models` | Small Swift program bundled in the app. FoundationModels is Swift-only, so the engine keeps this helper running and talks to it over JSON lines. |
 
@@ -131,7 +155,7 @@ A review runs like this:
 4. The model streams the edited text; SuperEditr diffs it word by word into individual changes.
 5. On ↩︎, SuperEditr confirms the same field and selection are still there, then writes the text back: an Accessibility write for native fields, a clipboard-preserving paste for web and Electron apps. ⌘Z in the app undoes it.
 
-Another platform needs only its own `src-tauri/src/platform` implementation (on Windows, with UI Automation); the engine, UI and settings are shared.
+Another platform needs only its own `src-tauri/src/platform` implementation, as Linux has (on Windows, with UI Automation); the engine, UI and settings are shared.
 
 ## Contributing
 

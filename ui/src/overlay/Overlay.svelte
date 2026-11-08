@@ -6,11 +6,14 @@
   import type { EngineEvent, SessionPayload, StatusPayload } from "../lib/types";
   import { ipc } from "./ipc";
   import { canUse, emptyReview, keptWording, offerToKeep, reduce, type Review } from "./review";
+  import { words } from "../lib/platform";
 
   let session = $state<SessionPayload | null>(null);
   let presetId = $state("proofread");
   let review = $state<Review>(emptyReview());
   let notice = $state("");
+  /** A suggestion the notice offers to copy: one that may or may not have gone into the app. */
+  let noticeCopy = $state<string | null>(null);
   let rejected = $state(new Set<number>());
   let focusedId = $state<number | null>(null);
   /** The panel takes the review keys: a review the user opened, or "use keyboard". */
@@ -60,6 +63,7 @@
     presetId = next.presetId;
     review = emptyReview();
     notice = "";
+    noticeCopy = null;
     rejected = new Set();
     focusedId = null;
     keyboard = !next.auto;
@@ -108,7 +112,7 @@
     // ↩ and ⌥↩ mean the same in every app: they replace. Copying is what ⌘C is for. Only a replacement
     // that fails leaves the fix on the clipboard, so it isn't lost, and the backend says so.
     if (!session.canApply) {
-      showFlash("Nothing replaced. Press ⌘C to copy the fix.", 2500);
+      showFlash(`Nothing replaced. Press ${words().copyKey} to copy the fix.`, 2500);
       return;
     }
     const text = result;
@@ -144,10 +148,16 @@
     showFlash("Copied", 1200);
   }
 
+  async function copyNotice() {
+    if (noticeCopy !== null) await ipc.copy(noticeCopy);
+    close();
+  }
+
   function close() {
     ipc.dismiss(session?.id ?? null);
     session = null;
     notice = "";
+    noticeCopy = null;
   }
 
   function useKeyboard() {
@@ -172,7 +182,12 @@
 
   function onKeydown(e: PanelKey, forwarded = false) {
     if (notice && !session) {
-      if (e.key === "Escape" || e.key === "Enter") close();
+      if (e.key === "Escape" || e.key === "Enter") {
+        // Marked handled, or WebKit passes the key back to GTK after the panel has hidden, and on
+        // Linux GTK then drops the next press of that key: the first one in the next panel.
+        e.preventDefault();
+        close();
+      }
       return;
     }
     if (!session) return;
@@ -275,6 +290,7 @@
       status: (payload: StatusPayload) => {
         session = null;
         notice = payload.message;
+        noticeCopy = payload.copy ?? null;
         reportHeight();
       },
       focus: () => (keyboard = true),
@@ -301,7 +317,11 @@
         <div class="notice-icon" aria-hidden="true">!</div>
         <p>{notice}</p>
         <div class="notice-actions">
-          <button class="ghost" onclick={() => ipc.openSettings()}>Settings</button>
+          {#if noticeCopy !== null}
+            <button class="ghost" onclick={copyNotice}>Copy suggestion</button>
+          {:else}
+            <button class="ghost" onclick={() => ipc.openSettings()}>Settings</button>
+          {/if}
           <button class="primary" onclick={close}>OK</button>
         </div>
       </div>
@@ -370,10 +390,10 @@
       {/if}
 
       {#if !session.canApply && !unchanged}
-        <p class="tips">SuperEditr can’t replace text here. Press <kbd>⌘C</kbd> to copy the fix.</p>
+        <p class="tips">SuperEditr can’t replace text here. Press <kbd>{words().copyKey}</kbd> to copy the fix.</p>
       {/if}
       {#if showTips && keyboard && phase === "done" && list.length}
-        <p class="tips">Tip: {#if session.canApply}<kbd>⌥↩</kbd> replaces your text with{:else}<kbd>⌘C</kbd> copies{/if} everything you see · <kbd>tab</kbd> steps through changes · <kbd>␣</kbd> switches a change between yours and the suggestion · <kbd>esc</kbd> closes</p>
+        <p class="tips">Tip: {#if session.canApply}<kbd>{words().applyKey}</kbd> replaces your text with{:else}<kbd>{words().copyKey}</kbd> copies{/if} everything you see · <kbd>tab</kbd> steps through changes · <kbd>␣</kbd> switches a change between yours and the suggestion · <kbd>esc</kbd> closes</p>
       {/if}
       <footer>
         <div class="status" title={[summarize(view), sourceLabel(source, view), timing].filter(Boolean).join(" · ")}>
@@ -401,7 +421,7 @@
             <span><kbd>/</kbd> instruct</span>
           {/if}
           {#if !unchanged}
-            {#if session.canApply}<span><kbd>⌥↩</kbd> replace</span>{:else}<span><kbd>⌘C</kbd> copy</span>{/if}
+            {#if session.canApply}<span><kbd>{words().applyKey}</kbd> replace</span>{:else}<span><kbd>{words().copyKey}</kbd> copy</span>{/if}
           {/if}
           {#if keyboard}
             <span><kbd>esc</kbd></span>

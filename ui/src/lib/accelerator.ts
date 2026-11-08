@@ -1,4 +1,5 @@
 import { keySymbols } from "./diff";
+import { isMac } from "./platform";
 
 /** Converts a keydown into an accelerator string ("Control+Alt+E"), or null if incomplete. */
 export function acceleratorFromEvent(e: KeyboardEvent): string | null {
@@ -20,10 +21,12 @@ export function acceleratorFromEvent(e: KeyboardEvent): string | null {
 }
 
 /** Keycaps for an accelerator: each modifier and the key on its own cap; a double press
- * ("Command+E Command+E") repeats the key: ⌘ E E. */
-export function keycaps(accelerator: string): string[] {
+ * ("Command+E Command+E") repeats the key: ⌘ E E. Off macOS, the caps are names: Super Alt E. */
+export function keycaps(accelerator: string, mac = isMac()): string[] {
   const [first, second] = accelerator.trim().split(/\s+/);
   if (!first) return [];
-  const parts = keySymbols(first).match(/[⌃⌥⇧⌘]|[^⌃⌥⇧⌘]+/g) ?? [];
+  const parts = mac
+    ? (keySymbols(first, mac).match(/[⌃⌥⇧⌘]|[^⌃⌥⇧⌘]+/g) ?? [])
+    : keySymbols(first, mac).split("+").filter(Boolean);
   return second ? [...parts, parts.at(-1) ?? ""] : parts;
 }

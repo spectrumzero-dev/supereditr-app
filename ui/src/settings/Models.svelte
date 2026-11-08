@@ -6,6 +6,7 @@
   import { watchBuiltinAi } from "./builtin";
   import { api } from "./ipc";
   import { earlyAccess, profileFor as pickProfile, setupAction } from "./profiles";
+  import { words } from "../lib/platform";
 
   interface Props {
     config: Config;
@@ -28,7 +29,7 @@
     { kind: "anthropic", name: "Claude API", keyUrl: "https://console.anthropic.com/settings/keys", blurb: "Claude Haiku is fast and inexpensive. Needs an API key." },
     { kind: "claude_cli", name: "Claude subscription", blurb: "Uses your signed-in Claude Code. Slower to start." },
     { kind: "gemini", name: "Gemini API", keyUrl: "https://aistudio.google.com/apikey", blurb: "Google AI Studio keys include a free tier." },
-    { kind: "ollama", name: "Ollama", blurb: "Private and free, runs on this Mac." },
+    { kind: "ollama", name: "Ollama", blurb: `Private and free, runs on ${words().device}.` },
     { kind: "open_ai", name: "OpenAI API", keyUrl: "https://platform.openai.com/api-keys", blurb: "GPT models. Needs an API key." },
     { kind: "open_ai_compatible", name: "Other server", blurb: "LM Studio, OpenRouter, Groq, or any OpenAI-compatible endpoint." },
   ];
@@ -258,16 +259,24 @@
     </div>
   {/if}
   <h1>Models</h1>
-  <p class="lede">
-    SuperEditr uses one AI at a time. Apple Intelligence runs on this Mac and suits most people; a cloud AI gives stronger
-    rewrites. If the one you choose can’t be reached, Apple Intelligence takes over. Your text goes only to the AI you choose,
-    and keys stay in your Keychain.
-  </p>
+  {#if builtin?.supported}
+    <p class="lede">
+      SuperEditr uses one AI at a time. Apple Intelligence runs on this Mac and suits most people; a cloud AI gives stronger
+      rewrites. If the one you choose can’t be reached, Apple Intelligence takes over. Your text goes only to the AI you choose,
+      and keys stay in your Keychain.
+    </p>
+  {:else}
+    <p class="lede">
+      SuperEditr uses one AI at a time. Ollama runs on {words().device} and keeps your text there; a cloud AI gives stronger
+      rewrites. Without one, or when it can’t be reached, a built-in checker fixes English spelling and grammar. Your text goes
+      only to the AI you choose, and keys stay in {words().keyStore}.
+    </p>
+  {/if}
 
   <div class="group scan" class:highlight>
     <div class="row">
       <div>
-        <div class="label">Find AI accounts on this Mac</div>
+        <div class="label">Find AI accounts on {words().device}</div>
         <span class="hint">
           {#if scanning}Looking…
           {:else if scanError}<span class="warn-text">{scanError}</span>
@@ -323,7 +332,7 @@
       {#each found(k.kind) as fc (fc.index)}
         <div class="found">
           <span>
-            <span class="label">Found on this Mac {#if fc.keyHint}<span class="pill">{fc.keyHint}</span>{/if}</span>
+            <span class="label">Found on {words().device} {#if fc.keyHint}<span class="pill">{fc.keyHint}</span>{/if}</span>
             <span class="hint">{fc.source}{#if fc.models.length} · {fc.models.length} model{fc.models.length === 1 ? "" : "s"}{/if}</span>
             {#if fc.note}<span class="hint note">{fc.note}</span>{/if}
             {#if adoptErrors[fc.index]}<span class="alert">⚠︎ {adoptErrors[fc.index]}</span>{/if}
@@ -336,7 +345,7 @@
       {#if shown === k.kind && p}
         <div class="setup">
           {#if c && c !== "checking" && !c.ready}
-            <p class="problem">⚠︎ {c.problem}{!isActive(p.id) ? `. Reviews keep using ${activeChoice === "builtin" ? "Apple Intelligence" : (kinds.find((x) => x.kind === activeChoice)?.name ?? "the current AI")}.` : ""}</p>
+            <p class="problem">⚠︎ {c.problem}{!isActive(p.id) ? `. Reviews keep using ${activeChoice === "builtin" ? (builtin?.available ? "Apple Intelligence" : "the built-in checker") : (kinds.find((x) => x.kind === activeChoice)?.name ?? "the current AI")}.` : ""}</p>
           {/if}
           {#if profilesOf(k.kind).length > 1}
             <div class="row">

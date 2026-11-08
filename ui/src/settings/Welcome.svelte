@@ -4,8 +4,10 @@
   import { watchBuiltinAi } from "./builtin";
   import Playground from "./Playground.svelte";
   import Keycaps from "./Keycaps.svelte";
+  import LinuxSetup from "./LinuxSetup.svelte";
   import { keySymbols } from "../lib/diff";
   import { api } from "./ipc";
+  import { isMac } from "../lib/platform";
 
   interface Props {
     config: Config;
@@ -130,6 +132,8 @@
       </div>
       {#if trusted}
         <div class="inset tight"><Keycaps review={config.hotkeys.review} auto={config.auto_popup} /></div>
+        <!-- Automatic suggestions need a system-wide view of selections, which only macOS gives. -->
+        {#if isMac()}
         <fieldset class="inset when">
           <legend>Show suggestions</legend>
           <label>
@@ -142,11 +146,25 @@
           </label>
           <p class="hint">Change this anytime in Settings → General.</p>
         </fieldset>
+        {/if}
       {:else}
         <p class="detail">System Settings opens at Accessibility: turn on SuperEditr’s switch (a card at the bottom helps if it isn’t listed). This page updates when it’s done.</p>
       {/if}
     </li>
     {#if !trusted}<li class="try-slot">{@render tryCard()}</li>{/if}
+
+    {#if !isMac()}
+      <li>
+        <div class="step-head">
+          <span class="badge">⚙</span>
+          <div>
+            <div class="title">Set up this computer</div>
+            <div class="hint">SuperEditr reads other apps’ text through accessibility, which some apps turn on only when asked.</div>
+          </div>
+        </div>
+        <div class="inset"><LinuxSetup embedded /></div>
+      </li>
+    {/if}
 
     <li class="optional">
       <div class="step-head">

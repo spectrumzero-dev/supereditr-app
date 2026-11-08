@@ -910,6 +910,11 @@ fn log_dir() -> Option<std::path::PathBuf> {
     Some(std::path::Path::new(&std::env::var_os("HOME")?).join("Library/Logs/SuperEditr"))
 }
 
+/// Where capture.log is written, for Settings to show.
+pub fn log_path() -> Option<std::path::PathBuf> {
+    Some(log_dir()?.join("capture.log"))
+}
+
 /// Turns capture.log on or off (Settings → General → Keep a diagnostic log). Turning it off
 /// deletes the log, so nothing is left behind once a problem has been diagnosed.
 pub fn set_trace(on: bool) {
@@ -1320,7 +1325,6 @@ pub fn replace(capture: &Capture, text: &str, proofread: bool) -> Result<Replace
                         "{}: Accessibility write changed the field but didn't verify",
                         capture.bundle_id
                     ));
-                    copy_to_clipboard(text);
                     return Err(PlatformError::Unverified);
                 }
             }

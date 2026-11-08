@@ -13,13 +13,18 @@ mod review_keys;
 mod secrets;
 mod shortcut_check;
 mod state;
+#[cfg(target_os = "linux")]
+mod tray_linux;
 mod updater;
 
 use state::AppState;
+#[cfg(not(target_os = "linux"))]
 use std::sync::atomic::Ordering;
 use supereditr_core::install::Install;
 use supereditr_core::provider::{ProviderKind, ProviderProfile};
+#[cfg(not(target_os = "linux"))]
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+#[cfg(not(target_os = "linux"))]
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
@@ -76,6 +81,7 @@ pub fn show_settings(app: &AppHandle, section: Option<String>) {
 }
 
 /// The menu-bar menu's first line: which AI reviews, or what's wrong with it.
+#[cfg(not(target_os = "linux"))]
 struct AiStatusItem(MenuItem<tauri::Wry>);
 
 /// Checks the AI in use and shows the result in the menu-bar menu.
@@ -97,12 +103,32 @@ pub fn show_ai_status(app: &AppHandle) {
                 None => "AI: none (rule-based spelling and grammar)".into(),
             },
         };
+        #[cfg(target_os = "linux")]
+        tray_linux::refresh(&app, Some(label));
+        #[cfg(not(target_os = "linux"))]
         if let Some(item) = app.try_state::<AiStatusItem>() {
             let _ = item.0.set_text(label);
         }
     });
 }
 
+/// The menu-bar glyph is black, and macOS tints it as a template. Linux trays draw it as it is, and
+/// Omarchy's bar is dark, so Linux gets a light one.
+#[cfg(not(target_os = "linux"))]
+const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
+#[cfg(target_os = "linux")]
+const TRAY_ICON: &[u8] = include_bytes!("../icons/tray-light.png");
+
+/// On Linux the tray is `tray_linux`'s, which answers a left click; its menu has no key equivalents
+/// and no "Pause", since automatic suggestions are macOS-only for now.
+#[cfg(target_os = "linux")]
+fn build_tray(app: &AppHandle) -> tauri::Result<()> {
+    app_toggle::init_without_menu(app);
+    tray_linux::start(app, TRAY_ICON);
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let status = MenuItem::with_id(app, "ai-status", "AI: checking…", false, None::<&str>)?;
     app.manage(AiStatusItem(status.clone()));
@@ -131,7 +157,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         menu.insert(&updater::menu_item(app)?, 7)?;
     }
     app_toggle::init(app, &menu, app_toggle)?;
-    let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
+    let icon = tauri::image::Image::from_bytes(TRAY_ICON)?;
     let pause_item = pause.clone();
     TrayIconBuilder::with_id("main")
         .icon(icon)
@@ -158,9 +184,38 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 /// Whether a Launch Agent pointing at this executable keeps working after a restart: it's inside an
 /// app bundle, and not on a mounted disk image or in the temporary copy macOS runs a downloaded app
 /// from until it's moved (App Translocation).
+#[cfg(target_os = "macos")]
 fn lasting_app_path(exe: &str) -> bool {
     exe.contains(".app/Contents/MacOS/") && !exe.starts_with("/Volumes/") && !exe.contains("/AppTranslocation/")
 }
+
+/// Whether an autostart entry pointing at this executable keeps working after a restart: it's
+/// installed, not in a temporary folder (where an AppImage is mounted while it runs) or a build
+/// folder. The entry's `Exec=` line holds the path unquoted, and systemd skips an entry it can't
+/// parse without saying so, so a path with characters that need quoting doesn't count either.
+#[cfg(not(target_os = "macos"))]
+fn lasting_app_path(exe: &str) -> bool {
+    let plain = exe.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+".contains(c));
+    let temporary = ["/tmp/", "/var/tmp/", "/run/", "/dev/shm/"].iter().any(|dir| exe.starts_with(dir));
+    let build = exe.contains("/target/debug/") || exe.contains("/target/release/");
+    exe.starts_with('/') && plain && !temporary && !build
+}
+
+/// The file that opens SuperEditr at login, as the autostart plugin writes it.
+fn login_item(app: &AppHandle) -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    return app.path().home_dir().ok().map(|home| home.join("Library/LaunchAgents/SuperEditr.plist"));
+    #[cfg(not(target_os = "macos"))]
+    return app.path().config_dir().ok().map(|config| config.join(format!("autostart/{AUTOSTART_NAME}.desktop")));
+}
+
+/// The autostart entry's name on Linux: `~/.config/autostart/supereditr.desktop`.
+#[cfg(not(target_os = "macos"))]
+const AUTOSTART_NAME: &str = "supereditr";
+
+/// The app's identifier, which names its settings folder.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const IDENTIFIER: &str = "app.supereditr";
 
 /// The app's identifier before 0.1.2. It named the settings folder and the Keychain service.
 const OLD_IDENTIFIER: &str = "com.sghael.supereditr";
@@ -209,10 +264,11 @@ fn settings_file(config_dir: &std::path::Path) -> (std::path::PathBuf, bool) {
 
 /// Opening at login is on by default: turned on once, before Settings first reads the config, and
 /// then left to the user. Only a copy of the app that stays where it is gets added, and while it's
-/// on, each launch points the Launch Agent at the current copy, so moving the app doesn't break it.
+/// on, each launch points the login item (a Launch Agent on macOS, an XDG autostart entry on Linux)
+/// at the current copy, so moving the app doesn't break it.
 fn launch_at_login_by_default(app: &AppHandle) {
     use tauri_plugin_autostart::ManagerExt;
-    // The path the autostart plugin writes into the Launch Agent.
+    // The path the autostart plugin writes into the login item.
     let Some(exe) =
         std::env::current_exe().and_then(|exe| exe.canonicalize()).ok().map(|exe| exe.display().to_string())
     else {
@@ -226,8 +282,8 @@ fn launch_at_login_by_default(app: &AppHandle) {
     let mut config = state.config();
     if config.offered_launch_at_login {
         // Rewritten only when the app has moved: macOS announces every change to a login item.
-        let agent = app.path().home_dir().map(|home| home.join("Library/LaunchAgents/SuperEditr.plist"));
-        let moved = agent.is_ok_and(|agent| std::fs::read_to_string(agent).is_ok_and(|plist| !plist.contains(&exe)));
+        let moved =
+            login_item(app).is_some_and(|item| std::fs::read_to_string(item).is_ok_and(|text| !text.contains(&exe)));
         if moved && let Err(e) = launcher.enable() {
             eprintln!("SuperEditr: couldn't update opening at login: {e}");
         }
@@ -237,24 +293,82 @@ fn launch_at_login_by_default(app: &AppHandle) {
         eprintln!("SuperEditr: couldn't turn on opening at login: {e}");
         return;
     }
+    #[cfg(target_os = "linux")]
+    platform::setup::reload_autostart();
     config.offered_launch_at_login = true;
     if let Err(e) = state.save_config(config) {
         eprintln!("SuperEditr: couldn't save settings: {e}");
     }
 }
 
+/// Whether the desktop setup is done, so Settings needn't open at launch (Linux's setup page).
+#[cfg(target_os = "linux")]
+fn desktop_set_up() -> bool {
+    platform::setup::config_home().is_some_and(|config| platform::setup::complete(&config))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn desktop_set_up() -> bool {
+    false
+}
+
+/// SuperEditr was started again while running. `supereditr review` and `supereditr quick-fix` act as
+/// the shortcuts do, for a desktop's own key binding to run; anything else shows Settings.
+/// Runs the app's commands, marking each as running on the main thread while it does: the watchdog
+/// names it when the main thread stops answering.
+fn named_commands(
+    handler: impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static,
+) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
+    move |invoke| {
+        #[cfg(target_os = "linux")]
+        let _running = platform::watchdog::running_command(invoke.message.command());
+        handler(invoke)
+    }
+}
+
+fn on_second_launch(app: &AppHandle, args: &[String]) {
+    match args.get(1).map(String::as_str) {
+        Some("review") => review::on_review_hotkey(app),
+        Some("quick-fix") => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move { review::quick_fix(&app).await });
+        }
+        _ => show_settings(app, None),
+    }
+}
+
+fn autostart() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    let builder = tauri_plugin_autostart::Builder::new();
+    #[cfg(target_os = "macos")]
+    let builder = builder.macos_launcher(tauri_plugin_autostart::MacosLauncher::LaunchAgent);
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.app_name(AUTOSTART_NAME);
+    builder.build()
+}
+
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if args.get(1).map(String::as_str) == Some("uninstall-omarchy") {
+            std::process::exit(platform::setup::uninstall_command(&args[2..]));
+        }
+    }
     let mut builder = tauri::Builder::default();
     if updater::available() {
         builder = builder.plugin(updater::plugin());
     }
+    // On Linux the compositor owns global keys (see `hotkeys`).
+    #[cfg(not(target_os = "linux"))]
+    {
+        builder = builder.plugin(hotkeys::plugin());
+    }
     let mut context = tauri::generate_context!();
     updater::use_test_feed(&mut context);
     builder
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_settings(app, None)))
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| on_second_launch(app, &args)))
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
-        .plugin(hotkeys::plugin())
+        .plugin(autostart())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             {
@@ -287,6 +401,18 @@ pub fn run() {
             show_ai_status(&handle);
             if updater::ENABLED {
                 updater::start(&handle);
+            }
+            #[cfg(target_os = "linux")]
+            {
+                // Before the shortcuts are registered: they go through the desktop this finds.
+                let shortcut_app = handle.clone();
+                platform::start(move |action| hotkeys::on_linux_shortcut(&shortcut_app, action));
+                platform::watchdog::start(&handle);
+                let switch_app = handle.clone();
+                platform::start_app_switch_watcher(move |pid| {
+                    review::on_app_switch(&switch_app, pid);
+                    app_toggle::on_app_switch(&switch_app, pid);
+                });
             }
             let problems = hotkeys::register_from_config(&handle);
             hotkeys::start_double_presses(&handle);
@@ -333,6 +459,11 @@ pub fn run() {
             }
 
             if let Some(settings) = handle.get_webview_window("settings") {
+                // A tiling desktop (Omarchy's Hyprland) sizes Settings itself, often to half the
+                // screen. Below the window's minimum width, GTK would draw the page wider than the
+                // window and cut off its right side.
+                #[cfg(target_os = "linux")]
+                let _ = settings.set_min_size(Some(tauri::LogicalSize::new(420.0, 400.0)));
                 let window = settings.clone();
                 let app = handle.clone();
                 settings.on_window_event(move |event| {
@@ -343,13 +474,16 @@ pub fn run() {
                     }
                 });
             }
-            let first_run = !handle.state::<AppState>().config().onboarded;
-            if first_run || !platform::accessibility_trusted(false) {
+            // Settings opens by itself on the first run, until Get Started is done or, on Linux,
+            // the desktop is set up (SuperEditr then opens at login, so Settings would open at every
+            // login); and on macOS while Accessibility isn't granted, since nothing works without it.
+            let first_run = !handle.state::<AppState>().config().onboarded && !desktop_set_up();
+            if first_run || (cfg!(target_os = "macos") && !platform::accessibility_trusted(false)) {
                 show_settings(&handle, Some(if first_run { "welcome".into() } else { "privacy".into() }));
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(named_commands(tauri::generate_handler![
             commands::run_preset,
             commands::apply_text,
             commands::dismiss,
@@ -392,7 +526,10 @@ pub fn run() {
             commands::update_status,
             commands::update_now,
             commands::close_update_window,
-        ])
+            commands::linux_setup,
+            commands::set_up_omarchy,
+            commands::remove_omarchy_setup,
+        ]))
         .run(context)
         .expect("SuperEditr failed to start");
 }
@@ -475,6 +612,7 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn only_a_copy_that_stays_put_opens_at_login() {
         assert!(lasting_app_path("/Applications/SuperEditr.app/Contents/MacOS/supereditr"));
@@ -484,5 +622,18 @@ mod tests {
             "/private/var/folders/xy/T/AppTranslocation/0A1B2C/d/SuperEditr.app/Contents/MacOS/supereditr"
         ));
         assert!(!lasting_app_path("/Users/me/supereditr/target/debug/supereditr"));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn only_an_installed_copy_opens_at_login() {
+        assert!(lasting_app_path("/usr/bin/supereditr"));
+        assert!(lasting_app_path("/opt/supereditr/supereditr"));
+        assert!(lasting_app_path("/home/rhyan/.local/bin/supereditr"));
+        assert!(!lasting_app_path("/tmp/.mount_SuperEaBc12/usr/bin/supereditr"), "an AppImage's mount");
+        assert!(!lasting_app_path("/home/rhyan/supereditr/target/release/supereditr"));
+        assert!(!lasting_app_path("/home/rhyan/supereditr/target/debug/supereditr"));
+        assert!(!lasting_app_path("/home/rhyan/My Apps/supereditr"), "a space needs quoting in Exec=");
+        assert!(!lasting_app_path("supereditr"));
     }
 }

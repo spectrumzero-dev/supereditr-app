@@ -19,14 +19,40 @@ serde_json.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 tauri = { version = "2.12", features = ["macos-private-api", "tray-icon", "image-png"] }
-tauri-plugin-global-shortcut = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-opener = "2"
 plist = "1"
-keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
+# On Linux, the Secret Service (GNOME Keyring, KWallet), which keeps keys across logins.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 tauri-plugin-updater = "2.14"
 semver = "1"
+
+# Global shortcuts. On Linux the compositor owns the keys instead (see `platform/linux/desktop`).
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+tauri-plugin-global-shortcut = "2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+async-trait = "0.1"
+# Reads the selection in other apps over the accessibility bus.
+atspi = { version = "0.30", default-features = false, features = ["proxies", "wrappers", "tokio"] }
+# Not through atspi's "connection" feature, which turns on p2p. That starts a task that calls every
+# program joining the bus and waits with no limit; while it waits it stops reading the bus's name
+# changes, and once 64 are queued the whole connection stops reading, so every call times out.
+atspi-connection = { version = "0.14", default-features = false, features = ["wrappers"] }
+zbus = { version = "5", features = ["tokio"] }
+# The GlobalShortcuts portal, for the review and quick-fix keys.
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts"] }
+# The clipboard through data-control, without focus: read, snapshot every type and restore.
+wl-clipboard-rs = "0.9"
+# Hears when the clipboard changes, without reading it.
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+futures-util = "0.3"
+# Sentence boundaries, for selecting the sentence before the caret.
+unicode-segmentation = "1"
+# The tray icon, served as a StatusNotifierItem: libayatana-appindicator ignores a left click.
+ksni = { version = "0.3", default-features = false, features = ["tokio"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-nspanel = "2.1.1"

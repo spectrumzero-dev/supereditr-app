@@ -67,6 +67,8 @@ pub fn init(app: &AppHandle) {
             panel.set_opaque(false);
         }
     }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
 }
 
 fn set_visible(app: &AppHandle, visible: bool) {

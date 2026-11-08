@@ -1,4 +1,5 @@
 import type { DiffView, Segment } from "./types";
+import { isMac } from "./platform";
 
 type Change = Extract<Segment, { type: "change" }>;
 
@@ -43,9 +44,10 @@ export function summarize(view: DiffView | null): string {
   return [...counts.entries()].map(([kind, n]) => `${n} ${kindLabel[kind]?.toLowerCase() ?? kind}`).join(", ");
 }
 
-/** Formats an accelerator like "Control+Alt+E" as macOS key symbols. A chord pressed twice
- * ("Command+E Command+E") reads as holding the modifiers and pressing the key twice: "⌘E E". */
-export function keySymbols(accelerator: string, mac = true): string {
+/** Formats an accelerator like "Control+Alt+E" as macOS key symbols ("⌃⌥E"), or elsewhere as key
+ * names ("Ctrl+Alt+E"). A chord pressed twice ("Command+E Command+E") reads as holding the
+ * modifiers and pressing the key twice: "⌘E E". */
+export function keySymbols(accelerator: string, mac = isMac()): string {
   if (!accelerator) return "";
   const [first, second] = accelerator.trim().split(/\s+/);
   if (second && second.toLowerCase() === first.toLowerCase()) {
@@ -54,7 +56,7 @@ export function keySymbols(accelerator: string, mac = true): string {
   }
   const map: Record<string, string> = mac
     ? { control: "⌃", ctrl: "⌃", alt: "⌥", option: "⌥", shift: "⇧", command: "⌘", cmd: "⌘", cmdorctrl: "⌘", super: "⌘", enter: "↩", escape: "⎋", space: "Space", tab: "⇥" }
-    : { control: "Ctrl+", ctrl: "Ctrl+", alt: "Alt+", shift: "Shift+", command: "Win+", super: "Win+", cmdorctrl: "Ctrl+" };
+    : { control: "Ctrl+", ctrl: "Ctrl+", alt: "Alt+", shift: "Shift+", command: "Super+", super: "Super+", cmdorctrl: "Ctrl+", enter: "Enter", escape: "Esc", space: "Space", tab: "Tab" };
   return accelerator
     .split("+")
     .map((part) => map[part.toLowerCase()] ?? part.toUpperCase())

@@ -176,7 +176,8 @@ pub fn show_error(app: &AppHandle, message: String) {
 }
 
 /// Says what became of a replacement that didn't apply: a copy-only one puts the suggestion on the
-/// clipboard; an uncertain one leaves the clipboard alone and offers the suggestion to copy.
+/// clipboard; an uncertain one, or one that couldn't put the clipboard aside, leaves the clipboard
+/// alone and offers the suggestion to copy.
 fn show_outcome(app: &AppHandle, outcome: ReplaceOutcome, suggestion: String) -> Option<String> {
     if copies_suggestion(&outcome) {
         platform::copy_to_clipboard(&suggestion);
@@ -187,7 +188,7 @@ fn show_outcome(app: &AppHandle, outcome: ReplaceOutcome, suggestion: String) ->
             show_error(app, error.to_string());
             Some(error.to_string())
         }
-        ReplaceOutcome::Uncertain(error) => {
+        ReplaceOutcome::Uncertain(error) | ReplaceOutcome::ClipboardKept(error) => {
             show_notice(app, error.to_string(), Some(suggestion));
             Some(error.to_string())
         }
@@ -760,6 +761,8 @@ mod tests {
         assert!(copies_suggestion(&ReplaceOutcome::CopyOnly(PlatformError::CopyOnly)));
         assert!(copies_suggestion(&ReplaceOutcome::CopyOnly(PlatformError::Stale)));
         assert!(!copies_suggestion(&ReplaceOutcome::Uncertain(PlatformError::Unverified)), "a paste may have landed");
+        let kept = ReplaceOutcome::ClipboardKept(PlatformError::ClipboardNotKept("image/png".into()));
+        assert!(!copies_suggestion(&kept), "the user's clipboard couldn't be put aside");
         assert!(!copies_suggestion(&ReplaceOutcome::Applied));
     }
 

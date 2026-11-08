@@ -323,6 +323,7 @@ pub fn replace(capture: &Capture, text: &str, _proofread: bool) -> Result<Replac
         ReplaceOutcome::Applied => Ok(ReplaceMethod::Paste),
         ReplaceOutcome::CopyOnly(error) => Err(error),
         ReplaceOutcome::Uncertain(_) => Err(PlatformError::Unverified),
+        ReplaceOutcome::ClipboardKept(error) => Err(error),
     }
 }
 

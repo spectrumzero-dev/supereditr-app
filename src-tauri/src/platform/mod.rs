@@ -72,6 +72,10 @@ pub enum PlatformError {
         "SuperEditr applied {applied} of {total} fixes, then stopped because the text no longer matched. Check the text before copying the full suggestion."
     )]
     Partial { applied: usize, total: usize },
+    /// The clipboard couldn't be put aside to paste through, so nothing was written.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[error("{0}")]
+    ClipboardNotKept(String),
     #[error("{0}")]
     Other(String),
 }
@@ -133,6 +137,9 @@ pub enum ReplaceOutcome {
     /// A write may have landed but couldn't be confirmed. The suggestion stays on screen to copy;
     /// the clipboard is left alone and nothing is tried again, so the text is never written twice.
     Uncertain(PlatformError),
+    /// Nothing was written, because the user's clipboard couldn't be put aside and restored. The
+    /// suggestion stays on screen to copy; the clipboard is left alone.
+    ClipboardKept(PlatformError),
 }
 
 impl From<Result<ReplaceMethod, PlatformError>> for ReplaceOutcome {
@@ -140,6 +147,7 @@ impl From<Result<ReplaceMethod, PlatformError>> for ReplaceOutcome {
         match result {
             Ok(_) => Self::Applied,
             Err(error @ (PlatformError::Unverified | PlatformError::Partial { .. })) => Self::Uncertain(error),
+            Err(error @ PlatformError::ClipboardNotKept(_)) => Self::ClipboardKept(error),
             Err(error) => Self::CopyOnly(error),
         }
     }
@@ -156,6 +164,12 @@ mod tests {
             ReplaceOutcome::from(Err(PlatformError::Partial { applied: 2, total: 3 })),
             ReplaceOutcome::Uncertain(_)
         ));
+    }
+
+    #[test]
+    fn a_clipboard_that_couldnt_be_put_aside_is_kept() {
+        let error = PlatformError::ClipboardNotKept("image/png".into());
+        assert!(matches!(ReplaceOutcome::from(Err(error)), ReplaceOutcome::ClipboardKept(_)));
     }
 
     #[test]

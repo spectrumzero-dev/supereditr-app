@@ -12,7 +12,7 @@
 //! Corrections are never written through AT-SPI's editable-text calls, which break undo.
 
 use super::capture::Services;
-use super::clipboard::{Limits, Restore, Transaction};
+use super::clipboard::{ClipboardError, Limits, Restore, Transaction};
 use super::desktop::{Desktop, Shortcut, WindowRef};
 use super::{Capture, Source, trace};
 use crate::platform::{PlatformError, ReplaceOutcome};
@@ -34,6 +34,7 @@ pub async fn replace(services: &Services<'_>, capture: &Capture, text: &str) -> 
         ReplaceOutcome::Applied => "applied".to_string(),
         ReplaceOutcome::CopyOnly(why) => format!("copy-only ({why})"),
         ReplaceOutcome::Uncertain(why) => format!("uncertain ({why})"),
+        ReplaceOutcome::ClipboardKept(why) => format!("clipboard kept ({why})"),
     };
     trace(format_args!("replace {}: {said} in {:?}", capture.bundle_id, started.elapsed()));
     outcome
@@ -64,10 +65,12 @@ async fn attempt(services: &Services<'_>, capture: &Capture, text: &str) -> Repl
     let limits = Limits::default();
     let transaction = match Transaction::begin(services.clipboard, &limits) {
         Ok(transaction) => transaction,
-        Err(error) => {
-            trace(format_args!("replace {}: {error}", capture.bundle_id));
-            return copy_only();
+        Err(error @ ClipboardError::CantKeep(_)) => {
+            return ReplaceOutcome::ClipboardKept(PlatformError::ClipboardNotKept(format!(
+                "{error}. Copy the suggestion from here."
+            )));
         }
+        Err(_) => return copy_only(),
     };
     if transaction.put_text(text).is_err() {
         transaction.restore();
@@ -172,6 +175,20 @@ mod tests {
         assert!(matches!(world.replace(&capture, "They’re going"), ReplaceOutcome::CopyOnly(PlatformError::CopyOnly)));
         assert!(world.keys_sent().is_empty());
         assert_eq!(world.clipboard_offers(), 0);
+    }
+
+    #[test]
+    fn a_clipboard_too_big_to_put_aside_is_kept_and_nothing_is_pasted() {
+        use super::super::clipboard::DataControl;
+        let world = World::new("org.gnome.TextEditor").with_field(field("Their going")).pasting();
+        let capture = captured(&world);
+        let image = vec![7u8; (16 << 20) + 1];
+        world.clipboard.offer(vec![("image/png".into(), image.clone())]).unwrap();
+        world.clear_keys();
+        let outcome = world.replace(&capture, "They’re going");
+        assert!(matches!(outcome, ReplaceOutcome::ClipboardKept(PlatformError::ClipboardNotKept(_))), "{outcome:?}");
+        assert!(world.keys_sent().is_empty());
+        assert_eq!(world.clipboard.get("image/png").unwrap(), image);
     }
 
     #[test]

@@ -183,8 +183,20 @@ impl HyprlandShortcuts {
             add.push(lua::bind(&binding.shortcut, action, binding.action.description()));
             bound.push(binding.clone());
         }
-        // Only keys SuperEditr bound or is binding: a taken key's unbind would remove the other bind.
-        let remove = unbinds(&state.bound, &bound);
+        // Hyprland unbinds a key whole, so a key something else uses is never unbound, even one
+        // SuperEditr bound before that: unbinding it would remove the other bind too.
+        let mut before = Vec::new();
+        for binding in &state.bound {
+            match self.taken_by(binding) {
+                None => before.push(binding.clone()),
+                Some(what) if !wanted.iter().any(|w| w.shortcut == binding.shortcut) => problems.push(format!(
+                    "{} is also used for “{what}” now, so SuperEditr left the key as it is",
+                    binding.shortcut.label()
+                )),
+                Some(_) => {}
+            }
+        }
+        let remove = unbinds(&before, &bound);
         problems.extend(self.hyprland.set_binds(&remove, add));
         state.bound = bound;
         problems
@@ -277,6 +289,23 @@ mod tests {
         );
         // After a restart nothing is bound yet, but a killed SuperEditr's binds may still be there.
         assert_eq!(unbinds(&[], &before).len(), 2);
+    }
+
+    #[test]
+    fn a_key_given_to_something_else_after_supereditr_bound_it_is_left_alone() {
+        let (desktop, commands) = super::super::hyprland::tests::fake_hyprland(answer_with_binds);
+        let shortcuts = HyprlandShortcuts::new(Arc::new(desktop));
+        {
+            let mut state = shortcuts.state.lock().unwrap();
+            state.route = Route::Exec;
+            // SuperEditr bound Super+Alt+E; since then the user gave that key to the emoji picker.
+            state.bound = vec![binding(Action::Review, "Super+Alt+E")];
+        }
+        let problems = shortcuts.install(&[binding(Action::Review, "Super+Alt+R")]);
+        assert_eq!(problems, ["Super+Alt+E is also used for “Emoji picker” now, so SuperEditr left the key as it is"]);
+        let commands = commands.lock().unwrap();
+        assert!(!commands.iter().any(|c| c == r#"eval hl.unbind("SUPER + ALT + E")"#), "{commands:?}");
+        assert!(commands.iter().any(|c| c == r#"eval hl.unbind("SUPER + ALT + R")"#), "{commands:?}");
     }
 
     /// Hyprland's binds: Super+Alt+E is the user's own, Super+Control+Alt+E is a SuperEditr bind

@@ -1,0 +1,20 @@
+# Labels pull requests by the platforms they change, for the grouped release notes.
+# pull_request_target lets it label pull requests from forks; it reads only the changed file names and never checks out their code.
+
+name: Label
+
+on:
+  pull_request_target:
+
+permissions: {}
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13 # v7.0.0
+        with:
+          sync-labels: true

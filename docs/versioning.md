@@ -26,9 +26,9 @@ The platform ships when the diff touches a file in its row or the shared row. `-
 | Release bookkeeping | a change to the version alone, in the files above, and the version and SHA-256 lines of `packaging/arch/PKGBUILD` |
 | Shared | everything else |
 
-Shared ships every platform. It covers code with platform branches, such as `lib.rs` and `crates/core/src/config.rs`, because a change there can alter any platform's build, and every file outside the other rows: a file nobody has classified counts as shared. Bookkeeping counts only when it is the whole change; a dependency change in `Cargo.toml` or a lock file is shared. When a new file belongs to one platform only, add it to that platform's row in the same pull request. A Windows row joins the table with the Windows port.
+Shared ships every platform. It covers code with platform branches, such as `lib.rs` and `crates/core/src/config.rs`, because a change there can alter any platform's build, and every file outside the other rows: a file nobody has classified counts as shared. Bookkeeping counts only when it is the whole change; a dependency change in `Cargo.toml` or a lock file is shared. When a new file belongs to one platform only, add it to that platform's row, and to that platform's label in `.github/labeler.yml`, in the same pull request. A Windows row joins the table, and the labeler, with the Windows port.
 
-The version pull request lists every platform with its baseline and whether it ships ("macOS: ships, baseline v0.1.5. Linux: skips, baseline v0.1.6"). The release notes start with the platforms the release ships.
+The version pull request lists every platform with its baseline and whether it ships ("macOS: ships, baseline v0.1.5. Linux: skips, baseline v0.1.6"). The release title names the platforms it ships ("SuperEditr 0.2.0 for macOS and Linux"), and its notes start with them ("**Platforms:** macOS, Linux"). GitHub groups the generated notes by the labels `.github/labeler.yml` gives each pull request from the table above; the version pull request carries the `release` label, which leaves it out of the notes.
 
 ## Updates on each platform
 

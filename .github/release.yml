@@ -1,0 +1,26 @@
+# Groups GitHub's generated release notes by the labels .github/labeler.yml adds.
+# A pull request goes in the first group whose label it has, so one that changes shared code is listed under All platforms.
+
+changelog:
+  exclude:
+    labels:
+      - release
+  categories:
+    - title: All platforms
+      labels:
+        - shared
+    - title: macOS
+      labels:
+        - macos
+    - title: Linux
+      labels:
+        - linux
+    - title: Windows
+      labels:
+        - windows
+    - title: Development
+      labels:
+        - development
+    - title: Other changes
+      labels:
+        - '*'

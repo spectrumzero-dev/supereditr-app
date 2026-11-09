@@ -7,6 +7,8 @@
 use supereditr_core::provider::ProviderKind;
 
 const SERVICE: &str = "app.supereditr";
+/// Where versions before 0.1.2 kept keys. Only ever deleted from, never read.
+const OLD_SERVICE: &str = crate::OLD_IDENTIFIER;
 
 #[cfg(target_os = "macos")]
 const STORE: &str = "keychain";
@@ -31,10 +33,18 @@ pub fn set(kind: ProviderKind, profile_id: &str, key: &str) -> Result<(), String
         .map_err(|e| format!("Couldn’t save the key to the {STORE}: {e}"))
 }
 
+/// Removes the key, and any copy an earlier version saved for this profile, which is never read
+/// but shouldn't outlive the provider.
 pub fn delete(kind: ProviderKind, profile_id: &str) {
-    if let Ok(entry) = keyring::Entry::new(SERVICE, &account(kind, profile_id)) {
-        let _ = entry.delete_credential();
+    for (service, account) in entries_to_delete(kind, profile_id) {
+        if let Ok(entry) = keyring::Entry::new(service, &account) {
+            let _ = entry.delete_credential();
+        }
     }
+}
+
+fn entries_to_delete(kind: ProviderKind, profile_id: &str) -> [(&'static str, String); 3] {
+    [(SERVICE, account(kind, profile_id)), (SERVICE, profile_id.to_string()), (OLD_SERVICE, profile_id.to_string())]
 }
 
 #[cfg(test)]
@@ -47,5 +57,17 @@ mod tests {
         assert_eq!(account(ProviderKind::OpenAiCompatible, "compatible-2"), "open_ai_compatible:compatible-2");
         // The same ID under another kind is another account, so it finds no key.
         assert_ne!(account(ProviderKind::Anthropic, "anthropic"), account(ProviderKind::OpenAiCompatible, "anthropic"));
+    }
+
+    #[test]
+    fn deleting_a_key_also_deletes_copies_from_earlier_versions() {
+        assert_eq!(
+            entries_to_delete(ProviderKind::Gemini, "gemini"),
+            [
+                (SERVICE, "gemini:gemini".to_string()),
+                (SERVICE, "gemini".to_string()),
+                (OLD_SERVICE, "gemini".to_string()),
+            ]
+        );
     }
 }

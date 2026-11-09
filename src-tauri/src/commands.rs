@@ -114,7 +114,7 @@ pub struct Saved {
 pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> SettingsPayload {
     let (config, revision) = state.config_at_revision();
     let started = std::time::Instant::now();
-    let keys = config.providers.iter().map(|p| (p.id.clone(), state.key_for(&p.id).is_some())).collect();
+    let keys = config.providers.iter().map(|p| (p.id.clone(), state.key_for(p.kind, &p.id).is_some())).collect();
     // A slow key read means macOS asked for the keychain password (a new build's first read).
     // Focus then returns to the previous app, so bring Settings back.
     // Settings loads hidden at launch, so only a visible window is brought back.
@@ -175,14 +175,16 @@ pub fn set_api_key(
     profile_id: String,
     key: Option<String>,
 ) -> CmdResult<()> {
+    let kind =
+        state.config().providers.iter().find(|p| p.id == profile_id).map(|p| p.kind).ok_or("Unknown provider.")?;
     match key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()) {
         Some(key) => {
-            secrets::set(&profile_id, &key)?;
-            state.set_cached_key(&profile_id, Some(key));
+            secrets::set(kind, &profile_id, &key)?;
+            state.set_cached_key(kind, &profile_id, Some(key));
         }
         None => {
-            secrets::delete(&profile_id);
-            state.set_cached_key(&profile_id, None);
+            secrets::delete(kind, &profile_id);
+            state.set_cached_key(kind, &profile_id, None);
         }
     }
     if state.config().active_provider.as_deref() == Some(profile_id.as_str()) {
@@ -209,7 +211,7 @@ fn matching_profile(state: &AppState, candidate: &Candidate) -> Option<ProviderP
     state.config().providers.into_iter().find(|p| {
         p.kind == candidate.kind
             && match &candidate.api_key {
-                Some(key) => state.key_for(&p.id).as_deref() == Some(key.as_str()),
+                Some(key) => state.key_for(p.kind, &p.id).as_deref() == Some(key.as_str()),
                 None => p.base_url == candidate.base_url,
             }
     })
@@ -258,8 +260,8 @@ pub async fn adopt_candidate(app: AppHandle, state: State<'_, AppState>, index: 
         profile.model = preferred_model(candidate.kind, &candidate.models);
     }
     if let Some(key) = &candidate.api_key {
-        secrets::set(&profile.id, key)?;
-        state.set_cached_key(&profile.id, Some(key.clone()));
+        secrets::set(profile.kind, &profile.id, key)?;
+        state.set_cached_key(profile.kind, &profile.id, Some(key.clone()));
     }
     let mut config = state.config();
     config.providers.push(ProviderProfile { api_key: None, ..profile.clone() });
@@ -374,13 +376,16 @@ pub fn add_provider(state: State<'_, AppState>, kind: ProviderKind) -> CmdResult
 #[tauri::command]
 pub fn remove_provider(app: AppHandle, state: State<'_, AppState>, profile_id: String) -> CmdResult<()> {
     let mut config = state.config();
+    let kind = config.providers.iter().find(|p| p.id == profile_id).map(|p| p.kind);
     config.providers.retain(|p| p.id != profile_id);
     // Removing the AI in use returns reviews to the built-in one.
     if config.active_provider.as_deref() == Some(profile_id.as_str()) {
         config.active_provider = None;
     }
-    secrets::delete(&profile_id);
-    state.set_cached_key(&profile_id, None);
+    if let Some(kind) = kind {
+        secrets::delete(kind, &profile_id);
+        state.set_cached_key(kind, &profile_id, None);
+    }
     state.save_config(config).map_err(|e| e.to_string())?;
     crate::show_ai_status(&app);
     Ok(())

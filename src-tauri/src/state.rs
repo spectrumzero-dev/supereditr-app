@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::Instant;
 use supereditr_core::detect::Candidate;
-use supereditr_core::provider::ProviderProfile;
+use supereditr_core::provider::{ProviderKind, ProviderProfile};
 use supereditr_core::{Config, Engine};
 
 pub struct AppState {
@@ -82,25 +82,26 @@ impl AppState {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    pub fn key_for(&self, profile_id: &str) -> Option<String> {
+    pub fn key_for(&self, kind: ProviderKind, profile_id: &str) -> Option<String> {
+        let account = crate::secrets::account(kind, profile_id);
         let mut keys = self.keys.lock().unwrap();
-        keys.entry(profile_id.to_string()).or_insert_with(|| crate::secrets::get(profile_id)).clone()
+        keys.entry(account.clone()).or_insert_with(|| crate::secrets::get(&account)).clone()
     }
 
-    pub fn set_cached_key(&self, profile_id: &str, key: Option<String>) {
-        self.keys.lock().unwrap().insert(profile_id.to_string(), key);
+    pub fn set_cached_key(&self, kind: ProviderKind, profile_id: &str, key: Option<String>) {
+        self.keys.lock().unwrap().insert(crate::secrets::account(kind, profile_id), key);
     }
 
     /// The active provider with its API key attached, ready for a request.
     pub fn active_profile(&self) -> Option<ProviderProfile> {
         let mut profile = self.config.read().unwrap().active_profile()?.clone();
-        profile.api_key = self.key_for(&profile.id);
+        profile.api_key = self.key_for(profile.kind, &profile.id);
         Some(profile)
     }
 
     pub fn profile(&self, id: &str) -> Option<ProviderProfile> {
         let mut profile = self.config.read().unwrap().providers.iter().find(|p| p.id == id)?.clone();
-        profile.api_key = self.key_for(&profile.id);
+        profile.api_key = self.key_for(profile.kind, &profile.id);
         Some(profile)
     }
 
@@ -116,7 +117,8 @@ impl AppState {
 
     /// Saves, unless `revision` is given and the settings have been saved since then. Returns the
     /// new revision, or None when the save was refused.
-    pub fn save_config_based_on(&self, config: Config, revision: Option<u64>) -> std::io::Result<Option<u64>> {
+    pub fn save_config_based_on(&self, mut config: Config, revision: Option<u64>) -> std::io::Result<Option<u64>> {
+        config.pin_official_addresses();
         // The revision changes only under this lock, so nothing can save between check and write.
         let mut current = self.config.write().unwrap();
         if revision.is_some_and(|r| r != self.revision.load(Ordering::Relaxed)) {

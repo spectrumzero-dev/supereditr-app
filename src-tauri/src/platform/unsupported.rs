@@ -20,6 +20,10 @@ impl Capture {
     pub fn protected(&self) -> Vec<(usize, usize)> {
         self.code.clone()
     }
+
+    pub fn copy_only_hint(&self) -> Option<String> {
+        None
+    }
 }
 
 pub fn playground_capture(text: String, bounds: Rect) -> Capture {

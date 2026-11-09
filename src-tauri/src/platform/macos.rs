@@ -671,6 +671,11 @@ impl Capture {
         ranges.sort_unstable();
         ranges
     }
+
+    /// How to make a copy-only capture replaceable. macOS has no such case.
+    pub fn copy_only_hint(&self) -> Option<String> {
+        None
+    }
 }
 
 /// A capture of text in Settings' "Try it now" box, anchored at `bounds` (screen points).

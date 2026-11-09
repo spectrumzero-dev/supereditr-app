@@ -61,6 +61,7 @@ export interface SessionPayload {
   text: string;
   appName: string;
   canApply: boolean;
+  copyOnlyHint?: string | null;
   auto: boolean;
   presetId: string;
   presets: PresetInfo[];

@@ -54,6 +54,21 @@ fn has_flag(text: &str) -> bool {
         .any(|line| line.split_whitespace().any(|w| w == FLAG))
 }
 
+/// Whether the flag file `name` in the config folder passes the flag.
+pub fn file_has_flag(config: &Path, name: &str) -> bool {
+    std::fs::read_to_string(config.join(name)).is_ok_and(|text| has_flag(&text))
+}
+
+/// The flag file an app's launcher reads, for the apps SuperEditr is sure of: Chromium, and VS
+/// Code through `visual-studio-code-bin`. Other Electron apps can read a per-version file.
+pub fn flag_file(app_id: &str) -> Option<&'static str> {
+    match app_id.to_ascii_lowercase().as_str() {
+        "chromium" => Some("chromium-flags.conf"),
+        "code" | "code-url-handler" | "com.microsoft.vscode" => Some(VS_CODE_FLAGS),
+        _ => None,
+    }
+}
+
 /// The text of a flag file with SuperEditr's lines added, or `None` when the flag is already there.
 /// `existing` is `None` for a missing file.
 fn with_flag(existing: Option<&str>) -> Option<String> {
@@ -250,11 +265,8 @@ pub fn complete(config: &Path) -> bool {
 /// The flag files' line on the setup page. Also flags per-version Electron files
 /// (`electron43-flags.conf`), which Arch's wrapper reads in place of `electron-flags.conf`.
 pub fn flags_check(config: &Path) -> SetupCheck {
-    let missing: Vec<String> = FLAG_FILES
-        .iter()
-        .filter(|name| !std::fs::read_to_string(config.join(name)).is_ok_and(|text| has_flag(&text)))
-        .map(|name| tilde(&config.join(name)))
-        .collect();
+    let missing: Vec<String> =
+        FLAG_FILES.iter().filter(|name| !file_has_flag(config, name)).map(|name| tilde(&config.join(name))).collect();
     let overrides: Vec<String> = std::fs::read_dir(config)
         .into_iter()
         .flatten()
@@ -399,6 +411,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn only_chromium_and_vs_code_have_a_known_flag_file() {
+        assert_eq!(flag_file("chromium"), Some("chromium-flags.conf"));
+        assert_eq!(flag_file("code"), Some("code-flags.conf"));
+        assert_eq!(flag_file("com.microsoft.VSCode"), Some("code-flags.conf"));
+        assert_eq!(flag_file("Slack"), None, "an Electron app can read a per-version file");
     }
 
     #[test]

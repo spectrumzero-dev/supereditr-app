@@ -64,16 +64,22 @@ impl Capture {
     }
 
     /// How to make a copy-only capture replaceable, when SuperEditr knows: a Chromium or Electron
-    /// app, VS Code among them, started without the flag hides its text from AT-SPI.
+    /// app, VS Code among them, started without the flag hides its text from AT-SPI. Apps that stay
+    /// copy-only whatever their flags (terminals, Obsidian) get no hint.
     pub fn copy_only_hint(&self) -> Option<String> {
         if self.editable || self.source != Source::Copy {
+            return None;
+        }
+        let window = self.window.as_ref()?;
+        if apps::profile(&window.app_id, &window.tags).write != apps::Write::Paste {
             return None;
         }
         if !setup::chromium_based(self.pid) || setup::started_with_flag(self.pid) {
             return None;
         }
-        let flags_set = setup::config_home().is_some_and(|config| setup::flags_check(&config).ok);
-        Some(restart_hint(&self.app_name, flags_set))
+        let flag_set = setup::flag_file(&window.app_id)
+            .map(|name| setup::config_home().is_some_and(|config| setup::file_has_flag(&config, name)));
+        Some(restart_hint(&self.app_name, flag_set))
     }
 
     /// Text read through AT-SPI: editable when the field is and the app takes pastes.
@@ -111,13 +117,14 @@ impl Capture {
     }
 }
 
-/// The panel's line for an app started without the flag: restarting it is enough once Set up
-/// Omarchy has added the flag.
-fn restart_hint(app: &str, flags_set: bool) -> String {
-    if flags_set {
-        format!("Restart {app} to replace text there.")
-    } else {
-        format!("To replace text in {app}, run Set up Omarchy in Settings, then restart {app}.")
+/// The panel's line for an app started without the flag. `flag_set` is whether the app's own flag
+/// file has it, or `None` when SuperEditr doesn't know which file the app's launcher reads (an
+/// Electron app can read a per-version file that Set up Omarchy leaves alone).
+fn restart_hint(app: &str, flag_set: Option<bool>) -> String {
+    match flag_set {
+        Some(true) => format!("Restart {app} to replace text there."),
+        Some(false) => format!("To replace text in {app}, run Set up Omarchy in Settings, then restart {app}."),
+        None => format!("To replace text in {app}, start it with {}.", setup::FLAG),
     }
 }
 
@@ -598,10 +605,14 @@ mod tests {
     #[test]
     fn an_app_started_without_the_flag_is_told_how_to_be_replaceable() {
         assert_eq!(
-            restart_hint("VS Code", false),
+            restart_hint("VS Code", Some(false)),
             "To replace text in VS Code, run Set up Omarchy in Settings, then restart VS Code."
         );
-        assert_eq!(restart_hint("VS Code", true), "Restart VS Code to replace text there.");
+        assert_eq!(restart_hint("VS Code", Some(true)), "Restart VS Code to replace text there.");
+        assert_eq!(
+            restart_hint("Slack", None),
+            "To replace text in Slack, start it with --force-renderer-accessibility."
+        );
     }
 
     #[test]

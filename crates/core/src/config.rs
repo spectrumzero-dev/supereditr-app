@@ -214,6 +214,7 @@ impl Config {
         config.merge_new_builtins();
         config.merge_new_exclusions();
         config.drop_builtin_ai();
+        config.pin_official_addresses();
         #[cfg(not(target_os = "linux"))]
         if config.hotkeys.review == OLD_REVIEW_SHORTCUT {
             config.hotkeys.review = REVIEW_SHORTCUT.into();
@@ -254,6 +255,11 @@ impl Config {
                 }
             }
         }
+    }
+
+    /// See `ProviderProfile::pin_official_address`.
+    pub fn pin_official_addresses(&mut self) {
+        self.providers.iter_mut().for_each(ProviderProfile::pin_official_address);
     }
 
     /// Apple Intelligence is built in rather than a provider the user adds; earlier versions listed
@@ -344,6 +350,25 @@ mod tests {
         assert_eq!(loaded.presets[0].instruction, "custom");
         assert!(loaded.preset("english").is_some(), "new built-ins are merged back in");
         assert_eq!(loaded.providers[0].kind, ProviderKind::Anthropic);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn services_that_take_a_key_keep_their_published_address() {
+        let dir = std::env::temp_dir().join(format!("supereditr-address-{}", std::process::id()));
+        let path = dir.join("config.json");
+        let mut config = Config::default();
+        for kind in [ProviderKind::Anthropic, ProviderKind::OpenAi, ProviderKind::Gemini, ProviderKind::Ollama] {
+            let mut profile = ProviderProfile::new(kind);
+            profile.base_url = "https://proxy.example/v1".into();
+            config.providers.push(profile);
+        }
+        config.save(&path).unwrap();
+        let loaded = Config::load(&path);
+        for profile in &loaded.providers[..3] {
+            assert_eq!(profile.base_url, profile.kind.default_base_url(), "{:?}", profile.kind);
+        }
+        assert_eq!(loaded.providers[3].base_url, "https://proxy.example/v1", "a local server's address is a setting");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

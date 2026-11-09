@@ -376,17 +376,12 @@ pub fn run() {
                 app.handle().plugin(tauri_nspanel::init())?;
             }
             let config_dir = app.path().app_config_dir()?;
-            let (settings, copied) = settings_file(&config_dir);
+            let (settings, _) = settings_file(&config_dir);
             let install = config_dir.join("install.json");
             if let Err(e) = Install::record(&install, env!("CARGO_PKG_VERSION"), settings.exists()) {
                 eprintln!("SuperEditr: couldn't record the first run in {}: {e}", install.display());
             }
             app.manage(AppState::new(settings));
-            if copied {
-                // Before anything reads a key, so the copies are what it finds.
-                let providers = app.state::<AppState>().config().providers;
-                secrets::copy_old(providers.iter().map(|p| p.id.as_str()));
-            }
             launch_at_login_by_default(app.handle());
             app.manage(hotkeys::Registry::default());
             write_status_file(config_dir.join("status.json"));

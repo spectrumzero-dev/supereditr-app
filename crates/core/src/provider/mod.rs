@@ -114,6 +114,14 @@ impl ProviderProfile {
         }
     }
 
+    /// The services that take an API key are reached only at their own published address. Their
+    /// address isn't a setting, so one found in the settings file is replaced.
+    pub fn pin_official_address(&mut self) {
+        if self.kind.needs_key() {
+            self.base_url = self.kind.default_base_url().to_string();
+        }
+    }
+
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url.trim_end_matches('/'), path)
     }

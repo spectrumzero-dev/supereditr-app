@@ -10,6 +10,7 @@
 use super::desktop::SetupCheck;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use supereditr_core::provider::ProviderKind;
 
 /// Makes Chromium and Electron expose web page text to accessibility.
 pub const FLAG: &str = "--force-renderer-accessibility";
@@ -372,17 +373,18 @@ fn purge_data(config: &Path) -> std::io::Result<Vec<String>> {
     for id in [crate::IDENTIFIER, crate::OLD_IDENTIFIER] {
         let dir = config.join(id);
         let settings = dir.join("settings.json");
-        let providers: Vec<String> = std::fs::read_to_string(&settings)
+        let providers: Vec<(ProviderKind, String)> = std::fs::read_to_string(&settings)
             .ok()
             .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
             .and_then(|json| json["providers"].as_array().cloned())
             .unwrap_or_default()
             .iter()
-            .filter_map(|p| p["id"].as_str().map(str::to_string))
+            .filter_map(|p| Some((serde_json::from_value(p["kind"].clone()).ok()?, p["id"].as_str()?.to_string())))
             .collect();
-        for provider in &providers {
-            crate::secrets::delete(provider);
+        for (kind, id) in &providers {
+            crate::secrets::delete(*kind, id);
         }
+        let providers: Vec<String> = providers.into_iter().map(|(_, id)| id).collect();
         if !providers.is_empty() {
             done.push(format!("Deleted the saved API keys for {}", providers.join(", ")));
         }

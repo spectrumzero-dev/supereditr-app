@@ -331,7 +331,11 @@ mod tests {
 
     #[tokio::test]
     async fn output_captures_both_streams_and_the_exit_code() {
-        let out = output("/bin/sh", &["-c", "cat; printf out; printf err >&2; exit 3"]).await.unwrap();
+        // In the temp folder: a disclaimed child doesn't inherit the parent's access to a
+        // protected folder (such as one on an external disk), and `sh` reports an unreadable
+        // working directory on stderr.
+        let script = ["-c", "cat; printf out; printf err >&2; exit 3"];
+        let out = spawn("/bin/sh", &script, Some(&std::env::temp_dir()), Stdin::Null).unwrap().output().await.unwrap();
         assert_eq!(out.stdout, b"out", "stdin is empty, so cat prints nothing");
         assert_eq!(out.stderr, b"err");
         assert_eq!(out.status.code(), Some(3));

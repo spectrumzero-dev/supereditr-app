@@ -4,9 +4,9 @@
 #
 # The tarball holds the binary, the desktop entry (named for the app ID the GlobalShortcuts portal
 # registers), icons and the licence. build/arch/ gets a copy of packaging/arch/PKGBUILD with this
-# version and checksum, its install script and the tarball, so `makepkg -si` there installs it as
-# supereditr-bin. The tracked PKGBUILD is left as it is: its version and checksum change only when a
-# release ships Linux (docs/versioning.md).
+# version and checksum, its install script, the packaging's 0BSD LICENSE and the tarball, so
+# `makepkg -si` there installs it as supereditr-bin. The tracked PKGBUILD is left as it is: its
+# version and checksum change only when a release ships Linux (docs/versioning.md).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -36,5 +36,5 @@ SUM="$(sha256sum "$TARBALL" | cut -d' ' -f1)"
 rm -rf build/arch
 mkdir -p build/arch
 sed -e "s/^pkgver=.*/pkgver=$VERSION/" -e "s/^sha256sums=.*/sha256sums=('$SUM')/" packaging/arch/PKGBUILD > build/arch/PKGBUILD
-cp packaging/arch/supereditr.install "$TARBALL" build/arch/
+cp packaging/arch/supereditr.install packaging/arch/LICENSE "$TARBALL" build/arch/
 echo "$SUM  $TARBALL"

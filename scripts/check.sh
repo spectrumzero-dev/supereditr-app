@@ -19,4 +19,5 @@ cargo test --workspace
 npm --prefix ui run check
 npm --prefix ui test
 npm --prefix ui run build
+node --test packaging/omarchy/tests/model.test.mjs
 echo "All checks passed."

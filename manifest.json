@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "app.supereditr",
+  "name": "SuperEditr",
+  "version": "1.0.0",
+  "author": "Sandeep Ghael",
+  "license": "Apache-2.0",
+  "description": "SuperEditr in the Omarchy bar: its status and shortcuts, with Review, Quick Fix and Settings a click away.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "packaging/omarchy/BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "SuperEditr",
+    "description": "Shows whether SuperEditr is running and its shortcuts, and reviews or fixes the selection, starts the app or opens its Settings.",
+    "category": "Utilities",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

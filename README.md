@@ -4,7 +4,7 @@
 
 <h1 align="center">SuperEditr</h1>
 
-<p align="center">Fast proofreading in any app, on Mac and on Linux with Omarchy.</p>
+<p align="center">Fast proofreading in any Mac app. Also runs on Linux with Omarchy.</p>
 
 <p align="center">
   <a href="https://github.com/spectrumzero-dev/supereditr-app/actions/workflows/ci.yml"><img src="https://github.com/spectrumzero-dev/supereditr-app/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
@@ -14,9 +14,11 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="Apache 2.0 license"></a>
 </p>
 
-<p align="center"><a href="https://supereditr.app">supereditr.app</a> · <a href="https://github.com/spectrumzero-dev/supereditr-app/releases">Releases</a> · <a href="#build-from-source">Build from source</a></p>
+<p align="center"><a href="https://supereditr.app">supereditr.app</a> · <a href="https://github.com/spectrumzero-dev/supereditr-app/releases">Releases</a> · <a href="#build-from-source">Build from source</a> · <a href="#other-platforms">Other platforms</a></p>
 
 Select text in any Mac app and get fixes in about half a second. Accept them with one key. SuperEditr uses Apple Intelligence on your Mac, the AI you already pay for (Claude, OpenAI, Gemini), a local model, or nothing at all: a built-in offline checker handles English spelling and grammar on its own.
+
+SuperEditr is built for the Mac first: the shortcuts, settings and install steps below are the Mac ones. It also runs on Linux with [Omarchy](https://omarchy.org), with the same engine, styles and panel; [Other platforms](#other-platforms) covers installing it there and what differs.
 
 ## How it works
 
@@ -53,7 +55,9 @@ SuperEditr opens when you log in, so it is running again after you restart your 
 
 ## Install
 
-Requires macOS 13 or later. Apple Intelligence needs macOS 26 or later on Apple silicon.
+On another platform, see [Other platforms](#other-platforms).
+
+On a Mac, SuperEditr requires macOS 13 or later. Apple Intelligence needs macOS 26 or later on Apple silicon.
 
 1. Open `SuperEditr-<version>.dmg` and drag SuperEditr to Applications.
 2. Open SuperEditr. Its icon (a pen nib finishing a stroke) appears in the menu bar, and the Get Started page opens.
@@ -83,13 +87,13 @@ Consumer Claude, ChatGPT and Gemini plans don't give other apps API access. The 
 
 ## Privacy
 
-SuperEditr has no accounts or analytics, and its only server is the update server. Official macOS release builds check for updates through `updates.supereditr.app`, which counts each check by app version and Mac architecture (Apple silicon or Intel) and passes it on to `latest.json` on the newest GitHub Release. The app sends no identifier, and the server doesn't store IP addresses. Builds from source and Linux builds never check. The text you review goes from your Mac directly to the provider you chose, or nowhere if you use the offline checker or a local model. Password fields are never read. Apple's Passwords app, the password managers 1Password, NordPass, Bitwarden and KeePassXC, Keychain Access, and terminals are excluded by default (Settings → Privacy); add any other app there with **Add app…**. To turn SuperEditr off in the app you're using, click its menu-bar icon and choose Turn off in *that app*; Turn on in *that app* undoes it. To diagnose a problem in a particular app, turn on Settings → General → Keep a diagnostic log. SuperEditr then keeps a small local log, `~/Library/Logs/SuperEditr/capture.log`, with the app, timing and length of each read and write, never the text. It's off by default, and turning it off deletes the log.
+SuperEditr has no accounts or analytics, and its only server is the update server. Official macOS release builds check for updates through `updates.supereditr.app`, which counts each check by app version and Mac architecture (Apple silicon or Intel) and passes it on to `latest.json` on the newest GitHub Release. The app sends no identifier, and the server doesn't store IP addresses. Builds from source and Linux builds never check. The text you review goes from your computer directly to the provider you chose, or nowhere if you use the offline checker or a local model. Password fields are never read. Apple's Passwords app, the password managers 1Password, NordPass, Bitwarden and KeePassXC, Keychain Access, and terminals are excluded by default (Settings → Privacy); add any other app there with **Add app…**. To turn SuperEditr off in the app you're using, click its menu-bar icon and choose Turn off in *that app*; Turn on in *that app* undoes it. To diagnose a problem in a particular app, turn on Settings → General → Keep a diagnostic log. SuperEditr then keeps a small local log (`~/Library/Logs/SuperEditr/capture.log` on a Mac) with the app, timing and length of each read and write, never the text. It's off by default, and turning it off deletes the log.
 
 A selection that holds a secret SuperEditr recognizes is never reviewed: not by the offline checker, and never sent to any AI. It recognizes private keys, access tokens and API keys from common services (GitHub, AWS, OpenAI, Anthropic, Stripe, Slack and others), passwords given in settings (`DB_PASSWORD=…`), passwords in links, and random-looking keys right after words like "token" or "API key". It says what it found and on which line, never the secret itself. Detection works by pattern, so a secret in an unrecognized format, or a bare random string with no label (an AWS secret access key on its own, for example), can still get through; don't select text you wouldn't paste into the AI yourself. The rules are listed in [`crates/core/src/sensitive.rs`](crates/core/src/sensitive.rs), each naming the document that defines its format where there is one.
 
 ## Build from source
 
-Requirements: macOS 13+, Xcode command-line tools, Rust (stable, via `rustup`), Node.js 22+.
+On a Mac, the requirements are macOS 13+, Xcode command-line tools, Rust (stable, via `rustup`) and Node.js 22+. To build on another platform, see [Other platforms](#other-platforms).
 
 ```bash
 ./scripts/check.sh
@@ -113,7 +117,11 @@ The `supereditr` CLI runs the same engine from a terminal, which is useful for m
 cargo run --release -p supereditr-cli -- check --provider anthropic --bench 5 "This are a test."
 ```
 
-## Linux (Omarchy)
+## Other platforms
+
+Everything above describes the Mac app. Each platform below runs the same engine, styles and panel; its section covers installing, building and what differs from the Mac.
+
+### Linux (Omarchy)
 
 SuperEditr also runs on [Omarchy](https://omarchy.org), the Arch Linux setup built on the Hyprland compositor, on x86-64. Other Linux desktops aren't supported yet: SuperEditr starts there, but its shortcuts and panel need Hyprland. Every feature is free on Linux.
 

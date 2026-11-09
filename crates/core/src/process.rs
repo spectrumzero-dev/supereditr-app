@@ -28,7 +28,7 @@ pub(crate) struct Child {
 }
 
 impl Child {
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub fn id(&self) -> u32 {
         self.process.id()
     }
@@ -80,11 +80,6 @@ mod imp {
     pub struct Process(tokio::process::Child);
 
     impl Process {
-        #[cfg(test)]
-        pub fn id(&self) -> u32 {
-            self.0.id().unwrap_or(0)
-        }
-
         pub async fn wait(&mut self) -> io::Result<ExitStatus> {
             self.0.wait().await
         }

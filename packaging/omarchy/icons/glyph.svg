@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="2.25 4.5 28 28">
+  <!-- The tray glyph (ui/assets/tray.svg), its slit and breather hole cut by even-odd fill instead of a
+       mask, which Qt's SVG renderer may not draw, and its view box cropped to the glyph so it fills the
+       bar's icon size. The widget paints the bar's color through its alpha. -->
+  <rect x="2.5" y="28.75" width="9" height="2.5" rx="1.25" fill="#000000"/>
+  <path transform="translate(11 30) rotate(35)" fill="#000000" fill-rule="evenodd"
+        d="M0 0 L-7 -13 Q-9 -16.5 -6.5 -20 L-5 -26 H5 L6.5 -20 Q9 -16.5 7 -13 Z
+           M-0.9 -2 V-13.3 H0.9 V-2 Z
+           M2.2 -15.5 A2.2 2.2 0 1 0 -2.2 -15.5 A2.2 2.2 0 1 0 2.2 -15.5 Z"/>
+</svg>

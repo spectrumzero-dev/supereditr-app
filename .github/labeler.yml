@@ -26,6 +26,8 @@ development:
   - changed-files:
       - any-glob-to-any-file:
           - '**/*.md'
+          - manifest.json
+          - packaging/omarchy/**
           - tests/**
           - '**/tests/**'
           - '**/tests.rs'

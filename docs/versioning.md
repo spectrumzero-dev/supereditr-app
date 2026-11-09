@@ -22,7 +22,7 @@ The platform ships when the diff touches a file in its row or the shared row. `-
 |---|---|
 | macOS | `src-tauri/src/platform/macos.rs`, `src-tauri/Info.plist`, `src-tauri/tauri.macos.conf.json`, `src-tauri/icons/icon.icns`, `src-tauri/icons/64x64.png`, `helpers/foundation-models/`, `scripts/build.sh` |
 | Linux | `src-tauri/src/platform/linux/`, `src-tauri/src/tray_linux.rs`, `src-tauri/icons/tray-light.png`, `packaging/arch/`, `packaging/linux/`, `scripts/linux-release.sh` |
-| Not shipped | Markdown files; tests (`tests/`, `scripts/ui-smoke*.sh`, Rust `tests` modules and files, UI `*.test.ts`); CI (`.github/`); development tools (`scripts/check.sh`, `scripts/count-lines.sh`, formatter and linter configuration) |
+| Not shipped | Markdown files; the Omarchy bar widget (`manifest.json`, `packaging/omarchy/`), which Omarchy installs from the repository rather than a release; tests (`tests/`, `scripts/ui-smoke*.sh`, Rust `tests` modules and files, UI `*.test.ts`); CI (`.github/`); development tools (`scripts/check.sh`, `scripts/count-lines.sh`, formatter and linter configuration) |
 | Release bookkeeping | a change to the version alone, in the files above, and the version and SHA-256 lines of `packaging/arch/PKGBUILD` |
 | Shared | everything else |
 

@@ -134,10 +134,35 @@ pub fn build(input: &PromptInput) -> ChatRequest {
     ChatRequest { system, user, max_tokens }
 }
 
+/// Chat-format control markers that end a model's turn. A server normally consumes them, but a
+/// model can also write one, or a malformed variant like `</|im_end|>`, as plain text.
+const END_MARKERS: &[&str] = &[
+    "<|im_end|>",
+    "</|im_end|>",
+    "<|im_start|>",
+    "<|eot_id|>",
+    "<|end_of_text|>",
+    "<|endoftext|>",
+    "<|end|>",
+    "<|return|>",
+    "<end_of_turn>",
+];
+
+/// Cuts the reply at the first end-of-turn marker beyond those the selection itself contains, so
+/// a leaked marker and anything after it never reach the text, while the author's own stay.
+fn cut_at_end_marker<'a>(original: &str, text: &'a str) -> &'a str {
+    END_MARKERS
+        .iter()
+        .filter_map(|marker| text.match_indices(marker).nth(original.matches(marker).count()))
+        .map(|(idx, _)| idx)
+        .min()
+        .map_or(text, |idx| &text[..idx])
+}
+
 /// Removes wrappers models sometimes add and restores the selection's own leading and trailing
 /// whitespace, so a replacement never swallows a newline or space.
 pub fn clean_output(original: &str, raw: &str) -> String {
-    let mut text = raw.trim();
+    let mut text = cut_at_end_marker(original, raw).trim();
     text = text.strip_prefix("<text>").unwrap_or(text);
     text = text.strip_suffix("</text>").unwrap_or(text);
     let original_core = original.trim();
@@ -159,10 +184,10 @@ pub fn clean_output(original: &str, raw: &str) -> String {
     format!("{leading}{text}{trailing}")
 }
 
-/// Streaming counterpart of [`clean_output`]: hides a partially received `<text>` tag and
-/// leading whitespace so the live view lines up with the original.
+/// Streaming counterpart of [`clean_output`]: hides a partially received `<text>` tag, any
+/// end-of-turn marker and leading whitespace so the live view lines up with the original.
 pub fn clean_partial(original: &str, raw: &str) -> String {
-    let mut text = raw.trim_start();
+    let mut text = cut_at_end_marker(original, raw).trim_start();
     if "<text>".starts_with(text) {
         text = "";
     }
@@ -221,6 +246,35 @@ mod tests {
         assert_eq!(clean_output("hi there", "```\nhi, there\n```"), "hi, there");
         assert_eq!(clean_output("hi there", "\"Hi there.\""), "Hi there.");
         assert_eq!(clean_output("\"quoted\" text", "\"Quoted\" text"), "\"Quoted\" text");
+    }
+
+    #[test]
+    fn clean_output_drops_leaked_end_of_turn_markers() {
+        let original = "Read public how-to docs (ensure they are up to date).";
+        let reply = "Read the public how-to docs (ensure they are up to date).";
+        assert_eq!(clean_output(original, &format!("{reply}</|im_end|>")), reply);
+        assert_eq!(clean_output(original, &format!("<text>{reply}</text>\n<|im_end|>")), reply);
+        assert_eq!(clean_output(original, &format!("{reply}<|eot_id|>")), reply);
+        assert_eq!(clean_output(original, &format!("{reply}<end_of_turn>\n<start_of_turn>user")), reply);
+        assert_eq!(clean_output(original, &format!("{reply}<|im_end|>\n<|im_start|>assistant\nMore")), reply);
+        for marker in END_MARKERS {
+            assert_eq!(clean_output(original, &format!("{reply}{marker}")), reply, "{marker}");
+        }
+    }
+
+    #[test]
+    fn clean_output_keeps_markers_the_selection_already_has() {
+        let original = "Qwen ends a turn with <|im_end|>.";
+        assert_eq!(clean_output(original, "Qwen ends a turn with <|im_end|>."), original);
+        assert_eq!(clean_output(original, "Qwen ends a turn with <|im_end|>.<|im_end|>"), original);
+        assert_eq!(clean_output(original, "<text>Qwen ends a turn with <|im_end|>.</text><|im_end|>"), original);
+        assert_eq!(clean_partial(original, "Qwen ends a turn with <|im_end|>.<|im_end|>"), original);
+    }
+
+    #[test]
+    fn clean_partial_hides_end_of_turn_markers() {
+        assert_eq!(clean_partial("x", "<text>Hello</text></|im_end|>"), "Hello");
+        assert_eq!(clean_partial("x", "Hello<|im_end|>"), "Hello");
     }
 
     #[test]

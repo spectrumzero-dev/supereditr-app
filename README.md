@@ -4,12 +4,13 @@
 
 <h1 align="center">SuperEditr</h1>
 
-<p align="center">Fast proofreading in any Mac app.</p>
+<p align="center">Fast proofreading in any app, on Mac and on Linux with Omarchy.</p>
 
 <p align="center">
   <a href="https://github.com/spectrumzero-dev/supereditr-app/actions/workflows/ci.yml"><img src="https://github.com/spectrumzero-dev/supereditr-app/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
   <a href="https://github.com/spectrumzero-dev/supereditr-app/releases/latest"><img src="https://img.shields.io/github/v/release/spectrumzero-dev/supereditr-app" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/macOS-13%2B-blue" alt="Requires macOS 13 or later">
+  <img src="https://img.shields.io/badge/Linux-Omarchy-blue" alt="Runs on Linux with Omarchy">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="Apache 2.0 license"></a>
 </p>
 
@@ -114,9 +115,19 @@ cargo run --release -p supereditr-cli -- check --provider anthropic --bench 5 "T
 
 ## Linux (Omarchy)
 
-SuperEditr also runs on [Omarchy](https://omarchy.org), the Arch Linux setup built on the Hyprland compositor, on x86-64. Other Linux desktops aren't supported yet: SuperEditr starts there, but its shortcuts and panel need Hyprland. There's no Linux download yet; build it from source.
+SuperEditr also runs on [Omarchy](https://omarchy.org), the Arch Linux setup built on the Hyprland compositor, on x86-64. Other Linux desktops aren't supported yet: SuperEditr starts there, but its shortcuts and panel need Hyprland. Every feature is free on Linux.
 
-Requirements: Arch Linux on x86-64, Rust (via `rustup`), Node.js 22+, and the packages `base-devel webkit2gtk-4.1 gtk3 libayatana-appindicator at-spi2-core librsvg`.
+To install the newest Linux release, download its `PKGBUILD` and run `makepkg`, which checks the download against its SHA-256 and installs the `supereditr-bin` package:
+
+```bash
+mkdir -p supereditr && cd supereditr
+curl -fLO "https://raw.githubusercontent.com/spectrumzero-dev/supereditr-app/main/packaging/arch/{PKGBUILD,supereditr.install}"
+makepkg -si
+```
+
+Run the same commands again to install a new version. Then open SuperEditr and run Set up Omarchy, which lists each change before it makes it.
+
+To build it from source instead, the requirements are Arch Linux on x86-64, Rust (via `rustup`), Node.js 22+, and the packages `base-devel webkit2gtk-4.1 gtk3 libayatana-appindicator at-spi2-core librsvg`.
 
 ```bash
 ./scripts/linux-release.sh

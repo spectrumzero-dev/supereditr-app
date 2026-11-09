@@ -11,6 +11,7 @@ pub mod guard;
 pub mod install;
 pub mod lang;
 pub mod local;
+mod process;
 pub mod prompts;
 pub mod provider;
 pub mod sensitive;

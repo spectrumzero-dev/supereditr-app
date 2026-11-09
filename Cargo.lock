@@ -6966,6 +6966,7 @@ version = "0.1.6"
 dependencies = [
  "futures-util",
  "harper-core",
+ "libc",
  "regex",
  "reqwest 0.12.28",
  "serde",

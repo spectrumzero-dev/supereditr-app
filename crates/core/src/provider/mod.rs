@@ -248,7 +248,7 @@ impl Providers {
             let program = if profile.base_url.is_empty() { "claude" } else { profile.base_url.as_str() };
             let ran = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
-                tokio::process::Command::new(program).args(["auth", "status"]).kill_on_drop(true).output(),
+                crate::process::output(program, &["auth", "status"]),
             )
             .await;
             let Ok(Ok(out)) = ran else { return Err(format!("Claude Code didn’t run at {program}")) };

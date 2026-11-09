@@ -102,7 +102,8 @@ pub async fn login_shell_env() -> HashMap<String, String> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
     let output = tokio::time::timeout(
         Duration::from_secs(4),
-        tokio::process::Command::new(shell).args(["-ilc", "env -0"]).kill_on_drop(true).output(),
+        // It runs the user's startup files, so without SuperEditr's permissions: see `crate::process`.
+        crate::process::output(&shell, &["-ilc", "env -0"]),
     )
     .await;
     let Ok(Ok(output)) = output else { return HashMap::new() };

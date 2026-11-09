@@ -3,11 +3,10 @@
 //! than a direct API call, and the settings UI says so.
 
 use super::{ChatRequest, ProviderError, ProviderProfile};
+use crate::process::{self, Stdin};
 use crate::sse::LineParser;
 use serde_json::Value;
-use std::process::Stdio;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
 
 pub(super) async fn stream_claude(
     profile: &ProviderProfile,
@@ -15,16 +14,23 @@ pub(super) async fn stream_claude(
     on_delta: &mut (dyn FnMut(&str) + Send),
 ) -> Result<String, ProviderError> {
     let program = if profile.base_url.is_empty() { "claude" } else { profile.base_url.as_str() };
-    let mut child = Command::new(program)
-        .args(["-p", "--model", &profile.model, "--system-prompt", &request.system])
-        .args(["--tools", "", "--strict-mcp-config", "--no-session-persistence"])
-        .args(["--output-format", "stream-json", "--verbose", "--include-partial-messages"])
-        .current_dir(std::env::temp_dir())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
+    let args = [
+        "-p",
+        "--model",
+        &profile.model,
+        "--system-prompt",
+        &request.system,
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+    ];
+    // Without SuperEditr's Accessibility permission: see `crate::process`.
+    let mut child = process::spawn(program, &args, Some(&std::env::temp_dir()), Stdin::Piped)
         .map_err(|e| ProviderError::Process(format!("Couldn’t start the Claude CLI ({program}): {e}")))?;
 
     let mut stdin = child.stdin.take().expect("stdin is piped");

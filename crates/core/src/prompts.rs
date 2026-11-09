@@ -148,13 +148,13 @@ const END_MARKERS: &[&str] = &[
     "<end_of_turn>",
 ];
 
-/// Cuts the reply at the first end-of-turn marker the selection doesn't itself contain, so a
-/// leaked marker and anything after it never reach the text.
+/// Cuts the reply at the first end-of-turn marker beyond those the selection itself contains, so
+/// a leaked marker and anything after it never reach the text, while the author's own stay.
 fn cut_at_end_marker<'a>(original: &str, text: &'a str) -> &'a str {
     END_MARKERS
         .iter()
-        .filter(|marker| !original.contains(**marker))
-        .filter_map(|marker| text.find(marker))
+        .filter_map(|marker| text.match_indices(marker).nth(original.matches(marker).count()))
+        .map(|(idx, _)| idx)
         .min()
         .map_or(text, |idx| &text[..idx])
 }
@@ -266,6 +266,9 @@ mod tests {
     fn clean_output_keeps_markers_the_selection_already_has() {
         let original = "Qwen ends a turn with <|im_end|>.";
         assert_eq!(clean_output(original, "Qwen ends a turn with <|im_end|>."), original);
+        assert_eq!(clean_output(original, "Qwen ends a turn with <|im_end|>.<|im_end|>"), original);
+        assert_eq!(clean_output(original, "<text>Qwen ends a turn with <|im_end|>.</text><|im_end|>"), original);
+        assert_eq!(clean_partial(original, "Qwen ends a turn with <|im_end|>.<|im_end|>"), original);
     }
 
     #[test]

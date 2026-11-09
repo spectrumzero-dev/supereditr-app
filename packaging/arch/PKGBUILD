@@ -1,5 +1,8 @@
+# Maintainer: Sandeep Ghael <support at supereditr dot app>
 # Installs SuperEditr from its Linux release tarball. pkgver and sha256sums name the release that last
 # shipped Linux; scripts/linux-release.sh writes a copy with a new build's values to build/arch/.
+# LICENSE beside it licenses these packaging files under 0BSD, as the AUR asks; SuperEditr itself
+# is Apache-2.0.
 pkgname=supereditr-bin
 pkgver=0.1.6
 pkgrel=1
@@ -7,7 +10,13 @@ pkgdesc="Instant, keyboard-first proofreading for any text field"
 arch=(x86_64)
 url="https://github.com/spectrumzero-dev/supereditr-app"
 license=(Apache-2.0)
-depends=(webkit2gtk-4.1 gtk3 libayatana-appindicator at-spi2-core)
+# Every library the binary links to, as namcap finds them, plus two it uses only at run time:
+# libayatana-appindicator, loaded for the tray icon, and at-spi2-core, the accessibility bus it reads
+# text fields through.
+depends=(
+  at-spi2-core cairo dbus gdk-pixbuf2 glib2 glibc gtk3 hicolor-icon-theme libayatana-appindicator
+  libgcc libsoup3 webkit2gtk-4.1
+)
 optdepends=(
   "gnome-keyring: saves API keys (or another Secret Service provider)"
   "ollama: an AI that runs on this computer"

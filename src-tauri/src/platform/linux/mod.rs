@@ -63,6 +63,19 @@ impl Capture {
         self.code.clone()
     }
 
+    /// How to make a copy-only capture replaceable, when SuperEditr knows: a Chromium or Electron
+    /// app, VS Code among them, started without the flag hides its text from AT-SPI.
+    pub fn copy_only_hint(&self) -> Option<String> {
+        if self.editable || self.source != Source::Copy {
+            return None;
+        }
+        if !setup::chromium_based(self.pid) || setup::started_with_flag(self.pid) {
+            return None;
+        }
+        let flags_set = setup::config_home().is_some_and(|config| setup::flags_check(&config).ok);
+        Some(restart_hint(&self.app_name, flags_set))
+    }
+
     /// Text read through AT-SPI: editable when the field is and the app takes pastes.
     fn read(window: WindowRef, field: atspi::Field, profile: apps::Profile, bounds: Option<Rect>) -> Self {
         Self {
@@ -95,6 +108,16 @@ impl Capture {
             window: Some(window),
             field: None,
         }
+    }
+}
+
+/// The panel's line for an app started without the flag: restarting it is enough once Set up
+/// Omarchy has added the flag.
+fn restart_hint(app: &str, flags_set: bool) -> String {
+    if flags_set {
+        format!("Restart {app} to replace text there.")
+    } else {
+        format!("To replace text in {app}, run Set up Omarchy in Settings, then restart {app}.")
     }
 }
 
@@ -571,6 +594,15 @@ async fn keyring_check() -> SetupCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_app_started_without_the_flag_is_told_how_to_be_replaceable() {
+        assert_eq!(
+            restart_hint("VS Code", false),
+            "To replace text in VS Code, run Set up Omarchy in Settings, then restart VS Code."
+        );
+        assert_eq!(restart_hint("VS Code", true), "Restart VS Code to replace text there.");
+    }
 
     #[test]
     fn a_frame_inside_a_window_is_placed_by_the_window() {

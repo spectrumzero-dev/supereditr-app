@@ -390,7 +390,7 @@
       {/if}
 
       {#if !session.canApply && !unchanged}
-        <p class="tips">SuperEditr can’t replace text here. Press <kbd>{words().copyKey}</kbd> to copy the fix.</p>
+        <p class="tips">SuperEditr can’t replace text here.{#if session.copyOnlyHint} {session.copyOnlyHint}{/if} Press <kbd>{words().copyKey}</kbd> to copy the fix.</p>
       {/if}
       {#if showTips && keyboard && phase === "done" && list.length}
         <p class="tips">Tip: {#if session.canApply}<kbd>{words().applyKey}</kbd> replaces your text with{:else}<kbd>{words().copyKey}</kbd> copies{/if} everything you see · <kbd>tab</kbd> steps through changes · <kbd>␣</kbd> switches a change between yours and the suggestion · <kbd>esc</kbd> closes</p>

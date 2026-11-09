@@ -32,6 +32,8 @@ struct SessionPayload {
     text: String,
     app_name: String,
     can_apply: bool,
+    /// For a copy-only capture, how to make the app replaceable, when SuperEditr knows.
+    copy_only_hint: Option<String>,
     auto: bool,
     preset_id: String,
     presets: Vec<PresetInfo>,
@@ -249,6 +251,7 @@ fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<Strin
         text: captured.text.clone(),
         app_name: captured.app_name.clone(),
         can_apply: captured.editable,
+        copy_only_hint: captured.copy_only_hint(),
         auto,
         preset_id: preset_id.clone(),
         presets: config.presets.iter().map(|p| PresetInfo { id: p.id.clone(), name: p.name.clone() }).collect(),

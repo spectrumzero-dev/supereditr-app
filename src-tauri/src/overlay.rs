@@ -70,6 +70,9 @@ pub fn init(app: &AppHandle) {
     let _ = app;
 }
 
+/// Where the overlay window was last put, in points.
+static PLACED: std::sync::Mutex<Option<Rect>> = std::sync::Mutex::new(None);
+
 /// Where the overlay last opened at the pointer.
 static POINTER_ANCHOR: std::sync::Mutex<Option<Rect>> = std::sync::Mutex::new(None);
 
@@ -116,11 +119,30 @@ fn place(app: &AppHandle, anchor: Rect, height: f64) {
         (anchor.y - GAP - card_height).max(sy + MARGIN)
     };
     let (x, y) = (card_x - PAD_SIDE, card_y - PAD_TOP);
+    *PLACED.lock().unwrap() = Some(Rect { x, y, width: WIDTH, height });
     let _ = window.set_size(LogicalSize::new(WIDTH, height));
     #[cfg(target_os = "linux")]
     platform::place_overlay(Rect { x, y, width: WIDTH, height }, window.is_visible().unwrap_or(false));
     #[cfg(not(target_os = "linux"))]
     let _ = window.set_position(LogicalPosition::new(x, y));
+}
+
+/// Moves the overlay by (`dx`, `dy`) points from where it was put, and does nothing else: no new
+/// size, no screen lookup. For following a window frame by frame; `resize` places it properly once
+/// the window stops. On the main thread the move is direct, with no round trip.
+pub fn nudge(app: &AppHandle, dx: f64, dy: f64) {
+    let Some(window) = window(app) else { return };
+    let at = {
+        let mut placed = PLACED.lock().unwrap();
+        let Some(at) = placed.as_mut() else { return };
+        at.x += dx;
+        at.y += dy;
+        *at
+    };
+    #[cfg(target_os = "linux")]
+    platform::place_overlay(at, window.is_visible().unwrap_or(false));
+    #[cfg(not(target_os = "linux"))]
+    let _ = window.set_position(LogicalPosition::new(at.x, at.y));
 }
 
 /// Logical bounds of the display containing a point (falls back to the primary display).
@@ -218,6 +240,16 @@ pub fn start_typing(app: &AppHandle, pid: i32) {
             let _ = window.set_focus();
         }
     });
+}
+
+/// After the user dragged the reviewed window, which took keyboard focus from the panel: an
+/// instruction they were typing gets focus back. Nothing happens when they weren't typing; the
+/// panel's keys never left it then.
+pub fn resume_typing(app: &AppHandle) {
+    let pid = TYPING_FOR.load(Ordering::Relaxed);
+    if pid != 0 {
+        start_typing(app, pid);
+    }
 }
 
 /// The user is done typing: the app under review gets keyboard focus back and the panel its keys.

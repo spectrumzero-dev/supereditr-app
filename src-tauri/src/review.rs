@@ -513,7 +513,8 @@ pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
             // Keys the panel takes never reach other apps, so any typing or clicking seen here
             // means the user has moved on.
             let showing = state.session.lock().unwrap().is_some() || state.notice_visible.load(Ordering::Relaxed);
-            if showing && Instant::now() >= *state.quiet_until.lock().unwrap() {
+            // A click on the reviewed window may be the start of dragging it by its title bar.
+            if showing && Instant::now() >= *state.quiet_until.lock().unwrap() && !crate::follow::hold_for_click(app) {
                 dismiss(app, None);
             }
         }
@@ -521,6 +522,9 @@ pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
             state.watch_generation.fetch_add(1, Ordering::Relaxed);
         }
         WatchEvent::MaybeSelection { settle, gesture } => {
+            if crate::follow::gesture_ended(app) {
+                return trace_auto(gesture, None, &AutoOutcome::WindowDragged);
+            }
             let config = state.config();
             if !config.auto_popup {
                 return trace_auto(gesture, None, &AutoOutcome::TurnedOff);
@@ -621,6 +625,8 @@ enum AutoOutcome {
     /// The selection is one link, e-mail address, domain or file path, such as a browser's address bar.
     Address,
     AlreadyShowing,
+    /// The gesture was a drag of the reviewed window by its title bar.
+    WindowDragged,
     /// The selection holds something that looks like a secret (`sensitive::find`).
     Secret,
 }
@@ -632,6 +638,7 @@ impl std::fmt::Display for AutoOutcome {
             Self::TurnedOff => write!(f, "skipped: automatic suggestions are turned off"),
             Self::Paused => write!(f, "skipped: automatic suggestions are paused"),
             Self::JustApplied => write!(f, "skipped: a fix was just applied"),
+            Self::WindowDragged => write!(f, "skipped: the reviewed window was dragged"),
             Self::ReviewOpen => write!(f, "skipped: a review opened with the shortcut is showing"),
             Self::Superseded => write!(f, "skipped: a newer selection or keystroke replaced this one"),
             Self::OwnWindow => write!(f, "skipped: SuperEditr's own window is in front"),

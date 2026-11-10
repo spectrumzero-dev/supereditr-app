@@ -126,6 +126,19 @@ pub struct Following {
     _watch: Option<platform::WindowWatch>,
 }
 
+impl Following {
+    /// Whether the window has moved since the panel was last placed for it, asked of the platform
+    /// directly, in case its move reports haven't come yet. Makes a held click a drag if so, and
+    /// returns the window's frame.
+    fn check_moved(&mut self) -> Option<Rect> {
+        let frame = self._watch.as_ref()?.frame()?;
+        if self.follow.offset(frame) != (0.0, 0.0) {
+            self.hold.moved();
+        }
+        Some(frame)
+    }
+}
+
 /// Starts following the window a review's text is in. `id` is the review's. None when the
 /// platform can't watch that window; the panel then stays where it opened.
 pub fn start(app: &AppHandle, id: u64, capture: &Capture) -> Option<Following> {
@@ -153,6 +166,7 @@ pub fn hold_for_click(app: &AppHandle) -> bool {
     if !platform::pressed_on_window(pid, window) {
         return false;
     }
+    platform::trace(format_args!("follow: a press on the reviewed window holds the close"));
     // Follow the window from the press, so the panel moves with the drag's first frame.
     if let Some(watch) = state.session.lock().unwrap().as_ref().and_then(|s| s.following.as_ref()?._watch.as_ref()) {
         watch.track();
@@ -173,13 +187,19 @@ pub fn hold_for_click(app: &AppHandle) -> bool {
                 let state = app.state::<AppState>();
                 let mut session = state.session.lock().unwrap();
                 match session.as_mut().filter(|s| s.id == id).and_then(|s| s.following.as_mut()) {
-                    Some(following) => following.hold.deadline(click, platform::mouse_button_down()),
+                    Some(following) => {
+                        following.check_moved();
+                        following.hold.deadline(click, platform::mouse_button_down())
+                    }
                     None => Verdict::Keep,
                 }
             };
             match verdict {
                 Verdict::Wait => std::thread::sleep(HOLD_RECHECK),
-                Verdict::Close => return crate::review::dismiss(&app, Some(id)),
+                Verdict::Close => {
+                    platform::trace(format_args!("follow: the window didn't move after the press; closing"));
+                    return crate::review::dismiss(&app, Some(id));
+                }
                 Verdict::Keep => return,
             }
         }
@@ -193,18 +213,26 @@ pub fn hold_for_click(app: &AppHandle) -> bool {
 /// panel closes now, as it would have at the click, and the gesture goes on to be reviewed.
 pub fn gesture_ended(app: &AppHandle) -> bool {
     let state = app.state::<AppState>();
-    let (id, verdict) = {
+    let (id, verdict, frame) = {
         let mut session = state.session.lock().unwrap();
         let Some(current) = session.as_mut() else { return false };
-        let Some(verdict) = current.following.as_mut().and_then(|f| f.hold.gesture_ended()) else { return false };
-        (current.id, verdict)
+        let Some(following) = current.following.as_mut() else { return false };
+        let frame = following.check_moved();
+        let Some(verdict) = following.hold.gesture_ended() else { return false };
+        (current.id, verdict, frame)
     };
     match verdict {
         Verdict::Close => {
+            platform::trace(format_args!("follow: a selection began with a press on the reviewed window; closing"));
             crate::review::dismiss(app, Some(id));
             false
         }
         _ => {
+            platform::trace(format_args!("follow: the reviewed window was dragged; the panel stays"));
+            // Placed by the full rules where the window ended up, if its last move hasn't been seen.
+            if let Some(frame) = frame {
+                window_changed(app, id, WindowChange::Moved(frame));
+            }
             // Clicking the window gave it keyboard focus; an instruction being typed gets it back.
             overlay::resume_typing(app);
             true

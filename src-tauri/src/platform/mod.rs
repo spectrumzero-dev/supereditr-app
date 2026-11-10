@@ -104,6 +104,11 @@ pub struct WindowWatch;
 impl WindowWatch {
     /// A press on the window may start a drag: start following it now.
     pub fn track(&self) {}
+
+    /// The window's frame now, when the platform can read it cheaply.
+    pub fn frame(&self) -> Option<Rect> {
+        None
+    }
 }
 
 /// Starts watching the window `capture` came from, calling `on_change` when it moves or goes, and

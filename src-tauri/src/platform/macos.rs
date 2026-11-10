@@ -1954,11 +1954,16 @@ pub fn pressed_on_window(pid: i32, frame: Rect) -> bool {
     match window_at(inside) {
         Some((owner, bounds)) => {
             let same = |a: f64, b: f64| (a - b).abs() <= 2.0;
-            owner == pid
+            let on = owner == pid
                 && same(bounds.x, frame.x)
                 && same(bounds.y, frame.y)
                 && same(bounds.width, frame.width)
-                && same(bounds.height, frame.height)
+                && same(bounds.height, frame.height);
+            if !on {
+                let whose = if owner == pid { "another of its app's windows" } else { "another app's window" };
+                trace(format_args!("follow: the press landed on {whose}"));
+            }
+            on
         }
         None => true,
     }
@@ -1968,8 +1973,8 @@ pub fn pressed_on_window(pid: i32, frame: Rect) -> bool {
 fn window_at(inside: impl Fn(&Rect) -> bool) -> Option<(i32, Rect)> {
     use core_foundation::number::CFNumber;
     use core_graphics::window::{
-        copy_window_info, kCGNullWindowID, kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly,
-        kCGWindowOwnerPID,
+        copy_window_info, kCGNullWindowID, kCGWindowLayer, kCGWindowListExcludeDesktopElements,
+        kCGWindowListOptionOnScreenOnly, kCGWindowOwnerPID,
     };
     let own = own_pid() as i64;
     let windows =
@@ -1982,7 +1987,13 @@ fn window_at(inside: impl Fn(&Rect) -> bool) -> Option<(i32, Rect)> {
             .find(unsafe { CFString::wrap_under_get_rule(kCGWindowOwnerPID) })
             .and_then(|value| value.downcast::<CFNumber>())
             .and_then(|n| n.to_i64())?;
-        if pid == own {
+        // Only ordinary windows: a full-screen overlay of the system's, at another level and often
+        // invisible, isn't what the user clicked.
+        let layer = dict
+            .find(unsafe { CFString::wrap_under_get_rule(kCGWindowLayer) })
+            .and_then(|value| value.downcast::<CFNumber>())
+            .and_then(|n| n.to_i64());
+        if pid == own || layer != Some(0) {
             return None;
         }
         let frame = window_bounds(&dict)?;
@@ -2096,6 +2107,11 @@ impl WindowWatch {
             tracker.start();
         }
     }
+
+    /// The window's frame now, from the window server.
+    pub fn frame(&self) -> Option<Rect> {
+        window_server_frame(self.tracker.as_ref()?.window_id)
+    }
 }
 
 impl Drop for WindowWatch {
@@ -2129,6 +2145,8 @@ pub struct Tracker {
     running: std::sync::atomic::AtomicBool,
     /// The frame last read, and when it last changed.
     last: Mutex<(Option<Rect>, Instant)>,
+    /// For the log: when this run of the timer started, its frames, and how many saw a move.
+    run: Mutex<(Instant, u32, u32)>,
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -2145,6 +2163,7 @@ impl Tracker {
             return;
         }
         *self.last.lock().unwrap() = (window_server_frame(self.window_id), Instant::now());
+        *self.run.lock().unwrap() = (Instant::now(), 0, 0);
         // The timer holds a reference to the tracker, released when the timer goes.
         extern "C" fn release(info: *const c_void) {
             drop(unsafe { std::sync::Arc::from_raw(info as *const Tracker) });
@@ -2172,6 +2191,11 @@ extern "C" fn tick(timer: core_foundation::runloop::CFRunLoopTimerRef, info: *mu
     let finish = |final_frame: Option<Rect>| {
         unsafe { core_foundation::runloop::CFRunLoopTimerInvalidate(timer) };
         tracker.running.store(false, Ordering::Release);
+        let (began, frames, moves) = *tracker.run.lock().unwrap();
+        trace(format_args!(
+            "follow: tracked the window for {frames} frames over {:?}; it moved in {moves}",
+            began.elapsed()
+        ));
         if let Some(frame) = final_frame {
             (tracker.on_change)(super::WindowChange::Moved(frame));
         }
@@ -2182,6 +2206,7 @@ extern "C" fn tick(timer: core_foundation::runloop::CFRunLoopTimerRef, info: *mu
     // Off screen (minimised, or its app hidden): the observer reports that.
     let Some(frame) = window_server_frame(tracker.window_id) else { return finish(None) };
     let changed = {
+        tracker.run.lock().unwrap().1 += 1;
         let mut last = tracker.last.lock().unwrap();
         if last.0 == Some(frame) {
             if last.1.elapsed() < SETTLE {
@@ -2194,6 +2219,7 @@ extern "C" fn tick(timer: core_foundation::runloop::CFRunLoopTimerRef, info: *mu
         }
     };
     if changed {
+        tracker.run.lock().unwrap().2 += 1;
         (tracker.on_change)(super::WindowChange::Moving(frame));
     } else {
         finish(Some(frame));
@@ -2303,6 +2329,7 @@ pub fn watch_window(
             stop: stop.clone(),
             running: std::sync::atomic::AtomicBool::new(false),
             last: Mutex::new((None, Instant::now())),
+            run: Mutex::new((Instant::now(), 0, 0)),
         })
     });
     let observed = Observed { window: window.clone(), on_change, tracker: tracker.clone(), gone: Default::default() };

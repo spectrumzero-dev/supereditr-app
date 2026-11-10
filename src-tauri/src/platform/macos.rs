@@ -1976,6 +1976,151 @@ pub fn start_app_switch_watcher(on_switch: impl Fn(i32) + 'static) {
     std::mem::forget(handler);
 }
 
+// --- The reviewed window ---------------------------------------------------------------------
+
+type AXObserverRef = *const c_void;
+type AXObserverCallback = unsafe extern "C" fn(
+    observer: AXObserverRef,
+    element: AXUIElementRef,
+    notification: CFStringRef,
+    refcon: *mut c_void,
+);
+
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    fn AXObserverCreate(application: i32, callback: AXObserverCallback, observer: *mut AXObserverRef) -> AXError;
+    fn AXObserverAddNotification(
+        observer: AXObserverRef,
+        element: AXUIElementRef,
+        notification: CFStringRef,
+        refcon: *mut c_void,
+    ) -> AXError;
+    fn AXObserverRemoveNotification(
+        observer: AXObserverRef,
+        element: AXUIElementRef,
+        notification: CFStringRef,
+    ) -> AXError;
+    fn AXObserverGetRunLoopSource(observer: AXObserverRef) -> core_foundation::runloop::CFRunLoopSourceRef;
+}
+
+/// Notifications from the window itself: it moved, was resized, minimised or closed.
+const WINDOW_NOTIFICATIONS: &[&str] =
+    &["AXWindowMoved", "AXWindowResized", "AXWindowMiniaturized", "AXUIElementDestroyed"];
+/// From its app: all its windows were hidden.
+const APP_NOTIFICATIONS: &[&str] = &["AXApplicationHidden"];
+
+/// Watches the window a review's text is in through an Accessibility observer on its app, until
+/// dropped. The observer runs on a thread of its own, so the window's frame is read off the main
+/// thread; dropping the watch stops that thread, which removes the observer.
+pub struct WindowWatch {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for WindowWatch {
+    fn drop(&mut self) {
+        // Never waits for the thread: a notification handler may be what's dropping the watch.
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+/// What an observer's notifications need, owned by its thread.
+struct Observed {
+    window: Element,
+    on_change: Box<dyn Fn(super::WindowChange) + Send>,
+    gone: std::cell::Cell<bool>,
+}
+
+/// Starts watching the window `capture` came from, calling `on_change` on the watch's thread when
+/// it moves or goes, and returns the watch with the window's frame now.
+pub fn watch_window(
+    capture: &Capture,
+    on_change: impl Fn(super::WindowChange) + Send + 'static,
+) -> Option<(WindowWatch, Rect)> {
+    if capture.playground {
+        return None;
+    }
+    let app = Element::from_create(unsafe { AXUIElementCreateApplication(capture.pid) })?;
+    let window =
+        capture.element.as_ref().and_then(|e| e.element("AXWindow")).or_else(|| app.element("AXFocusedWindow"))?;
+    let frame = to_rect(window.frame()?);
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopped = stop.clone();
+    let pid = capture.pid;
+    std::thread::Builder::new()
+        .name("window-watch".into())
+        .spawn(move || observe(pid, app, window, &stopped, Box::new(on_change)))
+        .ok()?;
+    Some((WindowWatch { stop }, frame))
+}
+
+fn observe(
+    pid: i32,
+    app: Element,
+    window: Element,
+    stop: &std::sync::atomic::AtomicBool,
+    on_change: Box<dyn Fn(super::WindowChange) + Send>,
+) {
+    use core_foundation::runloop::{CFRunLoop, CFRunLoopSource, kCFRunLoopDefaultMode};
+
+    let mut observer: AXObserverRef = std::ptr::null();
+    if unsafe { AXObserverCreate(pid, window_notification, &mut observer) } != kAXErrorSuccess || observer.is_null() {
+        trace(format_args!("couldn't watch the reviewed window"));
+        return;
+    }
+    let observed = Box::new(Observed { window: window.clone(), on_change, gone: std::cell::Cell::new(false) });
+    let refcon = &*observed as *const Observed as *mut c_void;
+    let mut added = Vec::new();
+    for (element, names) in [(&window, WINDOW_NOTIFICATIONS), (&app, APP_NOTIFICATIONS)] {
+        for name in names {
+            let name = CFString::new(name);
+            let err = unsafe { AXObserverAddNotification(observer, element.0, name.as_concrete_TypeRef(), refcon) };
+            if err == kAXErrorSuccess {
+                added.push((element.clone(), name));
+            }
+        }
+    }
+    if !added.is_empty() {
+        let source = unsafe { CFRunLoopSource::wrap_under_get_rule(AXObserverGetRunLoopSource(observer)) };
+        let run_loop = CFRunLoop::get_current();
+        let mode = unsafe { kCFRunLoopDefaultMode };
+        run_loop.add_source(&source, mode);
+        while !stop.load(Ordering::Relaxed) && !observed.gone.get() {
+            CFRunLoop::run_in_mode(mode, Duration::from_millis(100), false);
+        }
+        run_loop.remove_source(&source, mode);
+        for (element, name) in &added {
+            unsafe { AXObserverRemoveNotification(observer, element.0, name.as_concrete_TypeRef()) };
+        }
+    }
+    unsafe { CFRelease(observer) };
+    drop(observed);
+}
+
+unsafe extern "C" fn window_notification(
+    _observer: AXObserverRef,
+    _element: AXUIElementRef,
+    notification: CFStringRef,
+    refcon: *mut c_void,
+) {
+    // The context outlives the observer's notifications: its thread removes them before freeing it.
+    let observed = unsafe { &*(refcon as *const Observed) };
+    if observed.gone.get() {
+        return;
+    }
+    let name = unsafe { CFString::wrap_under_get_rule(notification) }.to_string();
+    match name.as_str() {
+        "AXWindowMoved" | "AXWindowResized" => {
+            if let Some(frame) = observed.window.frame() {
+                (observed.on_change)(super::WindowChange::Moved(to_rect(frame)));
+            }
+        }
+        _ => {
+            observed.gone.set(true);
+            (observed.on_change)(super::WindowChange::Gone);
+        }
+    }
+}
+
 // --- System Settings window -----------------------------------------------------------------
 
 /// Where System Settings is, for placing the permission guide beside it.

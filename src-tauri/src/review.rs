@@ -246,6 +246,9 @@ fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<Strin
     let preset_id = preset_id.unwrap_or_else(|| config.default_preset().id.clone());
     let id = state.next_session_id();
     let anchor = captured.bounds;
+    // Before the session lock: watching the window reads it through the platform, which may wait on
+    // the app.
+    let following = crate::follow::start(app, id, &captured);
     let payload = SessionPayload {
         id,
         text: captured.text.clone(),
@@ -272,6 +275,7 @@ fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<Strin
             height: INITIAL_HEIGHT,
             task: None,
             proofread: false,
+            following,
         });
     }
     let _ = app.emit_to("overlay", "overlay:session", payload);
@@ -333,6 +337,8 @@ pub async fn apply(app: &AppHandle, id: u64, text: String) -> Result<String, Str
         let mut session = state.session.lock().unwrap();
         let current = session.as_mut().filter(|s| s.id == id).ok_or("This review has ended.")?;
         current.cancel();
+        // The panel closes for good; the window may change while the text is written.
+        current.following = None;
         (current.capture.clone(), current.proofread && keep_formatting)
     };
     overlay::hide(app);

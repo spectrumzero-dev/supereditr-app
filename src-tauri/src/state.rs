@@ -40,6 +40,8 @@ pub struct Session {
     /// The latest run is a plain proofread (no other style, no instruction), which is applied in
     /// place where the app allows it.
     pub proofread: bool,
+    /// The window the text is in, which the panel follows; dropping it stops watching that window.
+    pub following: Option<crate::follow::Following>,
 }
 
 impl Session {

@@ -80,6 +80,31 @@ pub enum PlatformError {
     Other(String),
 }
 
+/// What happened to the window a review belongs to (see `crate::follow`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WindowChange {
+    /// It moved or was resized; its frame is now this.
+    Moved(Rect),
+    /// It was minimised, hidden or closed.
+    Gone,
+}
+
+/// Watches the window a capture's text is in, until dropped. A platform without a way to watch
+/// another app's window has none, and the panel stays where it opened.
+#[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
+pub struct WindowWatch;
+
+/// Starts watching the window `capture` came from, calling `on_change` when it moves or goes, and
+/// returns the watch with the window's frame now.
+#[cfg(not(target_os = "macos"))]
+pub fn watch_window(
+    _capture: &Capture,
+    _on_change: impl Fn(WindowChange) + Send + 'static,
+) -> Option<(WindowWatch, Rect)> {
+    None
+}
+
 /// Something the selection watcher noticed in another app.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

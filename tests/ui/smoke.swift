@@ -250,6 +250,16 @@ func quitOpened(_ bundleID: String) {
     _ = waitFor(5) { ours.allSatisfy(\.isTerminated) ? true : nil }
 }
 
+/// An app's main window through Accessibility, to move or minimise it as the user would.
+func mainWindow(_ bundleID: String) -> AXUIElement? {
+    guard let app = running(bundleID).first else { return nil }
+    var window: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(app.processIdentifier),
+                                        kAXMainWindowAttribute as CFString, &window) == .success,
+          let window else { return nil }
+    return (window as! AXUIElement)
+}
+
 /// The focused element of the frontmost app, through Accessibility.
 func focusedElement() -> AXUIElement? {
     guard let front = NSWorkspace.shared.frontmostApplication else { return nil }
@@ -593,6 +603,28 @@ if review != nil {
     screenshot(window: overlay(), to: outDir + "/review.png")
 }
 
+// 3b. Moving the reviewed window moves the panel with it, by as much. The window moves toward the
+// middle of the screen, so the panel needn't be kept on screen and moves the full distance.
+if let before = overlay(), let editor = mainWindow("com.apple.TextEdit"), let screen = NSScreen.screens.first?.frame {
+    let start = frame(of: editor)
+    let dx: CGFloat = start.midX > screen.midX ? -60 : 60
+    let dy: CGFloat = start.midY > screen.height / 2 ? -40 : 40
+    var to = CGPoint(x: start.minX + dx, y: start.minY + dy)
+    let position = AXValueCreate(.cgPoint, &to)!
+    let set = AXUIElementSetAttributeValue(editor, kAXPositionAttribute as CFString, position)
+    let moved = frame(of: editor)
+    let followed = waitFor(3) { () -> Window? in
+        guard let now = overlay(), abs(now.frame.minX - before.frame.minX - (moved.minX - start.minX)) < 2,
+              abs(now.frame.minY - before.frame.minY - (moved.minY - start.minY)) < 2 else { return nil }
+        return now
+    }
+    check(set == .success && moved.origin != start.origin, "the test moves TextEdit's window",
+          "set: \(set.rawValue), window \(start) then \(moved)")
+    check(followed != nil, "the panel moves with its window",
+          "window \(start) then \(moved); panel \(before.frame) then \(overlay().map { "\($0.frame)" } ?? "closed")")
+    screenshot(window: overlay(), to: outDir + "/review-moved.png")
+}
+
 // 4. Switching to another app closes the panel: it belongs to the app it reviews. Then selecting
 // terminal output, read-only text, shows nothing.
 check(openFront("Terminal", bundleID: "com.apple.Terminal"), "Terminal opens")
@@ -812,7 +844,13 @@ if cleanPanel != nil {
         return text.contains("No changes") ? text : nil
     }
     check(footer.map { !$0.contains("⌥↩") } ?? false, "no changes hides the replace key", "panel text: \(footer ?? panelText())")
-    press(keyEscape)
+    // Minimising the reviewed window closes the panel, as Esc would.
+    let minimised = mainWindow("com.apple.TextEdit").map {
+        AXUIElementSetAttributeValue($0, kAXMinimizedAttribute as CFString, kCFBooleanTrue)
+    }
+    check(minimised == .success, "the test minimises TextEdit's window", "set: \(minimised.map { "\($0.rawValue)" } ?? "no window")")
+    check(waitFor(3) { overlay() == nil ? true : nil } != nil, "minimising the window closes the panel", "panel still showing")
+    if overlay() != nil { press(keyEscape) }
 }
 quitOpened("com.apple.TextEdit")
 

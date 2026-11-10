@@ -73,6 +73,11 @@ pub fn init(app: &AppHandle) {
 /// Where the overlay last opened at the pointer.
 static POINTER_ANCHOR: std::sync::Mutex<Option<Rect>> = std::sync::Mutex::new(None);
 
+/// Where the overlay last opened at the pointer, for a review with no selection bounds to go by.
+pub fn pointer_anchor() -> Option<Rect> {
+    *POINTER_ANCHOR.lock().unwrap()
+}
+
 /// Places the overlay just below the selection, or above it when there's no room below.
 pub fn position(app: &AppHandle, anchor: Option<Rect>, height: f64) {
     let anchor = anchor.unwrap_or_else(|| {

@@ -4,6 +4,7 @@ mod app_toggle;
 mod apps;
 mod commands;
 mod double_press;
+mod follow;
 mod hotkeys;
 mod overlay;
 mod permission_guide;
@@ -462,6 +463,8 @@ pub fn run() {
                 let window = settings.clone();
                 let app = handle.clone();
                 settings.on_window_event(move |event| {
+                    // A review of the "Try it now" box follows the window, and closes with it.
+                    follow::settings_event(&app, &window, event);
                     if let WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
                         let _ = window.hide();

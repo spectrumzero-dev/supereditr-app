@@ -1,5 +1,6 @@
-//! Claude Code CLI bridge. It runs the user's own signed-in `claude` binary in headless print
-//! mode, so a Claude subscription works without an API key. Process start-up makes it slower
+//! Claude Code CLI bridge. It runs the user's own signed-in `claude` binary (a separate install,
+//! or the copy that comes with the Claude desktop app) in headless print mode, so a Claude
+//! subscription works without an API key. Process start-up makes it slower
 //! than a direct API call, and the settings UI says so.
 
 use super::{ChatRequest, ProviderError, ProviderProfile};
@@ -13,7 +14,8 @@ pub(super) async fn stream_claude(
     request: &ChatRequest,
     on_delta: &mut (dyn FnMut(&str) + Send),
 ) -> Result<String, ProviderError> {
-    let program = if profile.base_url.is_empty() { "claude" } else { profile.base_url.as_str() };
+    let program = crate::detect::claude_program(&profile.base_url);
+    let program = program.as_str();
     let args = [
         "-p",
         "--model",

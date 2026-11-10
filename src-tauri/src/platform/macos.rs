@@ -2131,8 +2131,8 @@ struct Observed {
     gone: std::cell::Cell<bool>,
 }
 
-/// A window still for this long has stopped moving: the panel is placed once more, by the full
-/// rules, and the tracker stops. Long enough to ride out a pause mid-drag of a frame or two, short
+/// A window still for this long, with the mouse button up, has stopped moving: the panel is placed
+/// once more, by the full rules, and the tracker stops. Long enough to ride out a pause mid-drag of a frame or two, short
 /// enough that the panel settles soon after the user lets go.
 const SETTLE: Duration = Duration::from_millis(150);
 
@@ -2209,7 +2209,10 @@ extern "C" fn tick(timer: core_foundation::runloop::CFRunLoopTimerRef, info: *mu
         tracker.run.lock().unwrap().1 += 1;
         let mut last = tracker.last.lock().unwrap();
         if last.0 == Some(frame) {
-            if last.1.elapsed() < SETTLE {
+            // A press on the title bar starts the timer before the drag does; a user can take a
+            // moment to start moving, and a drag can pause. Stopping then would leave the drag's
+            // first frames to the app's late move reports.
+            if last.1.elapsed() < SETTLE || mouse_button_down() {
                 return;
             }
             false

@@ -127,7 +127,9 @@ pub fn ease_out(t: f64) -> f64 {
 /// further along the curve instead of a step behind. A platform calls this once per frame.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn glide_point(from: (f64, f64), to: (f64, f64), elapsed: f64) -> ((f64, f64), bool) {
-    if elapsed >= GLIDE {
+    // A frame due within a millisecond of the end is the end, so no frame is left over that
+    // moves the panel by a rounding error.
+    if elapsed >= GLIDE - 0.001 {
         return (to, true);
     }
     let share = ease_out(elapsed / GLIDE);

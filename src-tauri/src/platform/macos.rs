@@ -2164,10 +2164,14 @@ struct Glide {
     to: (f64, f64),
     /// The first frame's time, in seconds; positions go by the time since then.
     start: Option<f64>,
+    /// Frames still to let pass before the glide starts: the frame the glide was asked for in
+    /// carries the work that asked for it, such as the end of a drag.
+    wait: u32,
     at: (f64, f64),
     driver: GlideDriver,
-    /// Each step's time from the start, in milliseconds, and distance, in points.
-    steps: Vec<(f64, f64)>,
+    /// For the log, each step: the time of the frame it was for and the time it was made, both
+    /// from the start in milliseconds, and its distance in points.
+    steps: Vec<(f64, f64, f64)>,
 }
 
 enum GlideDriver {
@@ -2194,15 +2198,16 @@ objc2::define_class!(
     impl GlideLink {
         #[unsafe(method(step:))]
         fn step(&self, link: &objc2::runtime::AnyObject) {
-            // When the frame this step is for will be on screen.
+            // When the frame this step is for will be on screen, and now, on the same clock.
             let time: f64 = unsafe { objc2::msg_send![link, targetTimestamp] };
-            glide_frame(time);
+            glide_frame(time, unsafe { CACurrentMediaTime() });
         }
     }
 );
 
 extern "C" fn glide_timer(_timer: core_foundation::runloop::CFRunLoopTimerRef, _info: *mut c_void) {
-    glide_frame(unsafe { CFAbsoluteTimeGetCurrent() });
+    let now = unsafe { CFAbsoluteTimeGetCurrent() };
+    glide_frame(now, now);
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -2210,15 +2215,26 @@ unsafe extern "C" {
     fn CFAbsoluteTimeGetCurrent() -> f64;
 }
 
+#[link(name = "QuartzCore", kind = "framework")]
+unsafe extern "C" {
+    fn CACurrentMediaTime() -> f64;
+}
+
 /// One frame of the glide: puts the panel where the curve says for this time. A late frame lands
 /// further along the curve rather than a step behind.
-fn glide_frame(time: f64) {
+fn glide_frame(time: f64, now: f64) {
     let finished = GLIDE.with_borrow_mut(|glide| {
         let Some(g) = glide.as_mut() else { return true };
+        if g.wait > 0 {
+            g.wait -= 1;
+            return false;
+        }
+        // The first frame after the wait is the glide's time zero, where it stands still.
         let start = *g.start.get_or_insert(time);
         let (point, done) = crate::follow::glide_point(g.from, g.to, time - start);
-        if point != g.at {
-            g.steps.push(((time - start) * 1000.0, (point.0 - g.at.0).hypot(point.1 - g.at.1)));
+        let distance = (point.0 - g.at.0).hypot(point.1 - g.at.1);
+        if distance > 0.0 {
+            g.steps.push(((time - start) * 1000.0, (now - start) * 1000.0, distance));
             g.at = point;
             set_top_left(&g.window, point);
         }
@@ -2241,9 +2257,11 @@ fn end_glide(how: &str) {
         },
     }
     let driver = if matches!(glide.driver, GlideDriver::Link(_)) { "display link" } else { "timer" };
-    let steps: Vec<String> = glide.steps.iter().map(|(ms, pt)| format!("{ms:.0} ms +{pt:.1}")).collect();
+    // Each step as "frame time|time made|distance": milliseconds from the start, then points.
+    let steps: Vec<String> =
+        glide.steps.iter().map(|(frame, made, pt)| format!("{frame:.1}|{made:.1}|{pt:.2}")).collect();
     trace(format_args!(
-        "follow: glide {how} by {driver}, {:.0} pt in {} steps: {}",
+        "follow: glide {how} by {driver}, {:.1} pt in {} steps: {}",
         (glide.to.0 - glide.from.0).hypot(glide.to.1 - glide.from.1),
         glide.steps.len(),
         steps.join(", ")
@@ -2307,7 +2325,7 @@ pub fn glide_own_window(ns_window: *mut c_void, x: f64, y: f64) -> bool {
         }
     };
     GLIDE.with_borrow_mut(|glide| {
-        *glide = Some(Glide { window, from, to: (x, y), start: None, at: from, driver, steps: Vec::new() })
+        *glide = Some(Glide { window, from, to: (x, y), start: None, wait: 1, at: from, driver, steps: Vec::new() })
     });
     true
 }

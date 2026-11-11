@@ -115,6 +115,30 @@
     return c?.ready ? { label: "Ready", tone: "good" } : null;
   }
 
+  /** Counts each profile's changes and checks, so a check that finishes after a change (a new key,
+   * model or address) doesn't show its result for the old settings. */
+  const generation: Record<string, number> = {};
+  const nextGeneration = (id: string) => (generation[id] = (generation[id] ?? 0) + 1);
+
+  /** Check again, saying what it found: a check that passes looks just like before it ran. */
+  async function checkAgain(p: ProviderProfile) {
+    const mine = nextGeneration(p.id);
+    delete tests[p.id];
+    checks[p.id] = "checking";
+    let c: ProviderCheck;
+    try {
+      c = await api.checkProvider(p.id);
+    } catch (e) {
+      c = { ready: false, problem: String(e), models: [] };
+    }
+    if (generation[p.id] !== mine) return;
+    checks[p.id] = c;
+    const at = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    tests[p.id] = c.ready
+      ? { text: `✓ Works. Checked at ${at}.`, ok: true }
+      : { text: `Still not working at ${at}. The problem is shown above.`, ok: false };
+  }
+
   async function recheck(p: ProviderProfile) {
     checks[p.id] = "checking";
     checks[p.id] = await api.checkProvider(p.id);
@@ -122,6 +146,10 @@
 
   /** Makes `p` the AI in use if it works; otherwise shows what's missing and keeps the current one. */
   async function tryActivate(p: ProviderProfile) {
+    // A result from before a change (key, model, address) no longer describes this AI, and a
+    // Check again still running is for the old settings.
+    nextGeneration(p.id);
+    delete tests[p.id];
     checks[p.id] = "checking";
     try {
       checks[p.id] = await api.activateProvider(p.id);
@@ -407,8 +435,8 @@
           {/if}
           <div class="row actions-row">
             <span class="inline">
-              <button class="btn small" onclick={() => (setupAction(p, config.active_provider) === "check" ? recheck(p) : tryActivate(p))}>
-                {setupAction(p, config.active_provider) === "check" ? "Check again" : "Use this AI"}
+              <button class="btn small" disabled={c === "checking"} onclick={() => (setupAction(p, config.active_provider) === "check" ? checkAgain(p) : tryActivate(p))}>
+                {c === "checking" ? "Checking…" : setupAction(p, config.active_provider) === "check" ? "Check again" : "Use this AI"}
               </button>
               <button class="btn small" onclick={() => test(p)} disabled={!c || c === "checking" || !c.ready}>Speed check</button>
             </span>

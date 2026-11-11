@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import type { BuiltinAi, Config, Preset, ProviderCheck } from "../lib/types";
   import ShortcutInput from "./ShortcutInput.svelte";
   import Playground from "./Playground.svelte";
@@ -21,17 +21,32 @@
   // Without an AI only Proofread works, so the page says so, as Get Started's badge does.
   let builtin = $state<BuiltinAi | null>(null);
   let chosenCheck = $state<ProviderCheck | null>(null);
-  // An ID, not the profile: Settings reloads the config whenever its window takes focus, and the
-  // check runs again only when the chosen AI changes.
   const chosenId = $derived(config.providers.find((p) => p.id === config.active_provider)?.id ?? null);
-  $effect(() => {
+  /** The AI `chosenCheck` is for. */
+  let checkedId: string | null = null;
+  /** Checks the chosen AI. Checking it again keeps the last result until the new one is back, so
+   * the notice doesn't flicker. */
+  function check() {
     const id = chosenId;
-    chosenCheck = null;
+    if (id !== checkedId) chosenCheck = null;
+    checkedId = id;
     if (id) api.checkProvider(id).then((c) => id === chosenId && (chosenCheck = c));
+  }
+  $effect(() => {
+    void chosenId;
+    untrack(check);
   });
   const ai = $derived(aiState(chosenId !== null, chosenCheck, builtin));
   const noAi = $derived(ai === "off" || ai === "none");
-  onMount(() => watchBuiltinAi(api.builtinAi, (b) => (builtin = b)));
+  onMount(() => {
+    const unwatch = watchBuiltinAi(api.builtinAi, (b) => (builtin = b));
+    // An AI can start or stop working while the page is open: Ollama quits, or a key runs out.
+    window.addEventListener("focus", check);
+    return () => {
+      unwatch();
+      window.removeEventListener("focus", check);
+    };
+  });
 
   function addPreset() {
     const id = `custom-${Date.now().toString(36)}`;

@@ -337,9 +337,13 @@
             {#if fc.note}<span class="hint note">{fc.note}</span>{/if}
             {#if adoptErrors[fc.index]}<span class="alert">⚠︎ {adoptErrors[fc.index]}</span>{/if}
           </span>
-          <button class="btn small primary" disabled={adopting !== null || !fc.ready} onclick={() => adopt(fc)}>
-            {adopting === fc.index ? "Setting up…" : "Use"}
-          </button>
+          <!-- After a refusal fixed elsewhere it's Try again. An account that can't be used yet (Ollama
+               not running) has its note instead of a disabled Use. -->
+          {#if fc.ready}
+            <button class="btn small primary" disabled={adopting !== null} onclick={() => adopt(fc)}>
+              {adopting === fc.index ? "Setting up…" : adoptErrors[fc.index] ? "Try again" : "Use"}
+            </button>
+          {/if}
         </div>
       {/each}
       {#if shown === k.kind && p}

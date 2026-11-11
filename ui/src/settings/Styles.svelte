@@ -21,13 +21,15 @@
   // Without an AI only Proofread works, so the page says so, as Get Started's badge does.
   let builtin = $state<BuiltinAi | null>(null);
   let chosenCheck = $state<ProviderCheck | null>(null);
-  const chosen = $derived(config.providers.find((p) => p.id === config.active_provider) ?? null);
+  // An ID, not the profile: Settings reloads the config whenever its window takes focus, and the
+  // check runs again only when the chosen AI changes.
+  const chosenId = $derived(config.providers.find((p) => p.id === config.active_provider)?.id ?? null);
   $effect(() => {
-    const id = chosen?.id;
+    const id = chosenId;
     chosenCheck = null;
-    if (id) api.checkProvider(id).then((c) => id === chosen?.id && (chosenCheck = c));
+    if (id) api.checkProvider(id).then((c) => id === chosenId && (chosenCheck = c));
   });
-  const ai = $derived(aiState(!!chosen, chosenCheck, builtin));
+  const ai = $derived(aiState(chosenId !== null, chosenCheck, builtin));
   const noAi = $derived(ai === "off" || ai === "none");
   onMount(() => watchBuiltinAi(api.builtinAi, (b) => (builtin = b)));
 

@@ -778,13 +778,14 @@ if overlay() != nil {
             check(followed, "the panel ends by the drag's offset", "window \(start) then \(end); panel \(before) then \(after)")
         }
         check((drag.settled ?? 9) <= 0.4, "it gets there within 400 ms of the mouse-up", drag.summary)
-        // An ease-out starts fastest: its first step is up to about 1.7× the mean at 60 Hz. A
-        // dropped frame shows as a step about twice its neighbours'.
+        // An ease-out starts fastest: its first step is about 1.6× the mean at 60 Hz. A dropped
+        // frame shows as a step about twice its neighbours'.
         let even = zip(drag.steps.dropFirst(), drag.steps.dropFirst(2)).allSatisfy { $1 <= $0 * 1.5 + 0.5 }
         check(drag.monotonic && even && drag.maxStep <= drag.meanStep * 2, "the glide is smooth", drag.summary)
         log("NOTE title-bar drag: \(drag.summary)")
+        log("NOTE glide steps seen (pt): \(drag.steps.map { String(format: "%.1f", $0) }.joined(separator: ", "))")
         let follow = ((try? String(contentsOfFile: captureLogPath, encoding: .utf8)) ?? "").split(separator: "\n")
-            .filter { $0.contains("follow:") }.suffix(3)
+            .filter { $0.contains("follow:") }.suffix(4)
         log("NOTE SuperEditr's log of the drag: \(follow.joined(separator: " | "))")
         screenshot(window: overlay(), to: outDir + "/review-dragged.png")
     } else {

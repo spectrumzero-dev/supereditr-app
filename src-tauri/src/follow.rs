@@ -97,6 +97,43 @@ impl Hold {
     }
 }
 
+/// How long the panel takes to glide to its new place once its window has settled, in seconds.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub const GLIDE: f64 = 0.2;
+
+/// The ease-out the glide follows: CSS's `ease-out`, a cubic Bézier through (0.58, 1). `t` is the
+/// share of the glide's time gone, from 0 to 1; the result, the share of the distance covered.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn ease_out(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    // The curve's x and y for a parameter s, with control points (0, 0) and (0.58, 1).
+    let x = |s: f64| 3.0 * (1.0 - s) * s * s * 0.58 + s * s * s;
+    let y = |s: f64| 3.0 * (1.0 - s) * s * s + s * s * s;
+    // x rises with s, so halving finds the s for this time.
+    let (mut low, mut high) = (0.0, 1.0);
+    for _ in 0..40 {
+        let mid = (low + high) / 2.0;
+        if x(mid) < t {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    y((low + high) / 2.0)
+}
+
+/// Where a glide from `from` to `to` (top-left corners, in points) is `elapsed` seconds after its
+/// first frame, and whether it's done. Going by time, not by frame count, a late frame lands
+/// further along the curve instead of a step behind. A platform calls this once per frame.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn glide_point(from: (f64, f64), to: (f64, f64), elapsed: f64) -> ((f64, f64), bool) {
+    if elapsed >= GLIDE {
+        return (to, true);
+    }
+    let share = ease_out(elapsed / GLIDE);
+    ((from.0 + (to.0 - from.0) * share, from.1 + (to.1 - from.1) * share), false)
+}
+
 /// Where the window was when the panel was last placed for it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Follow {
@@ -396,6 +433,66 @@ mod tests {
         hold.moved();
         assert_eq!(hold, Hold::Idle);
         assert_eq!(hold.gesture_ended(), None);
+    }
+
+    /// The steps of a glide drawn at `rate` frames a second, with frame `late` (if any) a frame
+    /// late, as a display would show them.
+    fn glide_steps(rate: f64, late: Option<usize>) -> Vec<f64> {
+        let (from, to) = ((100.0, 200.0), (220.0, 150.0));
+        let mut at = from;
+        let mut steps = Vec::new();
+        let mut frame = 0;
+        loop {
+            frame += 1;
+            if Some(frame) == late {
+                continue;
+            }
+            let (point, done): ((f64, f64), bool) = glide_point(from, to, frame as f64 / rate);
+            steps.push((point.0 - at.0).hypot(point.1 - at.1));
+            at = point;
+            if done {
+                assert_eq!(at, to, "the glide ends exactly at its target");
+                return steps;
+            }
+        }
+    }
+
+    #[test]
+    fn the_ease_out_starts_fast_and_ends_at_rest() {
+        assert!(ease_out(0.0).abs() < 1e-9);
+        assert!((ease_out(1.0) - 1.0).abs() < 1e-9);
+        let mut last = 0.0;
+        for i in 1..=100 {
+            let y = ease_out(i as f64 / 100.0);
+            assert!(y > last, "always moving forward");
+            last = y;
+        }
+        assert!(ease_out(0.5) > 0.6, "more than half the way at half the time");
+    }
+
+    #[test]
+    fn a_glide_at_60_hz_is_even() {
+        let steps = glide_steps(60.0, None);
+        let mean = steps.iter().sum::<f64>() / steps.len() as f64;
+        let largest = steps.iter().cloned().fold(0.0, f64::max);
+        assert_eq!(steps.len(), 12, "200 ms at 60 Hz");
+        assert!(largest <= mean * 2.0, "largest step {largest:.1}, mean {mean:.1}: {steps:?}");
+        assert!(steps.windows(2).all(|w| w[1] <= w[0] + 1e-9), "each step no larger than the one before: {steps:?}");
+    }
+
+    #[test]
+    fn a_late_frame_catches_up_on_the_curve() {
+        let on_time = glide_steps(60.0, None);
+        let late = glide_steps(60.0, Some(4));
+        assert_eq!(late.len(), on_time.len() - 1);
+        // The frame after the late one covers both frames' distance, and the rest are unchanged.
+        assert!((late[3] - (on_time[3] + on_time[4])).abs() < 1e-9);
+        assert!((late[4] - on_time[5]).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_glide_at_120_hz_takes_the_same_time() {
+        assert_eq!(glide_steps(120.0, None).len(), 24);
     }
 
     #[test]

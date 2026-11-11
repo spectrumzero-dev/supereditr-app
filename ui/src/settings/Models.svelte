@@ -370,7 +370,7 @@
           {#if k.kind === "ollama" || k.kind === "open_ai_compatible" || k.kind === "claude_cli"}
             <div class="row">
               <span class="label">{k.kind === "claude_cli" ? "Claude CLI path" : "Server URL"}</span>
-              <input type="text" class="wide" bind:value={p.base_url} onchange={() => retry(p)} spellcheck="false" />
+              <input type="text" class="wide" title={p.base_url} bind:value={p.base_url} onchange={() => retry(p)} spellcheck="false" />
             </div>
           {/if}
           <div class="row">
@@ -516,6 +516,12 @@
   .pick input {
     margin-top: 3px;
     accent-color: var(--accent);
+  }
+  /* The web view's own focus ring is a square box; follow the circle instead. */
+  .pick input:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 50%;
   }
   .pick .label {
     margin-right: 6px;

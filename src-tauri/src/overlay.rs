@@ -70,8 +70,16 @@ pub fn init(app: &AppHandle) {
     let _ = app;
 }
 
+/// Where the overlay window was last put, in points.
+static PLACED: std::sync::Mutex<Option<Rect>> = std::sync::Mutex::new(None);
+
 /// Where the overlay last opened at the pointer.
 static POINTER_ANCHOR: std::sync::Mutex<Option<Rect>> = std::sync::Mutex::new(None);
+
+/// Where the overlay last opened at the pointer, for a review with no selection bounds to go by.
+pub fn pointer_anchor() -> Option<Rect> {
+    *POINTER_ANCHOR.lock().unwrap()
+}
 
 /// Places the overlay just below the selection, or above it when there's no room below.
 pub fn position(app: &AppHandle, anchor: Option<Rect>, height: f64) {
@@ -98,6 +106,17 @@ pub fn resize(app: &AppHandle, anchor: Option<Rect>, height: f64) {
 
 fn place(app: &AppHandle, anchor: Rect, height: f64) {
     let Some(window) = window(app) else { return };
+    let (x, y) = target(app, anchor, height);
+    *PLACED.lock().unwrap() = Some(Rect { x, y, width: WIDTH, height });
+    let _ = window.set_size(LogicalSize::new(WIDTH, height));
+    #[cfg(target_os = "linux")]
+    platform::place_overlay(Rect { x, y, width: WIDTH, height }, window.is_visible().unwrap_or(false));
+    #[cfg(not(target_os = "linux"))]
+    let _ = window.set_position(LogicalPosition::new(x, y));
+}
+
+/// Where the overlay window goes for a selection at `anchor`: the top-left corner, in points.
+fn target(app: &AppHandle, anchor: Rect, height: f64) -> (f64, f64) {
     let (sx, sy, sw, sh) = screen_for(app, anchor.x + 1.0, anchor.y + 1.0);
     // Placement is worked out for the card; the window extends past it by the shadow padding.
     let card_width = WIDTH - 2.0 * PAD_SIDE;
@@ -110,12 +129,49 @@ fn place(app: &AppHandle, anchor: Rect, height: f64) {
         // Kept on screen even if the height it was given is out of date.
         (anchor.y - GAP - card_height).max(sy + MARGIN)
     };
-    let (x, y) = (card_x - PAD_SIDE, card_y - PAD_TOP);
-    let _ = window.set_size(LogicalSize::new(WIDTH, height));
-    #[cfg(target_os = "linux")]
-    platform::place_overlay(Rect { x, y, width: WIDTH, height }, window.is_visible().unwrap_or(false));
-    #[cfg(not(target_os = "linux"))]
-    let _ = window.set_position(LogicalPosition::new(x, y));
+    (card_x - PAD_SIDE, card_y - PAD_TOP)
+}
+
+/// Places the overlay for a selection at `anchor` by the usual rules, gliding there from where it
+/// is rather than jumping: for following a window that has moved. A glide already headed there is
+/// left to finish. Where there's no glide, or the height changed too, it is placed at once.
+pub fn glide(app: &AppHandle, anchor: Rect, height: f64) {
+    let Some(window) = window(app) else { return };
+    let (x, y) = target(app, anchor, height);
+    let to = Rect { x, y, width: WIDTH, height };
+    let placed = PLACED.lock().unwrap().replace(to);
+    if placed == Some(to) {
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    if placed.is_some_and(|p| p.height == height) {
+        return on_main(app, move |_| {
+            if !window.ns_window().is_ok_and(|ns_window| platform::glide_own_window(ns_window, x, y)) {
+                let _ = window.set_position(LogicalPosition::new(x, y));
+            }
+        });
+    }
+    let _ = window;
+    place(app, anchor, height);
+}
+
+/// The overlay's window has started moving again: a glide under way stops where it is, to go on
+/// from there once the window settles.
+pub fn stop_glide(app: &AppHandle) {
+    // Where the glide stops isn't known here: no target matches it, so the next glide goes ahead.
+    if let Some(placed) = PLACED.lock().unwrap().as_mut() {
+        placed.x = f64::NAN;
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(window) = window(app) {
+        on_main(app, move |_| {
+            if let Ok(ns_window) = window.ns_window() {
+                platform::stop_own_window_glide(ns_window);
+            }
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
 }
 
 /// Logical bounds of the display containing a point (falls back to the primary display).
@@ -213,6 +269,16 @@ pub fn start_typing(app: &AppHandle, pid: i32) {
             let _ = window.set_focus();
         }
     });
+}
+
+/// After the user dragged the reviewed window, which took keyboard focus from the panel: an
+/// instruction they were typing gets focus back. Nothing happens when they weren't typing; the
+/// panel's keys never left it then.
+pub fn resume_typing(app: &AppHandle) {
+    let pid = TYPING_FOR.load(Ordering::Relaxed);
+    if pid != 0 {
+        start_typing(app, pid);
+    }
 }
 
 /// The user is done typing: the app under review gets keyboard focus back and the panel its keys.

@@ -80,6 +80,55 @@ pub enum PlatformError {
     Other(String),
 }
 
+/// What happened to the window a review belongs to (see `crate::follow`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WindowChange {
+    /// It started moving or being resized. The panel stays where it is meanwhile.
+    Moving,
+    /// It moved or was resized and has settled; its frame is now this. The panel glides after it.
+    Moved(Rect),
+    /// It was minimised, hidden or closed.
+    Gone,
+}
+
+/// Watches the window a capture's text is in, until dropped. A platform without a way to watch
+/// another app's window has none, and the panel stays where it opened.
+#[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
+pub struct WindowWatch;
+
+#[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
+impl WindowWatch {
+    /// The window's frame now, when the platform can read it cheaply.
+    pub fn frame(&self) -> Option<Rect> {
+        None
+    }
+}
+
+/// Starts watching the window `capture` came from, calling `on_change` when it moves or goes, and
+/// returns the watch with the window's frame now.
+#[cfg(not(target_os = "macos"))]
+pub fn watch_window(
+    _capture: &Capture,
+    _on_change: impl Fn(WindowChange) + Send + 'static,
+) -> Option<(WindowWatch, Rect)> {
+    None
+}
+
+/// Whether the mouse press the selection watcher just reported landed on the window at `frame` of
+/// app `pid`. Asked once per press.
+#[cfg(not(target_os = "macos"))]
+pub fn pressed_on_window(_pid: i32, _frame: Rect) -> bool {
+    false
+}
+
+/// Whether the left mouse button is down.
+#[cfg(not(target_os = "macos"))]
+pub fn mouse_button_down() -> bool {
+    false
+}
+
 /// Something the selection watcher noticed in another app.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1891,6 +1891,8 @@ pub fn start_selection_watcher(on_event: impl Fn(WatchEvent) + Send + Sync + 'st
         // Arrows, Home/End, and Page Up/Down.
         let navigation = || matches!(event.keyCode(), 115 | 116 | 119 | 121 | 123 | 124 | 125 | 126);
         let input = if kind == NSEventType::LeftMouseDown {
+            let (x, y) = mouse_location();
+            *LAST_PRESS.lock().unwrap() = Some((Instant::now(), x, y));
             let p = event.locationInWindow();
             *down_at.lock().unwrap() = (p.x, p.y);
             Input::MouseDown
@@ -1929,6 +1931,80 @@ pub fn start_selection_watcher(on_event: impl Fn(WatchEvent) + Send + Sync + 'st
     // The monitor lives for the life of the app.
     std::mem::forget(monitor);
     std::mem::forget(handler);
+}
+
+/// When and where (top-left screen points) the watcher last saw the mouse button go down in another
+/// app, for [`pressed_on_window`].
+static LAST_PRESS: Mutex<Option<(Instant, f64, f64)>> = Mutex::new(None);
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGEventSourceButtonState(state: i32, button: u32) -> bool;
+}
+
+/// Whether the mouse press the selection watcher just reported landed on the window at `frame` of
+/// app `pid`: inside that frame, with no other app's window over it there. Asked once per press.
+/// Where the window server lists no windows, the frame alone decides.
+pub fn pressed_on_window(pid: i32, frame: Rect) -> bool {
+    let Some((at, x, y)) = LAST_PRESS.lock().unwrap().take() else { return false };
+    let inside = |r: &Rect| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+    if at.elapsed() > Duration::from_millis(100) || !inside(&frame) {
+        return false;
+    }
+    match window_at(inside) {
+        Some((owner, bounds)) => {
+            let same = |a: f64, b: f64| (a - b).abs() <= 2.0;
+            let on = owner == pid
+                && same(bounds.x, frame.x)
+                && same(bounds.y, frame.y)
+                && same(bounds.width, frame.width)
+                && same(bounds.height, frame.height);
+            if !on {
+                let whose = if owner == pid { "another of its app's windows" } else { "another app's window" };
+                trace(format_args!("follow: the press landed on {whose}"));
+            }
+            on
+        }
+        None => true,
+    }
+}
+
+/// The frontmost window, other than SuperEditr's own, that `inside` accepts: its app's pid and frame.
+fn window_at(inside: impl Fn(&Rect) -> bool) -> Option<(i32, Rect)> {
+    use core_foundation::number::CFNumber;
+    use core_graphics::window::{
+        copy_window_info, kCGNullWindowID, kCGWindowLayer, kCGWindowListExcludeDesktopElements,
+        kCGWindowListOptionOnScreenOnly, kCGWindowOwnerPID,
+    };
+    let own = own_pid() as i64;
+    let windows =
+        copy_window_info(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID)?;
+    // Front to back.
+    windows.iter().find_map(|item| {
+        let dict: CFDictionary<CFString, CFType> =
+            unsafe { CFDictionary::wrap_under_get_rule(*item as core_foundation::dictionary::CFDictionaryRef) };
+        let pid = dict
+            .find(unsafe { CFString::wrap_under_get_rule(kCGWindowOwnerPID) })
+            .and_then(|value| value.downcast::<CFNumber>())
+            .and_then(|n| n.to_i64())?;
+        // Only ordinary windows: a full-screen overlay of the system's, at another level and often
+        // invisible, isn't what the user clicked.
+        let layer = dict
+            .find(unsafe { CFString::wrap_under_get_rule(kCGWindowLayer) })
+            .and_then(|value| value.downcast::<CFNumber>())
+            .and_then(|n| n.to_i64());
+        if pid == own || layer != Some(0) {
+            return None;
+        }
+        let frame = window_bounds(&dict)?;
+        inside(&frame).then_some((pid as i32, frame))
+    })
+}
+
+/// Whether the left mouse button is down.
+pub fn mouse_button_down() -> bool {
+    // The combined session state (0), left button (0).
+    unsafe { CGEventSourceButtonState(0, 0) }
 }
 
 /// The selection under way, shared by the watcher and [`selection_app_switched`].
@@ -1974,6 +2050,476 @@ pub fn start_app_switch_watcher(on_switch: impl Fn(i32) + 'static) {
     // Both live for the life of the app.
     std::mem::forget(observer);
     std::mem::forget(handler);
+}
+
+// --- The reviewed window ---------------------------------------------------------------------
+
+type AXObserverRef = *const c_void;
+type AXObserverCallback = unsafe extern "C" fn(
+    observer: AXObserverRef,
+    element: AXUIElementRef,
+    notification: CFStringRef,
+    refcon: *mut c_void,
+);
+
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    fn AXObserverCreate(application: i32, callback: AXObserverCallback, observer: *mut AXObserverRef) -> AXError;
+    fn AXObserverAddNotification(
+        observer: AXObserverRef,
+        element: AXUIElementRef,
+        notification: CFStringRef,
+        refcon: *mut c_void,
+    ) -> AXError;
+    fn AXObserverRemoveNotification(
+        observer: AXObserverRef,
+        element: AXUIElementRef,
+        notification: CFStringRef,
+    ) -> AXError;
+    fn AXObserverGetRunLoopSource(observer: AXObserverRef) -> core_foundation::runloop::CFRunLoopSourceRef;
+}
+
+/// Notifications from the window itself: it moved, was resized, minimised or closed.
+const WINDOW_NOTIFICATIONS: &[&str] =
+    &["AXWindowMoved", "AXWindowResized", "AXWindowMiniaturized", "AXUIElementDestroyed"];
+/// From its app: all its windows were hidden.
+const APP_NOTIFICATIONS: &[&str] = &["AXApplicationHidden"];
+
+/// Watches the window a review's text is in, until dropped.
+///
+/// An Accessibility observer on the window's app, on a thread of its own, hears when the window
+/// moves, is resized, minimised or closed, or its app hidden. A move is reported once as it starts
+/// (`WindowChange::Moving`), and once more when the window has settled (`WindowChange::Moved`): the
+/// mouse button is up and no move has come for [`SETTLE`]. Only while a move is under way does
+/// the thread look at the button, every [`SETTLE_CHECK`]; otherwise it sleeps until a notification
+/// comes. Dropping the watch stops the thread, which removes the observer.
+pub struct WindowWatch {
+    shared: std::sync::Arc<WatchShared>,
+}
+
+/// What the watch and its thread share.
+struct WatchShared {
+    /// The watch has been dropped: the review ended.
+    stop: std::sync::atomic::AtomicBool,
+    /// The thread's run loop, to wake it when the watch is dropped; None until it runs.
+    run_loop: Mutex<Option<core_foundation::runloop::CFRunLoop>>,
+    /// The window server's ID for the window, when it could be matched: its frame from there is
+    /// current even mid-drag, and costs the app nothing.
+    window_id: Option<u32>,
+}
+
+impl WindowWatch {
+    /// The window's frame now, from the window server.
+    pub fn frame(&self) -> Option<Rect> {
+        window_server_frame(self.shared.window_id?)
+    }
+}
+
+impl Drop for WindowWatch {
+    fn drop(&mut self) {
+        // Never waits for the thread: a notification handler may be what's dropping the watch.
+        self.shared.stop.store(true, Ordering::Release);
+        if let Some(run_loop) = self.shared.run_loop.lock().unwrap().as_ref() {
+            run_loop.stop();
+        }
+    }
+}
+
+type OnChange = Box<dyn Fn(super::WindowChange) + Send>;
+
+/// What an observer's notifications need, owned by its thread.
+struct Observed {
+    window: Element,
+    on_change: OnChange,
+    shared: std::sync::Arc<WatchShared>,
+    gone: std::cell::Cell<bool>,
+    /// When the last move came, while one is under way.
+    moving: std::cell::Cell<Option<Instant>>,
+}
+
+impl Observed {
+    /// The window's frame now: from the window server, or else from the app.
+    fn frame(&self) -> Option<Rect> {
+        self.shared.window_id.and_then(window_server_frame).or_else(|| self.window.frame().map(to_rect))
+    }
+}
+
+/// A window with the mouse button up and no move for this long has settled. Long enough to ride
+/// out a pause in the app's move notifications, short enough that the panel follows soon after the
+/// user lets go.
+const SETTLE: Duration = Duration::from_millis(150);
+/// While a move is under way, how often to look whether it has settled.
+const SETTLE_CHECK: Duration = Duration::from_millis(30);
+/// With no move under way, how long the watch's thread sleeps between looks at whether the watch
+/// was dropped, in case the wake-up from the drop came before its run loop started.
+const IDLE_CHECK: Duration = Duration::from_secs(2);
+
+// --- Gliding the panel -------------------------------------------------------------------------
+
+/// A glide under way, on the main thread: the panel's window, where it set out from and is
+/// headed, what drives its frames, and its steps so far for the log.
+struct Glide {
+    window: objc2::rc::Retained<objc2_app_kit::NSWindow>,
+    from: (f64, f64),
+    to: (f64, f64),
+    /// The first frame's time, in seconds; positions go by the time since then.
+    start: Option<f64>,
+    /// Frames still to let pass before the glide starts: the frame the glide was asked for in
+    /// carries the work that asked for it, such as the end of a drag.
+    wait: u32,
+    at: (f64, f64),
+    driver: GlideDriver,
+    /// For the log, each step: the time of the frame it was for and the time it was made, both
+    /// from the start in milliseconds, and its distance in points.
+    steps: Vec<(f64, f64, f64)>,
+}
+
+enum GlideDriver {
+    /// A display link (macOS 14 and later): one call per frame the display shows.
+    Link(objc2::rc::Retained<objc2::runtime::AnyObject>),
+    /// Before macOS 14, a main-thread timer at the display's refresh rate.
+    Timer(core_foundation::runloop::CFRunLoopTimer),
+}
+
+thread_local! {
+    static GLIDE: std::cell::RefCell<Option<Glide>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The display link's target: calls [`glide_frame`] with the time of the frame being drawn.
+struct GlideLinkIvars;
+
+objc2::define_class!(
+    // SAFETY: NSObject has no subclassing requirements, and this class doesn't implement Drop.
+    #[unsafe(super(objc2::runtime::NSObject))]
+    #[name = "SuperEditrGlideLink"]
+    #[ivars = GlideLinkIvars]
+    struct GlideLink;
+
+    impl GlideLink {
+        #[unsafe(method(step:))]
+        fn step(&self, link: &objc2::runtime::AnyObject) {
+            // When the frame this step is for will be on screen, and now, on the same clock.
+            let time: f64 = unsafe { objc2::msg_send![link, targetTimestamp] };
+            glide_frame(time, unsafe { CACurrentMediaTime() });
+        }
+    }
+);
+
+extern "C" fn glide_timer(_timer: core_foundation::runloop::CFRunLoopTimerRef, _info: *mut c_void) {
+    let now = unsafe { CFAbsoluteTimeGetCurrent() };
+    glide_frame(now, now);
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFAbsoluteTimeGetCurrent() -> f64;
+}
+
+#[link(name = "QuartzCore", kind = "framework")]
+unsafe extern "C" {
+    fn CACurrentMediaTime() -> f64;
+}
+
+/// One frame of the glide: puts the panel where the curve says for this time. A late frame lands
+/// further along the curve rather than a step behind.
+fn glide_frame(time: f64, now: f64) {
+    let finished = GLIDE.with_borrow_mut(|glide| {
+        let Some(g) = glide.as_mut() else { return true };
+        if g.wait > 0 {
+            g.wait -= 1;
+            return false;
+        }
+        // The first frame after the wait is the glide's time zero, where it stands still.
+        let start = *g.start.get_or_insert(time);
+        let (point, done) = crate::follow::glide_point(g.from, g.to, time - start);
+        let distance = (point.0 - g.at.0).hypot(point.1 - g.at.1);
+        if distance > 0.0 {
+            g.steps.push(((time - start) * 1000.0, (now - start) * 1000.0, distance));
+            g.at = point;
+            set_top_left(&g.window, point);
+        }
+        done
+    });
+    if finished {
+        end_glide("done");
+    }
+}
+
+/// Ends the glide under way, if any, leaving the panel where it is, and logs its steps.
+fn end_glide(how: &str) {
+    let Some(glide) = GLIDE.with_borrow_mut(Option::take) else { return };
+    match &glide.driver {
+        GlideDriver::Link(link) => {
+            let _: () = unsafe { objc2::msg_send![&**link, invalidate] };
+        }
+        GlideDriver::Timer(timer) => unsafe {
+            core_foundation::runloop::CFRunLoopTimerInvalidate(timer.as_concrete_TypeRef())
+        },
+    }
+    let driver = if matches!(glide.driver, GlideDriver::Link(_)) { "display link" } else { "timer" };
+    // Each step as "frame time|time made|distance": milliseconds from the start, then points.
+    let steps: Vec<String> =
+        glide.steps.iter().map(|(frame, made, pt)| format!("{frame:.1}|{made:.1}|{pt:.2}")).collect();
+    trace(format_args!(
+        "follow: glide {how} by {driver}, {:.1} pt in {} steps: {}",
+        (glide.to.0 - glide.from.0).hypot(glide.to.1 - glide.from.1),
+        glide.steps.len(),
+        steps.join(", ")
+    ));
+}
+
+/// The top-left corner of one of SuperEditr's windows, in top-left screen points.
+fn top_left(window: &objc2_app_kit::NSWindow, mtm: objc2::MainThreadMarker) -> Option<(f64, f64)> {
+    let primary = objc2_app_kit::NSScreen::screens(mtm).iter().next()?.frame().size.height;
+    let frame = window.frame();
+    Some((frame.origin.x, primary - frame.origin.y - frame.size.height))
+}
+
+fn set_top_left(window: &objc2_app_kit::NSWindow, (x, y): (f64, f64)) {
+    let Some(mtm) = objc2::MainThreadMarker::new() else { return };
+    let Some(primary) = objc2_app_kit::NSScreen::screens(mtm).iter().next().map(|s| s.frame().size.height) else {
+        return;
+    };
+    // AppKit's screen coordinates start at the primary display's bottom-left corner.
+    window.setFrameTopLeftPoint(objc2_foundation::NSPoint::new(x, primary - y));
+}
+
+/// Glides one of SuperEditr's own windows (an `NSWindow` pointer from Tauri) so its top-left
+/// corner ends at (`x`, `y`) in top-left screen points, along `follow::glide_point`'s curve, one
+/// step per frame the display shows. A glide under way stops where it is first. False off the
+/// main thread.
+pub fn glide_own_window(ns_window: *mut c_void, x: f64, y: f64) -> bool {
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::{AnyThread, msg_send, sel};
+    let Some(mtm) = objc2::MainThreadMarker::new() else { return false };
+    if ns_window.is_null() {
+        return false;
+    }
+    end_glide("replaced");
+    let Some(window) = (unsafe { Retained::retain(ns_window as *mut objc2_app_kit::NSWindow) }) else { return false };
+    let Some(from) = top_left(&window, mtm) else { return false };
+    let screen = objc2_app_kit::NSScreen::mainScreen(mtm);
+    let responds = screen.as_ref().is_some_and(|screen| unsafe {
+        msg_send![&**screen, respondsToSelector: sel!(displayLinkWithTarget:selector:)]
+    });
+    let driver = match screen.filter(|_| responds) {
+        Some(screen) => {
+            let target = GlideLink::alloc().set_ivars(GlideLinkIvars);
+            let target: Retained<GlideLink> = unsafe { msg_send![super(target), init] };
+            let link: Option<Retained<AnyObject>> =
+                unsafe { msg_send![&screen, displayLinkWithTarget: &*target, selector: sel!(step:)] };
+            let Some(link) = link else { return false };
+            let run_loop = objc2_foundation::NSRunLoop::mainRunLoop();
+            let _: () =
+                unsafe { msg_send![&link, addToRunLoop: &*run_loop, forMode: objc2_foundation::NSRunLoopCommonModes] };
+            GlideDriver::Link(link)
+        }
+        None => {
+            use core_foundation::runloop::{CFRunLoop, CFRunLoopTimer, kCFRunLoopCommonModes};
+            let interval = 1.0 / display_refresh_rate();
+            let now = unsafe { CFAbsoluteTimeGetCurrent() };
+            let timer = CFRunLoopTimer::new(now, interval, 0, 0, glide_timer, std::ptr::null_mut());
+            CFRunLoop::get_main().add_timer(&timer, unsafe { kCFRunLoopCommonModes });
+            GlideDriver::Timer(timer)
+        }
+    };
+    GLIDE.with_borrow_mut(|glide| {
+        *glide = Some(Glide { window, from, to: (x, y), start: None, wait: 1, at: from, driver, steps: Vec::new() })
+    });
+    true
+}
+
+/// Stops a glide where it is. False off the main thread.
+pub fn stop_own_window_glide(_ns_window: *mut c_void) -> bool {
+    if objc2::MainThreadMarker::new().is_none() {
+        return false;
+    }
+    end_glide("stopped by a move");
+    true
+}
+
+/// The main display's refresh rate, in frames per second (60 when it doesn't say).
+fn display_refresh_rate() -> f64 {
+    unsafe extern "C" {
+        fn CGMainDisplayID() -> u32;
+        fn CGDisplayCopyDisplayMode(display: u32) -> *const c_void;
+        fn CGDisplayModeGetRefreshRate(mode: *const c_void) -> f64;
+        fn CGDisplayModeRelease(mode: *const c_void);
+    }
+    let mode = unsafe { CGDisplayCopyDisplayMode(CGMainDisplayID()) };
+    if mode.is_null() {
+        return 60.0;
+    }
+    let rate = unsafe { CGDisplayModeGetRefreshRate(mode) };
+    unsafe { CGDisplayModeRelease(mode) };
+    if (30.0..=240.0).contains(&rate) { rate } else { 60.0 }
+}
+
+/// One window's frame, from the window server: None once it's off screen.
+fn window_server_frame(window_id: u32) -> Option<Rect> {
+    use core_graphics::window::{copy_window_info, kCGWindowListOptionIncludingWindow};
+    let windows = copy_window_info(kCGWindowListOptionIncludingWindow, window_id)?;
+    let item = windows.iter().next()?;
+    let dict: CFDictionary<CFString, CFType> =
+        unsafe { CFDictionary::wrap_under_get_rule(*item as core_foundation::dictionary::CFDictionaryRef) };
+    let onscreen = dict
+        .find(unsafe { CFString::wrap_under_get_rule(core_graphics::window::kCGWindowIsOnscreen) })
+        .and_then(|value| value.downcast::<CFBoolean>())
+        .is_some_and(bool::from);
+    if !onscreen {
+        return None;
+    }
+    window_bounds(&dict)
+}
+
+fn window_bounds(dict: &CFDictionary<CFString, CFType>) -> Option<Rect> {
+    let bounds = dict.find(unsafe { CFString::wrap_under_get_rule(core_graphics::window::kCGWindowBounds) })?;
+    let mut rect = core_graphics::geometry::CGRect::default();
+    // The call fills `rect` before `then_some` reads it: a method's receiver is evaluated first.
+    let found = unsafe { CGRectMakeWithDictionaryRepresentation(bounds.as_CFTypeRef() as _, &mut rect) };
+    found.then_some(Rect { x: rect.origin.x, y: rect.origin.y, width: rect.size.width, height: rect.size.height })
+}
+
+/// The window server's ID for app `pid`'s on-screen window at `frame`, matched by its bounds.
+fn window_server_id(pid: i32, frame: Rect) -> Option<(u32, Rect)> {
+    use core_foundation::number::CFNumber;
+    use core_graphics::window::{
+        copy_window_info, kCGNullWindowID, kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly,
+        kCGWindowNumber, kCGWindowOwnerPID,
+    };
+    let windows =
+        copy_window_info(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID)?;
+    let same = |a: f64, b: f64| (a - b).abs() <= 2.0;
+    windows.iter().find_map(|item| {
+        let dict: CFDictionary<CFString, CFType> =
+            unsafe { CFDictionary::wrap_under_get_rule(*item as core_foundation::dictionary::CFDictionaryRef) };
+        let number = |key: CFStringRef| {
+            dict.find(unsafe { CFString::wrap_under_get_rule(key) })
+                .and_then(|value| value.downcast::<CFNumber>())
+                .and_then(|n| n.to_i64())
+        };
+        if number(unsafe { kCGWindowOwnerPID }) != Some(pid as i64) {
+            return None;
+        }
+        let bounds = window_bounds(&dict)?;
+        let matches = same(bounds.x, frame.x)
+            && same(bounds.y, frame.y)
+            && same(bounds.width, frame.width)
+            && same(bounds.height, frame.height);
+        matches.then(|| Some((number(unsafe { kCGWindowNumber })? as u32, bounds))).flatten()
+    })
+}
+
+/// Starts watching the window `capture` came from, calling `on_change` on the watch's thread when
+/// it starts moving, settles or goes, and returns the watch with the window's frame now.
+pub fn watch_window(
+    capture: &Capture,
+    on_change: impl Fn(super::WindowChange) + Send + 'static,
+) -> Option<(WindowWatch, Rect)> {
+    if capture.playground {
+        return None;
+    }
+    let app = Element::from_create(unsafe { AXUIElementCreateApplication(capture.pid) })?;
+    let window =
+        capture.element.as_ref().and_then(|e| e.element("AXWindow")).or_else(|| app.element("AXFocusedWindow"))?;
+    let mut frame = to_rect(window.frame()?);
+    let server = window_server_id(capture.pid, frame);
+    if let Some((_, bounds)) = server {
+        // Later frames come from the window server, so the first does too.
+        frame = bounds;
+    }
+    let shared = std::sync::Arc::new(WatchShared {
+        stop: std::sync::atomic::AtomicBool::new(false),
+        run_loop: Mutex::new(None),
+        window_id: server.map(|(id, _)| id),
+    });
+    let observed = Observed {
+        window,
+        on_change: Box::new(on_change),
+        shared: shared.clone(),
+        gone: Default::default(),
+        moving: Default::default(),
+    };
+    let pid = capture.pid;
+    std::thread::Builder::new().name("window-watch".into()).spawn(move || observe(pid, app, observed)).ok()?;
+    Some((WindowWatch { shared }, frame))
+}
+
+fn observe(pid: i32, app: Element, observed: Observed) {
+    use core_foundation::runloop::{CFRunLoop, CFRunLoopSource, kCFRunLoopDefaultMode};
+
+    let mut observer: AXObserverRef = std::ptr::null();
+    if unsafe { AXObserverCreate(pid, window_notification, &mut observer) } != kAXErrorSuccess || observer.is_null() {
+        trace(format_args!("couldn't watch the reviewed window"));
+        return;
+    }
+    let observed = Box::new(observed);
+    let window = observed.window.clone();
+    let refcon = &*observed as *const Observed as *mut c_void;
+    let mut added = Vec::new();
+    for (element, names) in [(&window, WINDOW_NOTIFICATIONS), (&app, APP_NOTIFICATIONS)] {
+        for name in names {
+            let name = CFString::new(name);
+            let err = unsafe { AXObserverAddNotification(observer, element.0, name.as_concrete_TypeRef(), refcon) };
+            if err == kAXErrorSuccess {
+                added.push((element.clone(), name));
+            }
+        }
+    }
+    if !added.is_empty() {
+        let source = unsafe { CFRunLoopSource::wrap_under_get_rule(AXObserverGetRunLoopSource(observer)) };
+        let run_loop = CFRunLoop::get_current();
+        let mode = unsafe { kCFRunLoopDefaultMode };
+        run_loop.add_source(&source, mode);
+        *observed.shared.run_loop.lock().unwrap() = Some(run_loop.clone());
+        while !observed.shared.stop.load(Ordering::Acquire) && !observed.gone.get() {
+            let wait = if observed.moving.get().is_some() { SETTLE_CHECK } else { IDLE_CHECK };
+            CFRunLoop::run_in_mode(mode, wait, true);
+            if let Some(last) = observed.moving.get()
+                && last.elapsed() >= SETTLE
+                && !mouse_button_down()
+                && !observed.shared.stop.load(Ordering::Acquire)
+            {
+                observed.moving.set(None);
+                if let Some(frame) = observed.frame() {
+                    (observed.on_change)(super::WindowChange::Moved(frame));
+                }
+            }
+        }
+        observed.shared.run_loop.lock().unwrap().take();
+        run_loop.remove_source(&source, mode);
+        for (element, name) in &added {
+            unsafe { AXObserverRemoveNotification(observer, element.0, name.as_concrete_TypeRef()) };
+        }
+    }
+    unsafe { CFRelease(observer) };
+    drop(observed);
+}
+
+unsafe extern "C" fn window_notification(
+    _observer: AXObserverRef,
+    _element: AXUIElementRef,
+    notification: CFStringRef,
+    refcon: *mut c_void,
+) {
+    // The context outlives the observer's notifications: its thread removes them before freeing it.
+    let observed = unsafe { &*(refcon as *const Observed) };
+    if observed.gone.get() {
+        return;
+    }
+    let name = unsafe { CFString::wrap_under_get_rule(notification) }.to_string();
+    match name.as_str() {
+        "AXWindowMoved" | "AXWindowResized" => {
+            if observed.moving.replace(Some(Instant::now())).is_none() {
+                (observed.on_change)(super::WindowChange::Moving);
+            }
+        }
+        _ => {
+            observed.gone.set(true);
+            (observed.on_change)(super::WindowChange::Gone);
+        }
+    }
 }
 
 // --- System Settings window -----------------------------------------------------------------

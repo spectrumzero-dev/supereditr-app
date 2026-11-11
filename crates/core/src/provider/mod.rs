@@ -245,7 +245,8 @@ impl Providers {
         }
         if profile.kind == ProviderKind::ClaudeCli {
             // `--version` works signed out too; `auth status` reports whether reviews can run.
-            let program = if profile.base_url.is_empty() { "claude" } else { profile.base_url.as_str() };
+            let program = crate::detect::claude_program(&profile.base_url);
+            let program = program.as_str();
             let ran = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
                 crate::process::output(program, &["auth", "status"]),

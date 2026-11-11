@@ -1758,6 +1758,42 @@ if sentencePanel != nil {
     press(keyEscape)
 }
 quitOpened("com.apple.TextEdit")
+
+// 6g. With no AI, Settings says what that means and offers to set one up: Get Started's badge, and
+// a line on Styles, where only Proofread works. Apple Intelligence's helper is missing here, so
+// nothing built in can review either, and neither page offers to turn it on.
+let noAiLaunch = launch(appPath, home: home)  // a second launch opens Settings in the running one
+_ = waitFor(5) { noAiLaunch.isRunning ? nil : true }
+if let settings = waitFor(8, { settingsWindow() }) {
+    running(superEditr).first?.activate()
+    func open(_ page: String) {
+        if let item = waitFor(5, { button(in: settings, containing: page) }) { AXUIElementPerformAction(item, kAXPressAction as CFString) }
+    }
+    func showsModels() -> Bool { waitFor(5) { button(in: settings, containing: "Scan") == nil ? nil : true } != nil }
+    open("Get Started")
+    let badge = waitFor(5) { () -> AXUIElement? in
+        allText(settings, levels: 40).contains("No AI set up") ? button(in: settings, containing: "Set up AI") : nil
+    }
+    check(badge != nil, "with no AI, Get Started says so and offers Set up AI", "page text: \(allText(settings, levels: 40))")
+    screenshot(window: nil, rect: frame(of: settings), to: outDir + "/no-ai-get-started.png")
+    if let badge {
+        AXUIElementPerformAction(badge, kAXPressAction as CFString)
+        check(showsModels(), "Get Started's Set up AI opens Models", "no scan button on the page")
+    }
+    open("Styles")
+    let notice = waitFor(5) { () -> AXUIElement? in
+        allText(settings, levels: 40).contains("Styles other than Proofread need an AI") ? button(in: settings, containing: "Set up AI") : nil
+    }
+    check(notice != nil, "with no AI, Styles says only Proofread works and offers Set up AI", "page text: \(allText(settings, levels: 40))")
+    check(button(in: settings, containing: "Turn on Apple Intelligence") == nil, "Styles offers Apple Intelligence only where it can run")
+    screenshot(window: nil, rect: frame(of: settings), to: outDir + "/no-ai-styles.png")
+    if let notice {
+        AXUIElementPerformAction(notice, kAXPressAction as CFString)
+        check(showsModels(), "Styles' Set up AI opens Models", "no scan button on the page")
+    }
+} else {
+    check(false, "a second launch opens Settings for the no-AI checks", "SuperEditr windows: \(describeWindows())")
+}
 stop(app)
 // What SuperEditr logged about each read and write (app IDs, timings and lengths, no text).
 try? FileManager.default.copyItem(atPath: home + "/Library/Logs/SuperEditr/capture.log", toPath: outDir + "/capture.log")

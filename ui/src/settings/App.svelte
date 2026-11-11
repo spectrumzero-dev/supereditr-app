@@ -155,7 +155,7 @@
           backToSetup={config.onboarded ? null : () => (section = "welcome")}
         />
       {:else if section === "styles"}
-        <Styles bind:config {onchange} />
+        <Styles bind:config {onchange} openModels={() => (section = "models")} />
       {:else if section === "dictionary"}
         <Dictionary bind:config {onchange} />
       {:else if section === "general"}

@@ -60,15 +60,17 @@ impl ProviderKind {
         }
     }
 
-    /// Fast, inexpensive defaults; the UI offers every model the account can list.
+    /// Fast, inexpensive defaults; the UI offers every model the account can list. Claude takes
+    /// Sonnet, through an API key or Claude Code alike: it proofreads casual text more reliably than
+    /// Haiku, which leaves a lowercase sentence start alone.
     pub fn default_model(self) -> &'static str {
         match self {
-            Self::Anthropic => "claude-haiku-5-5",
+            Self::Anthropic => "claude-sonnet-5-5",
             Self::OpenAi => "gpt-6-luna",
             Self::Gemini => "gemini-3.5-flash-lite",
             Self::Ollama => "gemma3:4b",
             Self::OpenAiCompatible => "",
-            Self::ClaudeCli => "haiku",
+            Self::ClaudeCli => "sonnet",
             Self::AppleIntelligence => "system",
         }
     }
@@ -342,10 +344,11 @@ fn merge_extra(body: &mut serde_json::Value, extra: &Option<serde_json::Value>) 
 /// Picks the preferred model from an account's model list, falling back to the default.
 pub fn preferred_model(kind: ProviderKind, available: &[String]) -> String {
     let preferences: &[&str] = match kind {
-        ProviderKind::Anthropic => &["claude-haiku-5-5", "claude-haiku-4-5", "claude-sonnet-5-5"],
+        ProviderKind::Anthropic => &["claude-sonnet-5-5", "claude-haiku-5-5", "claude-haiku-4-5"],
         ProviderKind::OpenAi => &["gpt-6-luna", "gpt-5-mini", "gpt-4.1-mini", "gpt-4o-mini"],
         ProviderKind::Gemini => return newest_gemini(available).unwrap_or_else(|| kind.default_model().to_string()),
         ProviderKind::Ollama => &["gemma3:4b", "qwen3:4b", "llama3.2:3b", "gemma3", "qwen3", "llama3.2", "mistral"],
+        ProviderKind::ClaudeCli => &["sonnet"],
         _ => &[],
     };
     for preference in preferences {
@@ -408,6 +411,12 @@ mod tests {
         assert_eq!(preferred_model(ProviderKind::OpenAi, &models), "gpt-4o-mini");
         assert_eq!(preferred_model(ProviderKind::Ollama, &["llama3.2:3b".into()]), "llama3.2:3b");
         assert_eq!(preferred_model(ProviderKind::Gemini, &[]), "gemini-3.5-flash-lite");
+        let claude_code = ["haiku".to_string(), "sonnet".to_string(), "opus".to_string()];
+        assert_eq!(preferred_model(ProviderKind::ClaudeCli, &claude_code), "sonnet");
+        assert_eq!(ProviderKind::ClaudeCli.default_model(), "sonnet");
+        let api = ["claude-haiku-5-5".to_string(), "claude-sonnet-5-5".to_string()];
+        assert_eq!(preferred_model(ProviderKind::Anthropic, &api), "claude-sonnet-5-5");
+        assert_eq!(preferred_model(ProviderKind::Anthropic, &["claude-haiku-5-5".into()]), "claude-haiku-5-5");
     }
 
     #[test]

@@ -26,7 +26,7 @@
 
   // Alphabetical, with the catch-all server last.
   const kinds: { kind: ProviderKind; name: string; keyUrl?: string; blurb: string }[] = [
-    { kind: "anthropic", name: "Claude API", keyUrl: "https://console.anthropic.com/settings/keys", blurb: "Claude Haiku is fast and inexpensive. Needs an API key." },
+    { kind: "anthropic", name: "Claude API", keyUrl: "https://console.anthropic.com/settings/keys", blurb: "Claude Sonnet gives careful, reliable edits. Needs an API key." },
     { kind: "claude_cli", name: "Claude subscription", blurb: "Uses your signed-in Claude Code. Slower to start." },
     { kind: "gemini", name: "Gemini API", keyUrl: "https://aistudio.google.com/apikey", blurb: "Google AI Studio keys include a free tier." },
     { kind: "ollama", name: "Ollama", blurb: `Private and free, runs on ${words().device}.` },

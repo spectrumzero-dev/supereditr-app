@@ -301,65 +301,79 @@ func serverFrame(_ id: CGWindowID) -> CGRect? {
     return CGRect(dictionaryRepresentation: bounds)
 }
 
-/// How the panel kept up with a title-bar drag, sampled once per display frame at 60 Hz.
+/// What the panel did during and after a title-bar drag.
 struct DragFollow {
-    /// The window's frame before and after, and the panel's.
+    /// The window's frame before and after the drag, and the panel's.
     let window: (CGRect, CGRect), panel: (CGRect, CGRect)?
-    /// Frames sampled while the pointer moved, and in how many the panel had moved since the last.
-    let frames: Int, panelMoves: Int
-    /// How far the panel's offset trailed the window's, in points: mean and worst over the frames.
-    let meanLag: Double, maxLag: Double
-    /// SuperEditr's CPU use during the drag, as a share of one core.
+    /// How far the panel strayed from where it was while the pointer moved, in points.
+    let movedDuringDrag: Double
+    /// Seconds from the mouse-up until the panel reached its final place; nil if it never moved.
+    let settled: Double?
+    /// How long the glide took, first step to last, in seconds.
+    let glide: Double
+    /// The glide's steps, the distance between each place the panel was seen at, in points.
+    let steps: [Double]
+    /// Whether every step went the same way as the whole glide.
+    let monotonic: Bool
+    /// SuperEditr's CPU use while the pointer moved, as a share of one core.
     let cpu: Double?
-    /// Frames in which the window had moved since the last, and whether the window server was read.
-    let windowMoves: Int, fromServer: Bool
 
+    var meanStep: Double { steps.isEmpty ? 0 : steps.reduce(0, +) / Double(steps.count) }
+    var maxStep: Double { steps.max() ?? 0 }
     var summary: String {
-        String(format: "window moved on %d of %d frames, panel on %d; lag mean %.1f pt, max %.1f pt; CPU %@ of a core (%@)",
-               windowMoves, frames, panelMoves, meanLag, maxLag, cpu.map { String(format: "%.0f%%", $0 * 100) } ?? "unknown",
-               fromServer ? "window server frames" : "Accessibility frames")
+        String(format: "panel strayed %.1f pt during the drag; settled %@ after mouse-up; glide %.0f ms in %d steps, mean %.1f pt, largest %.1f pt (%.2f× the mean)%@; CPU while dragging %@ of a core",
+               movedDuringDrag, settled.map { String(format: "%.0f ms", $0 * 1000) } ?? "never", glide * 1000, steps.count, meanStep, maxStep,
+               meanStep > 0 ? maxStep / meanStep : 0, monotonic ? "" : ", not monotonic",
+               cpu.map { String(format: "%.0f%%", $0 * 100) } ?? "unknown")
     }
 }
 
 /// Drags an app's main window by its title bar with real mouse events, `by` points in `frames`
-/// steps of one 60 Hz frame each, as a user would, sampling the window and the panel each frame.
+/// steps of one 60 Hz frame each, as a user would. Watches the panel through the drag and for a
+/// second after it, through the window server, which shows where a window is on screen.
 func dragTitleBar(_ bundleID: String, by offset: CGVector, frames: Int = 45, superEditr pid: pid_t) -> DragFollow? {
-    guard let window = mainWindow(bundleID) else { return nil }
-    let start = frame(of: window), panelStart = overlay()?.frame
+    guard let window = mainWindow(bundleID), let panelStart = overlay()?.frame else { return nil }
+    let start = frame(of: window)
     let near = { (a: CGRect, b: CGRect) in abs(a.minX - b.minX) <= 2 && abs(a.minY - b.minY) <= 2 && abs(a.width - b.width) <= 2 }
-    let windowID = serverWindow(bundleID) { near($0, start) }
-    let panelID = panelStart.flatMap { p in serverWindow(superEditr) { near($0, p) } }
-    let fromServer = windowID != nil && panelID != nil
-    let windowNow = { fromServer ? serverFrame(windowID!) ?? frame(of: window) : frame(of: window) }
-    let panelNow = { fromServer ? serverFrame(panelID!) : overlay()?.frame }
+    let panelID = serverWindow(superEditr) { near($0, panelStart) }
+    let panelNow = { panelID.flatMap(serverFrame) ?? overlay()?.frame }
     // Clear of the window buttons on the left and of a title in the middle, which a click renames.
     let grab = CGPoint(x: start.minX + 90, y: start.minY + 12)
     let cpuStart = cpuSeconds(pid), began = Date()
     mouse(.leftMouseDown, at: grab)
     pump(0.05)
-    var moves = 0, windowMoves = 0, lags: [Double] = [], lastPanel = panelStart, lastWindow = start
+    var strayed = 0.0
     for step in 1...frames {
         let share = CGFloat(step) / CGFloat(frames)
         mouse(.leftMouseDragged, at: CGPoint(x: grab.x + offset.dx * share, y: grab.y + offset.dy * share))
         pump(1.0 / 60)
-        let now = windowNow()
-        if now.origin != lastWindow.origin { windowMoves += 1 }
-        lastWindow = now
-        guard let panel = panelNow(), let panelStart else { continue }
-        if panel.origin != lastPanel?.origin { moves += 1 }
-        lastPanel = panel
-        lags.append(hypot((panel.minX - panelStart.minX) - (now.minX - start.minX),
-                          (panel.minY - panelStart.minY) - (now.minY - start.minY)))
+        if let panel = panelNow() { strayed = max(strayed, hypot(panel.minX - panelStart.minX, panel.minY - panelStart.minY)) }
     }
-    let end = CGPoint(x: grab.x + offset.dx, y: grab.y + offset.dy)
-    mouse(.leftMouseUp, at: end)
     let elapsed = Date().timeIntervalSince(began)
     let cpu = cpuStart.flatMap { start in cpuSeconds(pid).map { ($0 - start) / elapsed } }
-    pump(0.6)  // the move settles, and a held click's time runs out
-    let panelEnd = overlay()?.frame
-    return DragFollow(window: (start, frame(of: window)), panel: panelStart.flatMap { s in panelEnd.map { (s, $0) } },
-                      frames: frames, panelMoves: moves, meanLag: lags.isEmpty ? 0 : lags.reduce(0, +) / Double(lags.count),
-                      maxLag: lags.max() ?? 0, cpu: cpu, windowMoves: windowMoves, fromServer: fromServer)
+    mouse(.leftMouseUp, at: CGPoint(x: grab.x + offset.dx, y: grab.y + offset.dy))
+    // Every place the panel is seen at for a second, sampled every 4 ms.
+    let released = Date()
+    var seen: [(CGPoint, TimeInterval)] = [(panelStart.origin, 0)]
+    while Date().timeIntervalSince(released) < 1.0 {
+        if let panel = panelNow(), panel.origin != seen.last!.0 { seen.append((panel.origin, Date().timeIntervalSince(released))) }
+        usleep(4_000)
+    }
+    pump(0.1)
+    let end = frame(of: window)
+    let panelEnd = panelNow()
+    let total = CGVector(dx: seen.last!.0.x - panelStart.minX, dy: seen.last!.0.y - panelStart.minY)
+    var steps: [Double] = [], monotonic = true
+    for (previous, next) in zip(seen, seen.dropFirst()) {
+        let dx = next.0.x - previous.0.x, dy = next.0.y - previous.0.y
+        steps.append(hypot(dx, dy))
+        if dx * total.dx + dy * total.dy < -0.5 { monotonic = false }
+    }
+    let expected = CGPoint(x: panelStart.minX + end.minX - start.minX, y: panelStart.minY + end.minY - start.minY)
+    let settled = seen.first { abs($0.0.x - expected.x) < 2 && abs($0.0.y - expected.y) < 2 }?.1
+    let glide = seen.count > 1 ? seen.last!.1 - seen[1].1 : 0
+    return DragFollow(window: (start, end), panel: panelEnd.map { (panelStart, $0) }, movedDuringDrag: strayed,
+                      settled: settled, glide: glide, steps: steps, monotonic: monotonic, cpu: cpu)
 }
 
 /// A drag toward the middle of the screen, so the panel needn't be kept on screen and moves the
@@ -747,26 +761,34 @@ if let before = overlay(), let editor = mainWindow("com.apple.TextEdit"), let sc
     screenshot(window: overlay(), to: outDir + "/review-moved.png")
 }
 
-// 3c. Dragging the reviewed window by its title bar keeps the panel open and moves it as far. The
-// review's keys still go to the panel after the drag: Escape closes it and never reaches TextEdit.
+// 3c. Dragging the reviewed window by its title bar keeps the panel open. The panel stays where it
+// is while the window moves, then glides to the same place by the window once the drag ends,
+// smoothly: every step the same way, none much larger than the rest. The review's keys still go to
+// the panel afterwards: Escape closes it and never reaches TextEdit.
 if overlay() != nil {
     let offset = towardMiddle("com.apple.TextEdit")
     if let drag = dragTitleBar("com.apple.TextEdit", by: offset, superEditr: pid) {
         let (start, end) = drag.window
         check(end.origin != start.origin, "the title-bar drag moves TextEdit's window", "window \(start) then \(end)")
         check(drag.panel != nil, "the panel stays open through a title-bar drag", "panel closed")
+        check(drag.movedDuringDrag < 1, "the panel stays still while the window moves", drag.summary)
         if let (before, after) = drag.panel {
             let followed = abs(after.minX - before.minX - (end.minX - start.minX)) < 2
                 && abs(after.minY - before.minY - (end.minY - start.minY)) < 2
-            check(followed, "the panel moves by the drag's offset", "window \(start) then \(end); panel \(before) then \(after)")
+            check(followed, "the panel ends by the drag's offset", "window \(start) then \(end); panel \(before) then \(after)")
         }
-        log("NOTE following a title-bar drag: \(drag.summary)")
+        check((drag.settled ?? 9) <= 0.4, "it gets there within 400 ms of the mouse-up", drag.summary)
+        // An ease-out starts fastest: its first step is up to about 1.7× the mean at 60 Hz. A
+        // dropped frame shows as a step about twice its neighbours'.
+        let even = zip(drag.steps.dropFirst(), drag.steps.dropFirst(2)).allSatisfy { $1 <= $0 * 1.5 + 0.5 }
+        check(drag.monotonic && even && drag.maxStep <= drag.meanStep * 2, "the glide is smooth", drag.summary)
+        log("NOTE title-bar drag: \(drag.summary)")
         let follow = ((try? String(contentsOfFile: captureLogPath, encoding: .utf8)) ?? "").split(separator: "\n")
-            .filter { $0.contains("follow:") }.suffix(4)
+            .filter { $0.contains("follow:") }.suffix(3)
         log("NOTE SuperEditr's log of the drag: \(follow.joined(separator: " | "))")
         screenshot(window: overlay(), to: outDir + "/review-dragged.png")
     } else {
-        check(false, "the title-bar drag moves TextEdit's window", "no TextEdit window")
+        check(false, "the title-bar drag moves TextEdit's window", "no TextEdit window or panel")
     }
     if let idleStart = cpuSeconds(pid) {
         pump(2)
@@ -1665,29 +1687,6 @@ quitOpened("com.apple.TextEdit")
 stop(app)
 // What SuperEditr logged about each read and write (app IDs, timings and lengths, no text).
 try? FileManager.default.copyItem(atPath: home + "/Library/Logs/SuperEditr/capture.log", toPath: outDir + "/capture.log")
-
-// 6g. For comparison only, no check: the same title-bar drag with the panel following the app's own
-// move notifications and reading each frame through Accessibility, which is what SuperEditr does
-// without the window server's frames. Measured, so the two can be compared in one run.
-do {
-    app = launch(appPath, home: home, environment: ["SUPEREDITR_FM_HELPER": work + "/no-helper", "SUPEREDITR_FOLLOW_WITHOUT_WINDOW_SERVER": "1"])
-    pump(3)
-    if openFront("TextEdit", bundleID: "com.apple.TextEdit", file: clean), selectAll() {
-        press(keyE, .maskCommand)
-        pump(0.1)
-        press(keyE, .maskCommand)
-        if waitFor(5, { overlay() }) != nil {
-            pump(1.5)
-            let drag = dragTitleBar("com.apple.TextEdit", by: towardMiddle("com.apple.TextEdit"), superEditr: app.processIdentifier)
-            log("NOTE following a title-bar drag through Accessibility alone: \(drag?.summary ?? "no TextEdit window")")
-            press(keyEscape)
-        } else {
-            log("NOTE comparison drag skipped: no review opened")
-        }
-    }
-    quitOpened("com.apple.TextEdit")
-    stop(app)
-}
 
 // 7. The Accessibility guide card, when this build has it, sits beside System Settings' window, off
 // the list; with no room on the screen, over the window's top.

@@ -2087,163 +2087,119 @@ const APP_NOTIFICATIONS: &[&str] = &["AXApplicationHidden"];
 
 /// Watches the window a review's text is in, until dropped.
 ///
-/// An Accessibility observer on the window's app, on a thread of its own, says when the window
-/// starts to move, and when it is minimised, hidden or closed. Its move notifications come
-/// irregularly while the user drags, and reading the window's frame through Accessibility asks the
-/// app itself, so they only start a [`Tracker`]: while the window moves, it reads the frame from the
-/// window server once per display frame, which doesn't involve the app, and stops once the window
-/// has been still for [`SETTLE`]. When nothing moves, nothing runs. Dropping the watch stops the
-/// observer's thread, which removes the observer, and stops a tracker at its next frame.
+/// An Accessibility observer on the window's app, on a thread of its own, hears when the window
+/// moves, is resized, minimised or closed, or its app hidden. A move is reported once as it starts
+/// (`WindowChange::Moving`), and once more when the window has settled (`WindowChange::Moved`): the
+/// mouse button is up and no move has come for [`SETTLE`]. Only while a move is under way does
+/// the thread look at the button, every [`SETTLE_CHECK`]; otherwise it sleeps until a notification
+/// comes. Dropping the watch stops the thread, which removes the observer.
 pub struct WindowWatch {
-    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    tracker: Option<std::sync::Arc<Tracker>>,
+    shared: std::sync::Arc<WatchShared>,
+}
+
+/// What the watch and its thread share.
+struct WatchShared {
+    /// The watch has been dropped: the review ended.
+    stop: std::sync::atomic::AtomicBool,
+    /// The thread's run loop, to wake it when the watch is dropped; None until it runs.
+    run_loop: Mutex<Option<core_foundation::runloop::CFRunLoop>>,
+    /// The window server's ID for the window, when it could be matched: its frame from there is
+    /// current even mid-drag, and costs the app nothing.
+    window_id: Option<u32>,
 }
 
 impl WindowWatch {
-    /// The user pressed the button on the window, which may be the start of a drag: start reading
-    /// its frame now, rather than at the app's first move notification.
-    pub fn track(&self) {
-        if let Some(tracker) = &self.tracker {
-            tracker.start();
-        }
-    }
-
     /// The window's frame now, from the window server.
     pub fn frame(&self) -> Option<Rect> {
-        window_server_frame(self.tracker.as_ref()?.window_id)
+        window_server_frame(self.shared.window_id?)
     }
 }
 
 impl Drop for WindowWatch {
     fn drop(&mut self) {
         // Never waits for the thread: a notification handler may be what's dropping the watch.
-        self.stop.store(true, Ordering::Relaxed);
+        self.shared.stop.store(true, Ordering::Release);
+        if let Some(run_loop) = self.shared.run_loop.lock().unwrap().as_ref() {
+            run_loop.stop();
+        }
     }
 }
 
-type OnChange = std::sync::Arc<dyn Fn(super::WindowChange) + Send + Sync>;
+type OnChange = Box<dyn Fn(super::WindowChange) + Send>;
 
 /// What an observer's notifications need, owned by its thread.
 struct Observed {
     window: Element,
     on_change: OnChange,
-    tracker: Option<std::sync::Arc<Tracker>>,
+    shared: std::sync::Arc<WatchShared>,
     gone: std::cell::Cell<bool>,
+    /// When the last move came, while one is under way.
+    moving: std::cell::Cell<Option<Instant>>,
 }
 
-/// A window still for this long, with the mouse button up, has stopped moving: the panel is placed
-/// once more, by the full rules, and the tracker stops. Long enough to ride out a pause mid-drag of a frame or two, short
-/// enough that the panel settles soon after the user lets go.
+impl Observed {
+    /// The window's frame now: from the window server, or else from the app.
+    fn frame(&self) -> Option<Rect> {
+        self.shared.window_id.and_then(window_server_frame).or_else(|| self.window.frame().map(to_rect))
+    }
+}
+
+/// A window with the mouse button up and no move for this long has settled. Long enough to ride
+/// out a pause in the app's move notifications, short enough that the panel follows soon after the
+/// user lets go.
 const SETTLE: Duration = Duration::from_millis(150);
+/// While a move is under way, how often to look whether it has settled.
+const SETTLE_CHECK: Duration = Duration::from_millis(30);
+/// With no move under way, how long the watch's thread sleeps between looks at whether the watch
+/// was dropped, in case the wake-up from the drop came before its run loop started.
+const IDLE_CHECK: Duration = Duration::from_secs(2);
 
-/// Reads a moving window's frame from the window server once per display frame, on the main thread.
-pub struct Tracker {
-    window_id: u32,
-    on_change: OnChange,
-    /// The watch has been dropped: the review ended.
-    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    running: std::sync::atomic::AtomicBool,
-    /// The frame last read, and when it last changed.
-    last: Mutex<(Option<Rect>, Instant)>,
-    /// For the log: when this run of the timer started, its frames, and how many saw a move.
-    run: Mutex<(Instant, u32, u32)>,
+/// How long the panel takes to glide to its new place once its window has settled.
+const GLIDE: f64 = 0.2;
+
+/// Glides one of SuperEditr's own windows (an `NSWindow` pointer from Tauri) so its top-left
+/// corner ends at (`x`, `y`) in top-left screen points, over [`GLIDE`] with an ease-out, through
+/// AppKit's own animation, which runs in step with the display. False off the main thread.
+pub fn glide_own_window(ns_window: *mut c_void, x: f64, y: f64) -> bool {
+    animate_own_window(ns_window, Some((x, y)), GLIDE)
 }
 
-#[link(name = "CoreFoundation", kind = "framework")]
-unsafe extern "C" {
-    fn CFRunLoopWakeUp(run_loop: core_foundation::runloop::CFRunLoopRef);
-    fn CFAbsoluteTimeGetCurrent() -> f64;
+/// Stops a glide where it is. False off the main thread.
+pub fn stop_own_window_glide(ns_window: *mut c_void) -> bool {
+    animate_own_window(ns_window, None, 0.0)
 }
 
-impl Tracker {
-    /// Starts reading the frame each display frame, unless it already is.
-    fn start(self: &std::sync::Arc<Self>) {
-        use core_foundation::runloop::{CFRunLoop, CFRunLoopTimer, CFRunLoopTimerContext, kCFRunLoopCommonModes};
-        if self.stop.load(Ordering::Relaxed) || self.running.swap(true, Ordering::AcqRel) {
-            return;
+fn animate_own_window(ns_window: *mut c_void, to: Option<(f64, f64)>, duration: f64) -> bool {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    let Some(mtm) = objc2::MainThreadMarker::new() else { return false };
+    if ns_window.is_null() {
+        return false;
+    }
+    let window = unsafe { &*(ns_window as *const objc2_app_kit::NSWindow) };
+    let mut frame = window.frame();
+    if let Some((x, y)) = to {
+        let screens = objc2_app_kit::NSScreen::screens(mtm);
+        let Some(primary) = screens.iter().next() else { return false };
+        // AppKit's screen coordinates start at the primary display's bottom-left corner.
+        frame.origin = objc2_foundation::NSPoint::new(x, primary.frame().size.height - y - frame.size.height);
+    }
+    unsafe {
+        let context_class = class!(NSAnimationContext);
+        let _: () = msg_send![context_class, beginGrouping];
+        let context: *mut AnyObject = msg_send![context_class, currentContext];
+        let _: () = msg_send![context, setDuration: duration];
+        if duration > 0.0 {
+            let name = objc2_foundation::NSString::from_str("easeOut");
+            let timing: *mut AnyObject = msg_send![class!(CAMediaTimingFunction), functionWithName: &*name];
+            let _: () = msg_send![context, setTimingFunction: timing];
         }
-        *self.last.lock().unwrap() = (window_server_frame(self.window_id), Instant::now());
-        *self.run.lock().unwrap() = (Instant::now(), 0, 0);
-        // The timer holds a reference to the tracker, released when the timer goes.
-        extern "C" fn release(info: *const c_void) {
-            drop(unsafe { std::sync::Arc::from_raw(info as *const Tracker) });
-        }
-        let mut context = CFRunLoopTimerContext {
-            version: 0,
-            info: std::sync::Arc::into_raw(self.clone()) as *mut c_void,
-            retain: None,
-            release: Some(release),
-            copyDescription: None,
-        };
-        let interval = 1.0 / display_refresh_rate();
-        let now = unsafe { CFAbsoluteTimeGetCurrent() };
-        let timer = CFRunLoopTimer::new(now + interval, interval, 0, 0, tick, &mut context);
-        // Adding a timer to the main run loop is safe from any thread; waking it makes it notice.
-        let main = CFRunLoop::get_main();
-        main.add_timer(&timer, unsafe { kCFRunLoopCommonModes });
-        unsafe { CFRunLoopWakeUp(main.as_concrete_TypeRef()) };
+        // A zero-length animation to the current frame replaces one under way, stopping it there.
+        let animator: *mut AnyObject = msg_send![window, animator];
+        let _: () = msg_send![animator, setFrame: frame, display: true];
+        let _: () = msg_send![context_class, endGrouping];
     }
-}
-
-/// One display frame of a tracked window, on the main thread.
-extern "C" fn tick(timer: core_foundation::runloop::CFRunLoopTimerRef, info: *mut c_void) {
-    let tracker = unsafe { &*(info as *const Tracker) };
-    let finish = |final_frame: Option<Rect>| {
-        unsafe { core_foundation::runloop::CFRunLoopTimerInvalidate(timer) };
-        tracker.running.store(false, Ordering::Release);
-        let (began, frames, moves) = *tracker.run.lock().unwrap();
-        trace(format_args!(
-            "follow: tracked the window for {frames} frames over {:?}; it moved in {moves}",
-            began.elapsed()
-        ));
-        if let Some(frame) = final_frame {
-            (tracker.on_change)(super::WindowChange::Moved(frame));
-        }
-    };
-    if tracker.stop.load(Ordering::Relaxed) {
-        return finish(None);
-    }
-    // Off screen (minimised, or its app hidden): the observer reports that.
-    let Some(frame) = window_server_frame(tracker.window_id) else { return finish(None) };
-    let changed = {
-        tracker.run.lock().unwrap().1 += 1;
-        let mut last = tracker.last.lock().unwrap();
-        if last.0 == Some(frame) {
-            // A press on the title bar starts the timer before the drag does; a user can take a
-            // moment to start moving, and a drag can pause. Stopping then would leave the drag's
-            // first frames to the app's late move reports.
-            if last.1.elapsed() < SETTLE || mouse_button_down() {
-                return;
-            }
-            false
-        } else {
-            *last = (Some(frame), Instant::now());
-            true
-        }
-    };
-    if changed {
-        tracker.run.lock().unwrap().2 += 1;
-        (tracker.on_change)(super::WindowChange::Moving(frame));
-    } else {
-        finish(Some(frame));
-    }
-}
-
-/// The main display's refresh rate, in frames per second (60 when it doesn't say).
-fn display_refresh_rate() -> f64 {
-    unsafe extern "C" {
-        fn CGMainDisplayID() -> u32;
-        fn CGDisplayCopyDisplayMode(display: u32) -> *const c_void;
-        fn CGDisplayModeGetRefreshRate(mode: *const c_void) -> f64;
-        fn CGDisplayModeRelease(mode: *const c_void);
-    }
-    let mode = unsafe { CGDisplayCopyDisplayMode(CGMainDisplayID()) };
-    if mode.is_null() {
-        return 60.0;
-    }
-    let rate = unsafe { CGDisplayModeGetRefreshRate(mode) };
-    unsafe { CGDisplayModeRelease(mode) };
-    if (30.0..=240.0).contains(&rate) { rate } else { 60.0 }
+    true
 }
 
 /// One window's frame, from the window server: None once it's off screen.
@@ -2301,13 +2257,11 @@ fn window_server_id(pid: i32, frame: Rect) -> Option<(u32, Rect)> {
     })
 }
 
-/// Starts watching the window `capture` came from, calling `on_change` when it moves or goes, and
-/// returns the watch with the window's frame now. Set `SUPEREDITR_FOLLOW_WITHOUT_WINDOW_SERVER` to
-/// follow the app's move notifications alone, reading each frame through Accessibility: the UI
-/// smoke test compares the two.
+/// Starts watching the window `capture` came from, calling `on_change` on the watch's thread when
+/// it starts moving, settles or goes, and returns the watch with the window's frame now.
 pub fn watch_window(
     capture: &Capture,
-    on_change: impl Fn(super::WindowChange) + Send + Sync + 'static,
+    on_change: impl Fn(super::WindowChange) + Send + 'static,
 ) -> Option<(WindowWatch, Rect)> {
     if capture.playground {
         return None;
@@ -2316,36 +2270,29 @@ pub fn watch_window(
     let window =
         capture.element.as_ref().and_then(|e| e.element("AXWindow")).or_else(|| app.element("AXFocusedWindow"))?;
     let mut frame = to_rect(window.frame()?);
-    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let on_change: OnChange = std::sync::Arc::new(on_change);
-    let server = if std::env::var_os("SUPEREDITR_FOLLOW_WITHOUT_WINDOW_SERVER").is_some() {
-        None
-    } else {
-        window_server_id(capture.pid, frame)
-    };
-    let tracker = server.map(|(window_id, bounds)| {
-        // Every frame then comes from the window server, so the first does too.
+    let server = window_server_id(capture.pid, frame);
+    if let Some((_, bounds)) = server {
+        // Later frames come from the window server, so the first does too.
         frame = bounds;
-        std::sync::Arc::new(Tracker {
-            window_id,
-            on_change: on_change.clone(),
-            stop: stop.clone(),
-            running: std::sync::atomic::AtomicBool::new(false),
-            last: Mutex::new((None, Instant::now())),
-            run: Mutex::new((Instant::now(), 0, 0)),
-        })
+    }
+    let shared = std::sync::Arc::new(WatchShared {
+        stop: std::sync::atomic::AtomicBool::new(false),
+        run_loop: Mutex::new(None),
+        window_id: server.map(|(id, _)| id),
     });
-    let observed = Observed { window: window.clone(), on_change, tracker: tracker.clone(), gone: Default::default() };
-    let stopped = stop.clone();
+    let observed = Observed {
+        window,
+        on_change: Box::new(on_change),
+        shared: shared.clone(),
+        gone: Default::default(),
+        moving: Default::default(),
+    };
     let pid = capture.pid;
-    std::thread::Builder::new()
-        .name("window-watch".into())
-        .spawn(move || observe(pid, app, observed, &stopped))
-        .ok()?;
-    Some((WindowWatch { stop, tracker }, frame))
+    std::thread::Builder::new().name("window-watch".into()).spawn(move || observe(pid, app, observed)).ok()?;
+    Some((WindowWatch { shared }, frame))
 }
 
-fn observe(pid: i32, app: Element, observed: Observed, stop: &std::sync::atomic::AtomicBool) {
+fn observe(pid: i32, app: Element, observed: Observed) {
     use core_foundation::runloop::{CFRunLoop, CFRunLoopSource, kCFRunLoopDefaultMode};
 
     let mut observer: AXObserverRef = std::ptr::null();
@@ -2371,9 +2318,22 @@ fn observe(pid: i32, app: Element, observed: Observed, stop: &std::sync::atomic:
         let run_loop = CFRunLoop::get_current();
         let mode = unsafe { kCFRunLoopDefaultMode };
         run_loop.add_source(&source, mode);
-        while !stop.load(Ordering::Relaxed) && !observed.gone.get() {
-            CFRunLoop::run_in_mode(mode, Duration::from_millis(100), false);
+        *observed.shared.run_loop.lock().unwrap() = Some(run_loop.clone());
+        while !observed.shared.stop.load(Ordering::Acquire) && !observed.gone.get() {
+            let wait = if observed.moving.get().is_some() { SETTLE_CHECK } else { IDLE_CHECK };
+            CFRunLoop::run_in_mode(mode, wait, true);
+            if let Some(last) = observed.moving.get()
+                && last.elapsed() >= SETTLE
+                && !mouse_button_down()
+                && !observed.shared.stop.load(Ordering::Acquire)
+            {
+                observed.moving.set(None);
+                if let Some(frame) = observed.frame() {
+                    (observed.on_change)(super::WindowChange::Moved(frame));
+                }
+            }
         }
+        observed.shared.run_loop.lock().unwrap().take();
         run_loop.remove_source(&source, mode);
         for (element, name) in &added {
             unsafe { AXObserverRemoveNotification(observer, element.0, name.as_concrete_TypeRef()) };
@@ -2396,14 +2356,11 @@ unsafe extern "C" fn window_notification(
     }
     let name = unsafe { CFString::wrap_under_get_rule(notification) }.to_string();
     match name.as_str() {
-        "AXWindowMoved" | "AXWindowResized" => match &observed.tracker {
-            Some(tracker) => tracker.start(),
-            None => {
-                if let Some(frame) = observed.window.frame() {
-                    (observed.on_change)(super::WindowChange::Moved(to_rect(frame)));
-                }
+        "AXWindowMoved" | "AXWindowResized" => {
+            if observed.moving.replace(Some(Instant::now())).is_none() {
+                (observed.on_change)(super::WindowChange::Moving);
             }
-        },
+        }
         _ => {
             observed.gone.set(true);
             (observed.on_change)(super::WindowChange::Gone);

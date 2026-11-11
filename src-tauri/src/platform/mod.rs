@@ -83,11 +83,9 @@ pub enum PlatformError {
 /// What happened to the window a review belongs to (see `crate::follow`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WindowChange {
-    /// It is moving: one display frame of a move, with its frame now. The panel moves by as much
-    /// and nothing else, since this comes once per frame.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    Moving(Rect),
-    /// It moved or was resized, and has stopped; its frame is now this.
+    /// It started moving or being resized. The panel stays where it is meanwhile.
+    Moving,
+    /// It moved or was resized and has settled; its frame is now this. The panel glides after it.
     Moved(Rect),
     /// It was minimised, hidden or closed.
     Gone,
@@ -102,9 +100,6 @@ pub struct WindowWatch;
 #[cfg(not(target_os = "macos"))]
 #[allow(dead_code)]
 impl WindowWatch {
-    /// A press on the window may start a drag: start following it now.
-    pub fn track(&self) {}
-
     /// The window's frame now, when the platform can read it cheaply.
     pub fn frame(&self) -> Option<Rect> {
         None
@@ -116,7 +111,7 @@ impl WindowWatch {
 #[cfg(not(target_os = "macos"))]
 pub fn watch_window(
     _capture: &Capture,
-    _on_change: impl Fn(WindowChange) + Send + Sync + 'static,
+    _on_change: impl Fn(WindowChange) + Send + 'static,
 ) -> Option<(WindowWatch, Rect)> {
     None
 }

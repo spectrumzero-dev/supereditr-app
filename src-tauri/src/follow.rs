@@ -1,16 +1,18 @@
-//! The review panel follows the window it belongs to. When the user moves that window, the panel
-//! moves by the same amount, still placed by `overlay`'s rules (on screen, clear of the selection);
-//! when the window is minimised, hidden or closed, the panel closes as it does on Esc.
+//! The review panel follows the window it belongs to. While the user moves that window, the panel
+//! stays where it is; once the window settles, the panel glides to its new place, worked out by
+//! `overlay`'s usual rules (on screen, clear of the selection). When the window is minimised,
+//! hidden or closed, the panel closes as it does on Esc.
 //!
 //! This part is the same on every platform. A platform reports what happened to the window as a
-//! [`WindowChange`], through [`window_changed`]: macOS watches another app's window through
-//! Accessibility (`platform::watch_window`), and Settings' "Try it now" box, whose window is
-//! SuperEditr's own, reports through the window's own events ([`settings_event`]).
+//! [`WindowChange`] (it started moving, it settled at a frame, it went) through [`window_changed`],
+//! and `overlay::glide` does the glide. macOS watches another app's window through Accessibility
+//! (`platform::watch_window`); Settings' "Try it now" box, whose window is SuperEditr's own,
+//! reports through the window's own events ([`settings_event`]).
 //!
 //! A click elsewhere closes the panel, but dragging the window by its title bar starts with a
 //! click on that window. So a click on the reviewed window holds the close for [`HOLD`] (and for as
 //! long as the button stays down): if the window moves meanwhile, it's a drag and the panel stays
-//! and follows; if not, the panel closes as before ([`Hold`]).
+//! and then follows; if not, the panel closes as before ([`Hold`]).
 
 use crate::overlay;
 use crate::platform::{self, Capture, Rect, WindowChange};
@@ -25,6 +27,8 @@ use tauri::{AppHandle, Manager, WebviewWindow, WindowEvent};
 /// the window's text still closes the panel at once to the eye. A slower start is covered anyway:
 /// the hold lasts while the button is down.
 pub const HOLD: Duration = Duration::from_millis(250);
+/// Settings' window has settled once it has sent no move for this long, with the button up.
+const SETTINGS_SETTLE: Duration = Duration::from_millis(150);
 /// While the button stays down after [`HOLD`], how often to look again.
 const HOLD_RECHECK: Duration = Duration::from_millis(50);
 
@@ -167,10 +171,6 @@ pub fn hold_for_click(app: &AppHandle) -> bool {
         return false;
     }
     platform::trace(format_args!("follow: a press on the reviewed window holds the close"));
-    // Follow the window from the press, so the panel moves with the drag's first frame.
-    if let Some(watch) = state.session.lock().unwrap().as_ref().and_then(|s| s.following.as_ref()?._watch.as_ref()) {
-        watch.track();
-    }
     let click = CLICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
     {
         let mut session = state.session.lock().unwrap();
@@ -244,33 +244,36 @@ pub fn gesture_ended(app: &AppHandle) -> bool {
 /// stops, the panel is placed again by the full rules; going closes the panel. Nothing happens
 /// once that review has ended.
 pub fn window_changed(app: &AppHandle, id: u64, change: WindowChange) {
-    let (frame, moving) = match change {
-        WindowChange::Gone => return crate::review::dismiss(app, Some(id)),
-        WindowChange::Moving(frame) => (frame, true),
-        WindowChange::Moved(frame) => (frame, false),
-    };
     let state = app.state::<AppState>();
-    let (anchor, height, offset) = {
+    let frame = match change {
+        WindowChange::Gone => return crate::review::dismiss(app, Some(id)),
+        WindowChange::Moving => {
+            {
+                let mut session = state.session.lock().unwrap();
+                let Some(following) = session.as_mut().filter(|s| s.id == id).and_then(|s| s.following.as_mut()) else {
+                    return;
+                };
+                // A move after a press on the window makes the press a drag.
+                following.hold.moved();
+            }
+            // A glide under way stops; the panel waits where it is for the window to settle.
+            return overlay::stop_glide(app);
+        }
+        WindowChange::Moved(frame) => frame,
+    };
+    let (anchor, height) = {
         let mut session = state.session.lock().unwrap();
         let Some(current) = session.as_mut().filter(|s| s.id == id) else { return };
         let Some(anchor) = current.anchor.or_else(overlay::pointer_anchor) else { return };
         let Some(following) = current.following.as_mut() else { return };
-        let offset = following.follow.offset(frame);
-        if offset != (0.0, 0.0) {
+        if following.follow.offset(frame) != (0.0, 0.0) {
             following.hold.moved();
         }
         let moved = following.follow.follow(anchor, frame);
         current.anchor = Some(moved);
-        (moved, current.height, offset)
+        (moved, current.height)
     };
-    if moving {
-        // Once per display frame: only move the panel. Its full placement waits for the end.
-        if offset != (0.0, 0.0) {
-            overlay::nudge(app, offset.0, offset.1);
-        }
-    } else {
-        overlay::resize(app, Some(anchor), height.clamp(90.0, 670.0));
-    }
+    overlay::glide(app, anchor, height.clamp(90.0, 670.0));
 }
 
 /// An event of the Settings window, for a review of its "Try it now" box.
@@ -286,10 +289,31 @@ pub fn settings_event(app: &AppHandle, window: &WebviewWindow, event: &WindowEve
     match event {
         WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
             if window.is_minimized().unwrap_or(false) || !window.is_visible().unwrap_or(true) {
-                window_changed(app, id, WindowChange::Gone);
-            } else if let Some(frame) = own_frame(window) {
-                window_changed(app, id, WindowChange::Moved(frame));
+                return window_changed(app, id, WindowChange::Gone);
             }
+            // Each event of a move counts it on; the glide waits until the count stops changing.
+            static MOVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            static MOVING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !MOVING.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                window_changed(app, id, WindowChange::Moving);
+            }
+            let this_move = MOVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            let (app, window) = (app.clone(), window.clone());
+            std::thread::spawn(move || {
+                loop {
+                    std::thread::sleep(SETTINGS_SETTLE);
+                    if MOVES.load(std::sync::atomic::Ordering::Relaxed) != this_move {
+                        return;
+                    }
+                    if !platform::mouse_button_down() {
+                        break;
+                    }
+                }
+                MOVING.store(false, std::sync::atomic::Ordering::Relaxed);
+                if let Some(frame) = own_frame(&window) {
+                    window_changed(&app, id, WindowChange::Moved(frame));
+                }
+            });
         }
         WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => window_changed(app, id, WindowChange::Gone),
         _ => {}

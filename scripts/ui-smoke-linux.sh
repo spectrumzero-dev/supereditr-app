@@ -302,7 +302,7 @@ chromium_cases() {
   page="$(vm "d_addr '^chromium(-browser)? \\| SuperEditr smoke fields'")"
   vm "shot 10-chromium-page"
   local kinds=(html image text) i=0 id before after value
-  for id in plain rich code markdown tiptap lexical; do
+  for id in plain rich code markdown tiptap lexical slate quill; do
     set_clipboard "${kinds[$((i % 3))]}"
     i=$((i + 1))
     vm "d_focus $page; sleep 0.3; d_cursor_move \$(d_active | jq -r '.at[0] + 300') \$(d_active | jq -r '.at[1] + 200')" > /dev/null

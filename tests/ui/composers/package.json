@@ -13,6 +13,12 @@
     "@tiptap/pm": "3.32.2",
     "@tiptap/starter-kit": "3.32.2",
     "esbuild": "0.28.2",
-    "lexical": "0.53.0"
+    "lexical": "0.53.0",
+    "quill": "2.0.3",
+    "react": "19.1.10",
+    "react-dom": "19.1.10",
+    "slate": "0.147.4",
+    "slate-dom": "0.147.3",
+    "slate-react": "0.147.5"
   }
 }

@@ -61,7 +61,8 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
     check_shortcut: () => (args?.accelerator === "Command+Space" ? "macOS uses this for Spotlight." : null),
     default_presets: () => demoConfig.presets.map((p) => ({ ...p })),
     builtin_ai: () => ({ supported: true, available: true, message: null }),
-    check_provider: () => ({ ready: false, problem: "Add an API key", models: [] }),
+    check_provider: () => ({ ready: false, problem: "Add an API key", code: null, models: [] }),
+    claude_sign_in: () => undefined,
     app_info: () => {
       const names: Record<string, string> = { "com.1password.1password": "1Password", "com.apple.Terminal": "Terminal", "com.apple.Notes": "Notes" };
       const ids = (args?.bundleIds as string[]).filter((id) => id in names);
@@ -96,11 +97,15 @@ export const api = {
   /** Why a shortcut can't be used for `slot` ("review", "quick_fix", "preset:<id>"), or null. */
   checkShortcut: (accelerator: string, slot: string) => invoke<string | null>("check_shortcut", { accelerator, slot }),
   defaultPresets: () => invoke<Preset[]>("default_presets"),
+  /** Closes the review panel, if one is open. */
+  dismissReview: () => invoke<void>("dismiss", { id: null }),
   scan: () => invoke<Candidate[]>("scan_accounts"),
   adopt: (index: number) => invoke<ProviderProfile>("adopt_candidate", { index }),
   addProvider: (kind: ProviderKind) => invoke<ProviderProfile>("add_provider", { kind }),
   removeProvider: (profileId: string) => invoke<void>("remove_provider", { profileId }),
   checkProvider: (profileId: string) => invoke<ProviderCheck>("check_provider", { profileId }),
+  /** Starts Claude Code's own sign-in in a console window (Windows). */
+  claudeSignIn: (profileId: string) => invoke<void>("claude_sign_in", { profileId }),
   activateProvider: (profileId: string) => invoke<ProviderCheck>("activate_provider", { profileId }),
   models: (profileId: string) => invoke<string[]>("list_models", { profileId }),
   test: (profileId: string) => invoke<{ firstTokenMs: number | null; totalMs: number; output: string }>("test_provider", { profileId }),

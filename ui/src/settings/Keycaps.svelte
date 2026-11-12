@@ -3,7 +3,7 @@
   // the panel (it shows tips for the first few reviews), and Try it now tests ⌘E E for real.
   import { keycaps } from "../lib/accelerator";
   import { keySymbols } from "../lib/diff";
-  import { isMac, words } from "../lib/platform";
+  import { words } from "../lib/platform";
 
   interface Props {
     review: string;
@@ -14,11 +14,11 @@
 
   const items = $derived([
     { id: "review", caps: keycaps(review), label: "Review selection" },
-    { id: "apply", caps: [isMac() ? "↩" : "Enter"], label: "Apply" },
+    { id: "apply", caps: [words().applyKeys[0]], label: "Apply" },
     // Spelled out: the ⇥ symbol reads as an arrow.
-    { id: "next", caps: ["tab"], label: "Next change" },
+    { id: "next", caps: [words().tabKey], label: "Next change" },
     { id: "styles", caps: ["1–7"], label: "Switch style" },
-    { id: "close", caps: ["esc"], label: "Close" },
+    { id: "close", caps: [words().escKey], label: "Close" },
   ]);
 </script>
 

@@ -683,14 +683,14 @@ async fn checks_whether_an_ai_can_answer_before_it_is_used() {
     let providers = Providers::new();
     let mut gemini = profile(ProviderKind::Gemini, "https://example.invalid", "gemini-x");
     gemini.api_key = None;
-    assert_eq!(providers.check(&gemini).await.unwrap_err(), "Add an API key");
+    assert_eq!(providers.check(&gemini).await.unwrap_err().to_string(), "Add an API key");
 
     let down = profile(ProviderKind::OpenAiCompatible, "http://127.0.0.1:9/v1", "m");
-    assert!(providers.check(&down).await.unwrap_err().starts_with("Can’t connect"));
+    assert!(providers.check(&down).await.unwrap_err().to_string().starts_with("Can’t connect"));
 
     let (url, _) = mock_server(vec![(200, "application/json", r#"{"data":[]}"#.into())]).await;
     let empty = profile(ProviderKind::OpenAiCompatible, &url, "local-model");
-    assert_eq!(providers.check(&empty).await.unwrap_err(), "This server lists no models");
+    assert_eq!(providers.check(&empty).await.unwrap_err().to_string(), "This server lists no models");
 
     let body = r#"{"data":[{"id":"local-model"}]}"#;
     let (url, _) = mock_server(vec![(200, "application/json", body.into())]).await;

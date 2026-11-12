@@ -17,7 +17,7 @@ pub struct Hotkeys {
 
 /// Apps where SuperEditr never reads text: password managers, and terminals, whose output reads
 /// like text and where pasting a revision would run it as input. macOS bundle IDs.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 const DEFAULT_EXCLUSIONS: &[&str] = &[
     "com.1password.1password",
     "com.nordsec.nordpass",
@@ -36,7 +36,7 @@ const DEFAULT_EXCLUSIONS: &[&str] = &[
 ];
 
 /// The terminals among the default exclusions.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 const TERMINALS: &[&str] = &[
     "com.apple.Terminal",
     "com.googlecode.iterm2",
@@ -75,30 +75,64 @@ const TERMINALS: &[&str] = &[
     "org.kde.konsole",
 ];
 
+/// On Windows, apps are known by their program's file name, which Windows compares without case.
+/// `conhost.exe` and `OpenConsole.exe` host the classic console; the shells are listed too, for a
+/// console window that belongs to the shell itself.
+#[cfg(windows)]
+const DEFAULT_EXCLUSIONS: &[&str] = &[
+    "1Password.exe",
+    "Bitwarden.exe",
+    "KeePassXC.exe",
+    "KeePass.exe",
+    "NordPass.exe",
+    "WindowsTerminal.exe",
+    "OpenConsole.exe",
+    "conhost.exe",
+    "pwsh.exe",
+    "powershell.exe",
+    "cmd.exe",
+    "wezterm-gui.exe",
+    "alacritty.exe",
+    "mintty.exe",
+];
+
+#[cfg(windows)]
+const TERMINALS: &[&str] = &[
+    "WindowsTerminal.exe",
+    "OpenConsole.exe",
+    "conhost.exe",
+    "pwsh.exe",
+    "powershell.exe",
+    "cmd.exe",
+    "wezterm-gui.exe",
+    "alacritty.exe",
+    "mintty.exe",
+];
+
 /// True for a terminal SuperEditr excludes by default.
 pub fn is_terminal(bundle_id: &str) -> bool {
     TERMINALS.iter().any(|t| t.eq_ignore_ascii_case(bundle_id))
 }
 
 /// The defaults in the first release, before `offered_exclusions` was recorded.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 fn first_default_exclusions() -> Vec<String> {
     DEFAULT_EXCLUSIONS[..6].iter().map(|s| s.to_string()).collect()
 }
 
-/// Every Linux release has recorded `offered_exclusions`.
-#[cfg(target_os = "linux")]
+/// Every Linux and Windows release has recorded `offered_exclusions`.
+#[cfg(any(target_os = "linux", windows))]
 fn first_default_exclusions() -> Vec<String> {
     DEFAULT_EXCLUSIONS.iter().map(|s| s.to_string()).collect()
 }
 
 /// Hold ⌘ and press E twice. A single ⌘E still reaches the app, a moment later.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 const REVIEW_SHORTCUT: &str = "Command+E Command+E";
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 const QUICK_FIX_SHORTCUT: &str = "Control+Alt+Shift+E";
 /// The first default, replaced because ⌃⌥E clashes with other apps.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 const OLD_REVIEW_SHORTCUT: &str = "Control+Alt+E";
 
 /// Single chords: a double press needs a keyboard tap, which Wayland doesn't allow. Both are free in
@@ -108,13 +142,24 @@ const REVIEW_SHORTCUT: &str = "Super+Alt+E";
 #[cfg(target_os = "linux")]
 const QUICK_FIX_SHORTCUT: &str = "Super+Control+Alt+E";
 
+/// A chord, since a double press needs a keyboard hook. Ctrl+Shift+F2 has the same key and label on
+/// common layouts and is free in Windows and common apps, unlike the Windows key (the shell's),
+/// Ctrl+Alt with a letter (AltGr on many layouts) or Ctrl+E (taken by Word and browsers). Quick fix
+/// starts unbound.
+#[cfg(windows)]
+const REVIEW_SHORTCUT: &str = "Control+Shift+F2";
+#[cfg(windows)]
+const QUICK_FIX_SHORTCUT: &str = "";
+
 /// Where the settings file keeps this OS's shortcuts. Each OS has its own key, so a settings file
 /// synced from a Mac doesn't bring ⌘ shortcuts to Linux, and a save on one keeps the other's.
 #[cfg(target_os = "linux")]
 const HOTKEYS_KEY: &str = "linux_hotkeys";
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+const HOTKEYS_KEY: &str = "windows_hotkeys";
+#[cfg(not(any(target_os = "linux", windows)))]
 const HOTKEYS_KEY: &str = "hotkeys";
-const ALL_HOTKEYS_KEYS: &[&str] = &["hotkeys", "linux_hotkeys"];
+const ALL_HOTKEYS_KEYS: &[&str] = &["hotkeys", "linux_hotkeys", "windows_hotkeys"];
 
 impl Default for Hotkeys {
     fn default() -> Self {
@@ -168,6 +213,9 @@ pub struct Config {
     pub onboarded: bool,
 }
 
+/// Whether suggestions appear on their own by default: only where SuperEditr sees every selection.
+const AUTO_POPUP: bool = cfg!(not(any(target_os = "linux", windows)));
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -179,8 +227,8 @@ impl Default for Config {
             style_notes: String::new(),
             dialect: "American English".into(),
             hotkeys: Hotkeys::default(),
-            // On Linux, only the shortcut starts a review.
-            auto_popup: cfg!(not(target_os = "linux")),
+            // On Linux and Windows, only the shortcut starts a review.
+            auto_popup: AUTO_POPUP,
             auto_min_chars: 12,
             select_sentence: true,
             keep_formatting: true,
@@ -215,7 +263,7 @@ impl Config {
         config.merge_new_exclusions();
         config.drop_builtin_ai();
         config.pin_official_addresses();
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", windows)))]
         if config.hotkeys.review == OLD_REVIEW_SHORTCUT {
             config.hotkeys.review = REVIEW_SHORTCUT.into();
         }
@@ -414,7 +462,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", windows)))]
     #[test]
     fn apple_intelligence_profiles_become_the_builtin_default() {
         let dir = std::env::temp_dir().join(format!("supereditr-builtin-{}", std::process::id()));
@@ -432,7 +480,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", windows)))]
     #[test]
     fn new_default_exclusions_reach_existing_settings_once() {
         let dir = std::env::temp_dir().join(format!("supereditr-exclusions-{}", std::process::id()));
@@ -453,7 +501,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", windows)))]
     #[test]
     fn excludes_password_managers_and_terminals_by_default() {
         let config = Config::default();
@@ -476,6 +524,20 @@ mod tests {
         assert_eq!(config.hotkeys.review, "Super+Alt+E");
         assert_eq!(config.hotkeys.quick_fix, "Super+Control+Alt+E");
         assert!(!config.auto_popup, "no automatic suggestions on Linux");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_defaults_use_program_names_and_a_chord() {
+        let config = Config::default();
+        assert!(config.is_excluded("WindowsTerminal.exe"));
+        assert!(config.is_excluded("keepassxc.EXE"), "Windows file names ignore case");
+        assert!(!config.is_excluded("notepad.exe"));
+        assert!(is_terminal("CMD.EXE"));
+        assert!(!is_terminal("1Password.exe"));
+        assert_eq!(config.hotkeys.review, "Control+Shift+F2");
+        assert_eq!(config.hotkeys.quick_fix, "", "quick fix starts unbound");
+        assert!(!config.auto_popup, "no automatic suggestions on Windows");
     }
 
     #[test]
@@ -536,7 +598,7 @@ mod tests {
     fn missing_file_gives_defaults() {
         let config = Config::load(Path::new("/nonexistent/supereditr.json"));
         assert_eq!(config.default_preset().id, "proofread");
-        assert_eq!(config.auto_popup, cfg!(not(target_os = "linux")));
+        assert_eq!(config.auto_popup, AUTO_POPUP);
     }
 
     #[test]

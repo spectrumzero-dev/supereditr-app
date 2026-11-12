@@ -512,6 +512,7 @@ pub fn run() {
             commands::default_presets,
             commands::check_shortcut,
             commands::check_provider,
+            commands::claude_sign_in,
             commands::activate_provider,
             commands::review_playground,
             commands::fit_settings_height,

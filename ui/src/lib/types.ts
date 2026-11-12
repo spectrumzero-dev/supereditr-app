@@ -148,6 +148,8 @@ export interface SettingsPayload {
   platform: string;
   /** Where capture.log is written. */
   logPath: string | null;
+  /** On Windows, what keys saved by virtual key ("VkBA") show on the current keyboard layout. */
+  keyLabels?: Record<string, string>;
   /** The revision `config` was saved at; see `save_settings` in commands.rs. */
   revision: number;
 }
@@ -162,6 +164,8 @@ export interface Saved {
 export interface ProviderCheck {
   ready: boolean;
   problem: string | null;
+  /** A problem Settings words itself: "claude_sign_in" when Claude Code isn't signed in. */
+  code?: string | null;
   models: string[];
 }
 

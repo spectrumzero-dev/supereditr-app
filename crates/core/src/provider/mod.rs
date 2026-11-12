@@ -240,8 +240,8 @@ impl Providers {
     }
 
     /// Whether an AI can answer reviews: its key is present and its server lists models within a
-    /// few seconds, or for the Claude CLI, the program runs. `Err` says what to fix.
-    pub async fn check(&self, profile: &ProviderProfile) -> Result<Vec<String>, String> {
+    /// few seconds, or for the Claude CLI, the program runs signed in. `Err` says what to fix.
+    pub async fn check(&self, profile: &ProviderProfile) -> Result<Vec<String>, CheckProblem> {
         if profile.kind.needs_key() && profile.api_key.as_deref().is_none_or(|k| k.trim().is_empty()) {
             return Err("Add an API key".into());
         }
@@ -254,13 +254,9 @@ impl Providers {
                 crate::process::output(program, &["auth", "status"]),
             )
             .await;
-            let Ok(Ok(out)) = ran else { return Err(format!("Claude Code didn’t run at {program}")) };
-            let status: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
-            return match status["loggedIn"].as_bool() {
-                Some(true) => Ok(vec!["haiku".into(), "sonnet".into(), "opus".into()]),
-                Some(false) => Err("Sign in to Claude Code: run `claude` in Terminal and use /login".into()),
-                None => Err(format!("Claude Code at {program} didn’t report whether it’s signed in")),
-            };
+            let Ok(Ok(out)) = ran else { return Err(format!("Claude Code didn’t run at {program}").into()) };
+            claude_auth_status(&out.stdout, program)?;
+            return Ok(vec!["haiku".into(), "sonnet".into(), "opus".into()]);
         }
         match tokio::time::timeout(std::time::Duration::from_secs(8), self.list_models(profile)).await {
             Ok(Ok(models)) if models.is_empty() => Err(if profile.kind == ProviderKind::Ollama {
@@ -269,7 +265,7 @@ impl Providers {
                 "This server lists no models".into()
             }),
             Ok(Ok(models)) => Ok(models),
-            Ok(Err(e)) => Err(format!("Can’t connect: {}", e.to_string().trim_end_matches('.'))),
+            Ok(Err(e)) => Err(format!("Can’t connect: {}", e.to_string().trim_end_matches('.')).into()),
             Err(_) => Err("Can’t connect: no answer in 8 seconds".into()),
         }
     }
@@ -383,9 +379,121 @@ fn newest_gemini(available: &[String]) -> Option<String> {
     None
 }
 
+/// Why an AI can't answer reviews yet (`Providers::check`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckProblem {
+    /// Claude Code runs but isn't signed in to a Claude account. The settings UI words this, and
+    /// may offer to start the sign-in, so it has a code of its own.
+    ClaudeSignIn,
+    /// Anything else, in words the user can act on.
+    Other(String),
+}
+
+impl CheckProblem {
+    /// A code for a problem the settings UI words itself.
+    pub fn code(&self) -> Option<&'static str> {
+        match self {
+            Self::ClaudeSignIn => Some("claude_sign_in"),
+            Self::Other(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for CheckProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClaudeSignIn => f.write_str("Sign in to Claude Code: run `claude` in Terminal and use /login"),
+            Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+impl From<String> for CheckProblem {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+
+impl From<&str> for CheckProblem {
+    fn from(message: &str) -> Self {
+        Self::Other(message.into())
+    }
+}
+
+/// What `claude auth status` printed (JSON with `loggedIn`): signed in, signed out, or no answer.
+fn claude_auth_status(stdout: &[u8], program: &str) -> Result<(), CheckProblem> {
+    let status: serde_json::Value = serde_json::from_slice(stdout).unwrap_or_default();
+    match status["loggedIn"].as_bool() {
+        Some(true) => Ok(()),
+        Some(false) => Err(CheckProblem::ClaudeSignIn),
+        None => Err(format!("Claude Code at {program} didn’t report whether it’s signed in").into()),
+    }
+}
+
+/// Starts Claude Code's own sign-in to a Claude account (`auth login --claudeai`) for the program a
+/// profile runs, in a console window of its own that the user sees: Claude Code opens the browser
+/// for the sign-in, and the console stays for a code it may ask to have pasted back. Doesn't wait.
+#[cfg(windows)]
+pub fn start_claude_sign_in(saved: &str) -> std::io::Result<()> {
+    let program = crate::detect::claude_program(saved);
+    crate::process::spawn_in_console(&program, &["auth", "login", "--claudeai"])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_auth_status_maps_to_a_problem_the_ui_words() {
+        assert_eq!(claude_auth_status(br#"{"loggedIn": true, "authMethod": "claude.ai"}"#, "claude"), Ok(()));
+        let signed_out = claude_auth_status(br#"{"loggedIn": false}"#, "claude").unwrap_err();
+        assert_eq!(signed_out, CheckProblem::ClaudeSignIn);
+        assert_eq!(signed_out.code(), Some("claude_sign_in"));
+        let silent = claude_auth_status(b"not json", "claude").unwrap_err();
+        assert_eq!(silent.code(), None, "no code: its words are shown as they are");
+        assert!(silent.to_string().contains("didn’t report"));
+        assert_eq!(CheckProblem::from("Add an API key").code(), None);
+    }
+
+    /// A stand-in for Claude Code whose `auth status` reports signed in once `signed-in` exists in
+    /// its folder, as the real one does once its sign-in finishes.
+    fn fake_signing_in_claude(dir: &std::path::Path) -> std::path::PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        #[cfg(windows)]
+        {
+            let program = dir.join("claude.cmd");
+            std::fs::write(
+                &program,
+                "@echo off\r\nif exist \"%~dp0signed-in\" (echo {\"loggedIn\": true}) else (echo {\"loggedIn\": false})\r\n",
+            )
+            .unwrap();
+            program
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let program = dir.join("claude");
+            let script = "#!/bin/sh\nif [ -e \"$(dirname \"$0\")/signed-in\" ]; then echo '{\"loggedIn\": true}'; else echo '{\"loggedIn\": false}'; fi\n";
+            std::fs::write(&program, script).unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+            program
+        }
+    }
+
+    #[cfg(any(windows, unix))]
+    #[tokio::test]
+    async fn a_claude_sign_in_shows_up_on_the_next_check() {
+        let dir = std::env::temp_dir().join(format!("supereditr-claude-sign-in-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let program = fake_signing_in_claude(&dir);
+        let mut profile = ProviderProfile::new(ProviderKind::ClaudeCli);
+        profile.base_url = program.display().to_string();
+        let providers = Providers::new();
+        assert_eq!(providers.check(&profile).await, Err(CheckProblem::ClaudeSignIn));
+        std::fs::write(dir.join("signed-in"), "").unwrap();
+        assert!(providers.check(&profile).await.is_ok(), "signed in, as the settings poll would see it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn picks_newest_fast_gemini() {

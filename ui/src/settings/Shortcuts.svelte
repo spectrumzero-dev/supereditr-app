@@ -2,7 +2,7 @@
   import type { Config } from "../lib/types";
   import ShortcutInput from "./ShortcutInput.svelte";
   import ShortcutPicker from "./ShortcutPicker.svelte";
-  import { isMac, words } from "../lib/platform";
+  import { isLinux, isMac, isWindows, words } from "../lib/platform";
 
   interface Props {
     config: Config;
@@ -23,14 +23,16 @@
         <div class="label">Review selection</div>
         {#if isMac()}
           <div class="hint">Opens suggestions for the selected text. Press again to bring an automatic suggestion into focus. Use a key combination such as ⌃⌥E or F6, or a double press like ⌘E E (press it twice quickly). Shortcuts macOS or other apps already use are refused.</div>
+        {:else if isWindows()}
+          <div class="hint">Opens suggestions for the selected text. Use a key combination such as Ctrl+Shift+F2 or Ctrl+Alt+Space. Shortcuts Windows or other apps already use are refused.</div>
         {:else}
           <div class="hint">Opens suggestions for the selected text. These combinations are free on Omarchy; one your desktop already uses can’t be chosen.</div>
         {/if}
       </div>
-      {#if isMac()}
-        <ShortcutInput slot="review" value={config.hotkeys.review} onchange={(v) => { config.hotkeys.review = v; onchange(); }} />
-      {:else}
+      {#if isLinux()}
         <ShortcutPicker slot="review" value={config.hotkeys.review} onchange={(v) => { config.hotkeys.review = v; onchange(); }} />
+      {:else}
+        <ShortcutInput slot="review" value={config.hotkeys.review} onchange={(v) => { config.hotkeys.review = v; onchange(); }} />
       {/if}
     </div>
     <div class="row">
@@ -38,10 +40,10 @@
         <div class="label">Quick fix</div>
         <div class="hint">Applies your default style to the selection immediately, without showing suggestions.</div>
       </div>
-      {#if isMac()}
-        <ShortcutInput slot="quick_fix" value={config.hotkeys.quick_fix} onchange={(v) => { config.hotkeys.quick_fix = v; onchange(); }} />
-      {:else}
+      {#if isLinux()}
         <ShortcutPicker slot="quick_fix" value={config.hotkeys.quick_fix} onchange={(v) => { config.hotkeys.quick_fix = v; onchange(); }} />
+      {:else}
+        <ShortcutInput slot="quick_fix" value={config.hotkeys.quick_fix} onchange={(v) => { config.hotkeys.quick_fix = v; onchange(); }} />
       {/if}
     </div>
     <div class="row">
@@ -54,8 +56,8 @@
     <div class="row keys">
       <div class="label">In the suggestion panel</div>
       <div class="cheats">
-        <span><kbd>{w.applyKey}</kbd> or <kbd>{isMac() ? "↩" : "Enter"}</kbd> replace</span>
-        <span><kbd>tab</kbd> next change</span>
+        <span>{#each [...w.applyKeys].reverse() as key, i (key)}{#if i} or {/if}<kbd>{key}</kbd>{/each} replace</span>
+        <span><kbd>{w.tabKey}</kbd> next change</span>
         <span><kbd>␣</kbd> keep original</span>
         <span><kbd>1</kbd>–<kbd>7</kbd> style</span>
         <span><kbd>/</kbd> instruct</span>

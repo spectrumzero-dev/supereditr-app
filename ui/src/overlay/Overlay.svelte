@@ -395,7 +395,7 @@
         <p class="tips">SuperEditr can’t replace text here.{#if session.copyOnlyHint} {session.copyOnlyHint}{/if} Press <kbd>{words().copyKey}</kbd> to copy the fix.</p>
       {/if}
       {#if showTips && keyboard && phase === "done" && list.length}
-        <p class="tips">Tip: {#if session.canApply}<kbd>{words().applyKey}</kbd> replaces your text with{:else}<kbd>{words().copyKey}</kbd> copies{/if} everything you see · <kbd>tab</kbd> steps through changes · <kbd>␣</kbd> switches a change between yours and the suggestion · <kbd>esc</kbd> closes</p>
+        <p class="tips">Tip: {#if session.canApply}<kbd>{words().applyKey}</kbd> replaces your text with{:else}<kbd>{words().copyKey}</kbd> copies{/if} everything you see · <kbd>{words().tabKey}</kbd> steps through changes · <kbd>␣</kbd> switches a change between yours and the suggestion · <kbd>{words().escKey}</kbd> closes</p>
       {/if}
       <footer>
         <div class="status" title={[summarize(view), sourceLabel(source, view), remembered ? "from earlier" : timing].filter(Boolean).join(" · ")}>
@@ -420,7 +420,7 @@
              the key that does something with the fix. -->
         <div class="keys">
           {#if keyboard}
-            {#if list.length > 1}<span><kbd>tab</kbd> next</span>{/if}
+            {#if list.length > 1}<span><kbd>{words().tabKey}</kbd> next</span>{/if}
             {#if focusedId != null}<span><kbd>␣</kbd> {rejected.has(focusedId) ? "restore" : "keep original"}</span>{/if}
             <span><kbd>/</kbd> instruct</span>
           {/if}
@@ -428,7 +428,7 @@
             {#if session.canApply}<span><kbd>{words().applyKey}</kbd> replace</span>{:else}<span><kbd>{words().copyKey}</kbd> copy</span>{/if}
           {/if}
           {#if keyboard}
-            <span><kbd>esc</kbd></span>
+            <span><kbd>{words().escKey}</kbd></span>
           {:else}
             <button class="link" onclick={useKeyboard}>use keyboard</button>
           {/if}

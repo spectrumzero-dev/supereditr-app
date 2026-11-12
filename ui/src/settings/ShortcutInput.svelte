@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { acceleratorFromEvent } from "../lib/accelerator";
   import { keySymbols } from "../lib/diff";
-  import { isMac } from "../lib/platform";
+  import { isMac, isWindows } from "../lib/platform";
   import { api } from "./ipc";
 
   interface Props {
@@ -85,12 +85,21 @@
     if (!accelerator) {
       // A plain key would fire whenever it's typed; modifier keys alone are just the start.
       if (!["Shift", "Control", "Alt", "Meta", "CapsLock", "Fn"].includes(e.key)) {
-        problem = isMac() ? "Add ⌘, ⌃, or ⌥ to that key, or use a function key such as F6." : "Add Super, Ctrl or Alt to that key, or use a function key such as F6.";
+        problem = isMac()
+          ? "Add ⌘, ⌃, or ⌥ to that key, or use a function key such as F6."
+          : isWindows()
+            ? "Add Ctrl or Alt to that key, or use a function key such as F6."
+            : "Add Super, Ctrl or Alt to that key, or use a function key such as F6.";
       }
       return;
     }
     problem = "";
     clearTimeout(timer);
+    // Double presses work only on macOS, so elsewhere the first chord is the shortcut.
+    if (!isMac()) {
+      finish(accelerator);
+      return;
+    }
     // Doubling needs a letter or digit (see src-tauri/src/double_press.rs).
     if (first === accelerator && /\+[A-Z0-9]$/.test(accelerator)) {
       finish(`${accelerator} ${accelerator}`);

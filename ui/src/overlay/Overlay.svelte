@@ -5,7 +5,7 @@
   import { applyView, changeLabel, changes, sourceLabel, summarize } from "../lib/diff";
   import type { EngineEvent, SessionPayload, StatusPayload } from "../lib/types";
   import { ipc } from "./ipc";
-  import { canUse, emptyReview, keptWording, offerToKeep, reduce, type Review } from "./review";
+  import { canUse, emptyReview, keptWording, offerToKeep, reduce, runRequest, type Review } from "./review";
   import { words } from "../lib/platform";
 
   let session = $state<SessionPayload | null>(null);
@@ -85,13 +85,14 @@
     else if (event.type === "failed" && wasStreaming) rejected = new Set();
   }
 
-  function runPreset(id: string, instruction?: string) {
+  /** Shows a style's result: the one this selection already has, or the AI's. `fresh` (R) asks the AI again. */
+  function runPreset(id: string, instruction?: string, fresh = false) {
     if (!session) return;
     presetId = id;
     review = emptyReview();
     rejected = new Set();
     focusedId = null;
-    ipc.runPreset(session.id, id, instruction?.trim() || null);
+    ipc.runPreset(session.id, runRequest(id, instruction, fresh));
   }
 
   function cycle(step: number) {
@@ -256,7 +257,7 @@
           copy();
         } else if ((mod && e.key === "r") || (!mod && e.key === "r")) {
           e.preventDefault();
-          runPreset(presetId);
+          runPreset(presetId, undefined, true);
         } else if (!mod && e.key === "a" && keepOffer) {
           e.preventDefault();
           alwaysKeep(keepOffer);

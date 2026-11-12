@@ -15,8 +15,8 @@ type CmdResult<T> = Result<T, String>;
 // --- Overlay -------------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn run_preset(app: AppHandle, id: u64, preset_id: String, steer: Option<String>) {
-    review::run(&app, id, preset_id, steer);
+pub fn run_preset(app: AppHandle, id: u64, preset_id: String, steer: Option<String>, fresh: bool) {
+    review::run(&app, id, preset_id, steer, fresh);
 }
 
 #[tauri::command]

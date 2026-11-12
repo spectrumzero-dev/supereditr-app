@@ -167,13 +167,15 @@ mod tests {
     }
 
     #[test]
-    fn saving_the_settings_or_a_key_forgets_the_last_review() {
+    fn saving_the_settings_or_a_key_forgets_the_kept_reviews() {
         let dir = std::env::temp_dir().join(format!("supereditr-last-review-{}", std::process::id()));
         let state = AppState::new(dir.join("settings.json"));
         let now = Instant::now();
+        // Any style's result kept for the selection: `last_style` finds none once all are gone.
         let shown_again = |state: &AppState| {
             let (_, captured, job) = crate::last_review::tests::example(now);
-            state.last_review.recall(&captured, &job, now).is_some()
+            state.last_review.last_style(&captured, now).is_some()
+                || state.last_review.recall(&captured, &job, now).is_some()
         };
         state.last_review.remember(state.last_review.generation(), crate::last_review::tests::example(now).0);
         assert!(shown_again(&state));

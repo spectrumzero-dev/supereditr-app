@@ -26,6 +26,20 @@ export interface Review {
   remembered: boolean;
 }
 
+/** What running a style asks the backend. */
+export interface RunRequest {
+  presetId: string;
+  /** The typed instruction, or null for none. A result with one is never shown again. */
+  steer: string | null;
+  /** Ask the AI even when this selection already has a result for the style, as R does. Otherwise
+   *  switching to a style answered a moment ago shows that result again. */
+  fresh: boolean;
+}
+
+export function runRequest(presetId: string, instruction: string | undefined, fresh: boolean): RunRequest {
+  return { presetId, steer: instruction?.trim() || null, fresh };
+}
+
 export function emptyReview(): Review {
   return { view: null, localView: null, complete: false, phase: "idle", source: "", timing: "", error: "", changedTokens: [], keptTerms: [], backupFor: "", learnable: [], remembered: false };
 }

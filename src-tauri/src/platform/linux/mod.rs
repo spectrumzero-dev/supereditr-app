@@ -331,6 +331,13 @@ pub fn return_focus(pid: i32) {
     }
 }
 
+/// Called once the panel has closed, before `replace`, which itself refocuses the window the text
+/// came from and waits for the desktop to confirm it. This only gives the panel a moment to close.
+pub fn return_to_field(_capture: &Capture) -> bool {
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    true
+}
+
 /// A frame inside a window, in screen coordinates.
 fn in_window(window: Option<&WindowRef>, frame: Rect) -> Option<Rect> {
     window?.rect.map(|at| Rect { x: at.x + frame.x, y: at.y + frame.y, ..frame })

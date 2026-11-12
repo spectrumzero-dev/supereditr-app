@@ -873,6 +873,14 @@ pub fn return_focus(pid: i32) {
     });
 }
 
+/// Called once the panel has closed, before `replace`. The panel never took focus from the app (the
+/// keyboard tap gave it the keys), and `replace` checks the field itself, so this only gives the
+/// panel a moment to close.
+pub fn return_to_field(_capture: &Capture) -> bool {
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    true
+}
+
 /// Reads the current selection. With `allow_clipboard`, falls back to a guarded ⌘C when the
 /// app doesn't expose its selection through Accessibility. Only a shortcut allows the clipboard;
 /// an automatic suggestion never copies, so the log calls the read "shortcut" or "automatic".

@@ -401,10 +401,18 @@ pub async fn apply(app: &AppHandle, id: u64, text: String) -> Result<String, Str
         return Ok("Applied.".into());
     }
     *state.quiet_until.lock().unwrap() = Instant::now() + Duration::from_millis(800);
-    tokio::time::sleep(Duration::from_millis(40)).await;
     let suggestion = text.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        (captured.text != text).then(|| ReplaceOutcome::from(platform::replace(&captured, &text, proofread)))
+        // Focus goes back to the app first, whether or not there's anything to write. Unless it's
+        // confirmed there, nothing is written: a paste could land somewhere else.
+        let returned = platform::return_to_field(&captured);
+        (captured.text != text).then(|| {
+            if returned {
+                ReplaceOutcome::from(platform::replace(&captured, &text, proofread))
+            } else {
+                ReplaceOutcome::CopyOnly(PlatformError::FocusNotReturned)
+            }
+        })
     })
     .await
     .map_err(|e| e.to_string())?;

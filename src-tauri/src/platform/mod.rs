@@ -72,8 +72,12 @@ pub enum PlatformError {
         "SuperEditr applied {applied} of {total} fixes, then stopped because the text no longer matched. Check the text before copying the full suggestion."
     )]
     Partial { applied: usize, total: usize },
+    /// Keyboard focus didn't go back to the field the text came from after the panel had it, so
+    /// nothing was written: a paste could have landed somewhere else.
+    #[error("SuperEditr couldn’t get back to the text you selected, so the suggestion is on your clipboard.")]
+    FocusNotReturned,
     /// The clipboard couldn't be put aside to paste through, so nothing was written.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     #[error("{0}")]
     ClipboardNotKept(String),
     #[error("{0}")]
@@ -228,6 +232,7 @@ mod tests {
             PlatformError::Stale,
             PlatformError::CopyOnly,
             PlatformError::ReplaceFailed,
+            PlatformError::FocusNotReturned,
             PlatformError::Other("Brynlee’s editor closed.".into()),
         ] {
             assert!(matches!(ReplaceOutcome::from(Err(error)), ReplaceOutcome::CopyOnly(_)));

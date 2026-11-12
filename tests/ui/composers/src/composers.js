@@ -14,6 +14,13 @@ import { LinkNode } from "@lexical/link";
 import { ListNode, ListItemNode } from "@lexical/list";
 import { CodeNode } from "@lexical/code";
 import { $generateNodesFromDOM } from "@lexical/html";
+import { createElement as h } from "react";
+import { flushSync } from "react-dom";
+import { createRoot } from "react-dom/client";
+import { createEditor as createSlateEditor, Editor as SlateEditor, Transforms } from "slate";
+import { Editable, Slate, withReact } from "slate-react";
+import Quill from "quill";
+import quillCSS from "quill/dist/quill.core.css";
 
 // The text, by paragraph: two typos the rule-based checker fixes ("Their going", "realy"), code at
 // both ends of the first paragraph (one holds a typo of its own the review must leave alone), bold, a
@@ -171,14 +178,79 @@ function lexical(host, content) {
 }
 field("lexical", "Lexical", lexical);
 
+// Slate with React, the engine Discord's message box is built on. Slate has no HTML paste of its
+// own: a paste from outside takes the plain text, one block per line, as Discord's composer does.
+// The text is loaded from the HTML as blocks (paragraph, heading, list, list item, quote, code
+// block) holding text with marks (bold, italic, code and a link); a line break becomes a "\n" in the
+// text, which Slate shows with white-space: pre-wrap.
+const SLATE_BLOCKS = { P: "p", H1: "h1", H2: "h2", H3: "h3", H4: "h4", UL: "ul", OL: "ol", LI: "li", BLOCKQUOTE: "blockquote", PRE: "pre" };
+const SLATE_MARKS = { STRONG: "bold", B: "bold", EM: "italic", I: "italic", CODE: "code" };
+function slateValue(markup) {
+  const leaves = (node, marks) => {
+    if (node.nodeType === Node.TEXT_NODE) return [{ text: node.textContent, ...marks }];
+    if (node.tagName === "BR") return [{ text: "\n", ...marks }];
+    const mark = SLATE_MARKS[node.tagName];
+    const next = node.tagName === "A" ? { ...marks, href: node.getAttribute("href") } : mark ? { ...marks, [mark]: true } : marks;
+    return [...node.childNodes].flatMap((child) => leaves(child, next));
+  };
+  const block = (node) => {
+    const type = SLATE_BLOCKS[node.tagName];
+    // A code block holds its text, without a code mark: it renders as <pre><code> itself.
+    if (type === "pre") return { type, children: [{ text: node.textContent }] };
+    const kids = [...node.childNodes];
+    // A block holds either blocks or text, never both: a list item's <p> and nested list are blocks.
+    const children = kids.some((k) => SLATE_BLOCKS[k.tagName]) ? kids.filter((k) => SLATE_BLOCKS[k.tagName]).map(block) : kids.flatMap((k) => leaves(k, {}));
+    return { type, children: children.length ? children : [{ text: "" }] };
+  };
+  return [...new DOMParser().parseFromString(markup, "text/html").body.children].map(block);
+}
+function slate(host, content) {
+  const editor = withReact(createSlateEditor());
+  const initial = () => slateValue(content ?? html());
+  const renderElement = ({ attributes, children, element }) =>
+    element.type === "pre" ? h("pre", attributes, h("code", null, children)) : h(element.type, attributes, children);
+  const renderLeaf = ({ attributes, children, leaf }) => {
+    if (leaf.code) children = h("code", null, children);
+    if (leaf.bold) children = h("strong", null, children);
+    if (leaf.italic) children = h("em", null, children);
+    if (leaf.href) children = h("a", { href: leaf.href }, children);
+    return h("span", attributes, children);
+  };
+  flushSync(() =>
+    createRoot(host).render(h(Slate, { editor, initialValue: initial() }, h(Editable, { className: "editor", renderElement, renderLeaf }))),
+  );
+  const reset = () => {
+    Transforms.deselect(editor);
+    SlateEditor.withoutNormalizing(editor, () => {
+      for (let i = editor.children.length - 1; i >= 0; i--) Transforms.removeNodes(editor, { at: [i] });
+      Transforms.insertNodes(editor, initial(), { at: [0] });
+    });
+  };
+  return { root: host.querySelector("[data-slate-editor]"), reset };
+}
+field("slate", "Slate (Discord)", slate);
+
+// Quill 2, the engine Signal Desktop's composer is built on (and reported, unconfirmed, in Slack's),
+// with its own HTML paste.
+function quill(host, content) {
+  const editor = new Quill(host);
+  const reset = () => editor.setContents(editor.clipboard.convert({ html: content ?? html() }));
+  reset();
+  editor.root.classList.add("editor");
+  return { root: editor.root, reset };
+}
+field("quill", "Quill (Signal)", quill);
+
 // The formats document in each editor.
 field("formats-div", "Formats: editable div", editableDiv, FORMATS);
 field("formats-markdown", "Formats: Markdown composer", markdownComposer, FORMATS);
 field("formats-tiptap", "Formats: TipTap", tiptap, FORMATS);
 field("formats-lexical", "Formats: Lexical", lexical, FORMATS);
+field("formats-slate", "Formats: Slate", slate, FORMATS);
+field("formats-quill", "Formats: Quill", quill, FORMATS);
 
 const style = document.createElement("style");
-style.textContent = `
+style.textContent = quillCSS + `
 .editor { border: 1px solid #888; padding: 4px; width: 34em; min-height: 3em; }
 .editor p { margin: 0 0 4px; }
 section { margin: 6px 0; }

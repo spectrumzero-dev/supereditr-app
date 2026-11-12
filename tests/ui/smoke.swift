@@ -1319,14 +1319,15 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         }
         // The composer matrix: the same text in an editable div that pastes HTML, a Markdown composer
         // like Claude's desktop app (it pastes from the plain text alone, reads it as Markdown, and pads
-        // code with zero-width spaces), and two open-source editors chat and issue-tracker composers are
-        // built on (tests/ui/composers). Each field holds two typos to fix, code at both ends of its
-        // first paragraph (one with a typo of its own), bold, a link and an empty paragraph, and is
-        // reviewed once. The proofread must be applied in place, one edit per change, and keep the
-        // code, bold and link as they were. The editable div is applied with every CPU core busy:
+        // code with zero-width spaces), and four open-source editors chat and issue-tracker composers are
+        // built on: TipTap, Lexical, Slate (Discord's) and Quill (Signal Desktop's), in tests/ui/composers.
+        // Each field holds two typos to fix, code at both ends of its first paragraph (one with a typo of
+        // its own), bold, a link and an empty paragraph, and is reviewed once. The proofread must be
+        // applied in place, one edit per change, and keep the code, bold and link as they were. The editable div is applied with every CPU core busy:
         // Chrome then updates its accessibility tree late after each edit, and the next edit must
         // wait for it (it failed whenever two test VMs ran at once).
-        let composerFields = [("code", "editable div"), ("markdown", "Markdown composer"), ("tiptap", "TipTap"), ("lexical", "Lexical")]
+        let composerFields = [("code", "editable div"), ("markdown", "Markdown composer"), ("tiptap", "TipTap"), ("lexical", "Lexical"),
+                              ("slate", "Slate"), ("quill", "Quill")]
         let codes = ["teh fix", "their going to work"], composerTypo = "Their going to love"
         let composerFixes = ["They're going to love", "really run"]
         let visible = { (text: String) in String(text.unicodeScalars.filter { !["\u{200B}", "\u{2060}", "\u{FEFF}"].contains($0) }) }
@@ -1431,7 +1432,8 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         // reviewed (the panel) and the field's Accessibility tree go to the artifacts, to show how Chrome
         // exposes each structure.
         let formatFields = [("formats-div", "editable div"), ("formats-markdown", "Markdown composer"),
-                            ("formats-tiptap", "TipTap"), ("formats-lexical", "Lexical")]
+                            ("formats-tiptap", "TipTap"), ("formats-lexical", "Lexical"),
+                            ("formats-slate", "Slate"), ("formats-quill", "Quill")]
         func axDump(_ element: AXUIElement, depth: Int = 0) -> String {
             let role = attribute(element, kAXRoleAttribute) as? String ?? "?"
             let subrole = attribute(element, kAXSubroleAttribute) as? String ?? ""
@@ -1493,10 +1495,13 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             }
             let read = lastChromeRead()
             try? "\(read)\n\n\(panelText())".write(toFile: outDir + "/formats-\(id)-review.txt", atomically: true, encoding: .utf8)
-            // Every line break read: the whole field, plus the empty paragraph Chrome's own text leaves out.
+            // Every line break read: the whole field, plus the empty paragraph when Chrome's own text
+            // leaves it out. Slate puts a zero-width character in an empty paragraph, so there Chrome's
+            // text already has the empty line.
+            let hasEmptyLine = (fieldValue as String).components(separatedBy: "\n").contains { visible($0).isEmpty }
             let counts = read.range(of: #"read (\d+) characters of (\d+)"#, options: .regularExpression)
                 .map { String(read[$0]).split(separator: " ").compactMap { Int($0) } }
-            check(counts.map { $0[0] == $0[1] + 1 } ?? false, "\(name): it is read with every line break, the empty one included",
+            check(counts.map { $0[0] == $0[1] + (hasEmptyLine ? 0 : 1) } ?? false, "\(name): it is read with every line break, the empty one included",
                   "last read: \(read)")
             screenshot(window: overlay(), to: outDir + "/formats-\(id)-review.png")
             press(keyReturn)

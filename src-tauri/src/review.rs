@@ -340,6 +340,9 @@ fn show_remembered(app: &AppHandle, id: u64, preset_id: String, outcome: Outcome
 /// Starts (or restarts) the model run for a session with a preset and optional steering.
 pub fn run(app: &AppHandle, id: u64, preset_id: String, steer: Option<String>) {
     let state = state(app);
+    // Read before the settings and key: a save from here on forgets, so this run's result isn't
+    // kept when it may have been asked with settings from before the save.
+    let generation = state.last_review.generation();
     let config = state.config();
     let Some(preset) = config.preset(&preset_id).cloned() else { return };
     let profile = state.active_profile();
@@ -350,7 +353,6 @@ pub fn run(app: &AppHandle, id: u64, preset_id: String, steer: Option<String>) {
     let job = job_for(&config, profile, &current.capture, preset, steer);
     // Kept with the result, to tell whether a later review is of the same selection, asked the same way.
     let asked = (current.capture.clone(), job.clone());
-    let generation = state.last_review.generation();
     let engine = state.engine.clone();
     let handle = app.clone();
     current.task = Some(tauri::async_runtime::spawn(async move {

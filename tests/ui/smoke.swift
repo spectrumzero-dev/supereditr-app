@@ -1495,10 +1495,13 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             }
             let read = lastChromeRead()
             try? "\(read)\n\n\(panelText())".write(toFile: outDir + "/formats-\(id)-review.txt", atomically: true, encoding: .utf8)
-            // Every line break read: the whole field, plus the empty paragraph Chrome's own text leaves out.
+            // Every line break read: the whole field, plus the empty paragraph when Chrome's own text
+            // leaves it out. Slate puts a zero-width character in an empty paragraph, so there Chrome's
+            // text already has the empty line.
+            let hasEmptyLine = (fieldValue as String).components(separatedBy: "\n").contains { visible($0).isEmpty }
             let counts = read.range(of: #"read (\d+) characters of (\d+)"#, options: .regularExpression)
                 .map { String(read[$0]).split(separator: " ").compactMap { Int($0) } }
-            check(counts.map { $0[0] == $0[1] + 1 } ?? false, "\(name): it is read with every line break, the empty one included",
+            check(counts.map { $0[0] == $0[1] + (hasEmptyLine ? 0 : 1) } ?? false, "\(name): it is read with every line break, the empty one included",
                   "last read: \(read)")
             screenshot(window: overlay(), to: outDir + "/formats-\(id)-review.png")
             press(keyReturn)

@@ -175,14 +175,14 @@ mod tests {
             let (_, captured, job) = crate::last_review::tests::example(now);
             state.last_review.recall(&captured, &job, now).is_some()
         };
-        state.last_review.remember(crate::last_review::tests::example(now).0);
+        state.last_review.remember(state.last_review.generation(), crate::last_review::tests::example(now).0);
         assert!(shown_again(&state));
         let mut config = state.config();
         config.words.push("Kyndal".into());
         state.save_config(config).unwrap();
         assert!(!shown_again(&state), "a settings save");
 
-        state.last_review.remember(crate::last_review::tests::example(now).0);
+        state.last_review.remember(state.last_review.generation(), crate::last_review::tests::example(now).0);
         state.set_cached_key(ProviderKind::Anthropic, "anthropic", Some("sk-ant-0123456789".into()));
         assert!(!shown_again(&state), "a new API key");
         std::fs::remove_dir_all(dir).unwrap();

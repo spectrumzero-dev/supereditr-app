@@ -350,6 +350,7 @@ pub fn run(app: &AppHandle, id: u64, preset_id: String, steer: Option<String>) {
     let job = job_for(&config, profile, &current.capture, preset, steer);
     // Kept with the result, to tell whether a later review is of the same selection, asked the same way.
     let asked = (current.capture.clone(), job.clone());
+    let generation = state.last_review.generation();
     let engine = state.engine.clone();
     let handle = app.clone();
     current.task = Some(tauri::async_runtime::spawn(async move {
@@ -358,7 +359,7 @@ pub fn run(app: &AppHandle, id: u64, preset_id: String, steer: Option<String>) {
                 if let Event::Done(outcome) = &event {
                     let (capture, job) = asked.clone();
                     let review = LastReview::new(capture, job, outcome.clone(), Instant::now());
-                    handle.state::<AppState>().last_review.remember(review);
+                    handle.state::<AppState>().last_review.remember(generation, review);
                 }
                 let _ = handle.emit_to(
                     "overlay",

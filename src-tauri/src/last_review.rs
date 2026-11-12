@@ -57,26 +57,44 @@ fn same_place(a: &Capture, b: &Capture) -> bool {
 
 /// Holds the one review that may be shown again.
 #[derive(Default)]
-pub struct Memory(Mutex<Option<LastReview>>);
+pub struct Memory(Mutex<Kept>);
+
+#[derive(Default)]
+struct Kept {
+    review: Option<LastReview>,
+    /// Counts `forget` calls. A review started before one finishes after it, and is not kept: the
+    /// settings it was asked with may have changed in ways its job doesn't show.
+    generation: u64,
+}
 
 impl Memory {
+    /// Taken when a review starts, and handed back to `remember` when it finishes.
+    pub fn generation(&self) -> u64 {
+        self.0.lock().unwrap().generation
+    }
+
     /// Keeps the review that just finished in place of the one before. `None`, a review not worth
-    /// keeping, still replaces it: only the latest review is ever shown again.
-    pub fn remember(&self, review: Option<LastReview>) {
-        *self.0.lock().unwrap() = review;
+    /// keeping, still replaces it: only the latest review is ever shown again. A review that
+    /// started before the last `forget` is dropped.
+    pub fn remember(&self, started_at: u64, review: Option<LastReview>) {
+        let mut kept = self.0.lock().unwrap();
+        kept.review = review.filter(|_| started_at == kept.generation);
     }
 
     /// The remembered result, when a review of `capture` that would run `job` can show it.
     pub fn recall(&self, capture: &Capture, job: &Job, now: Instant) -> Option<Outcome> {
-        let mut last = self.0.lock().unwrap();
-        if last.as_ref().is_some_and(|review| review.expired(now)) {
-            *last = None;
+        let mut kept = self.0.lock().unwrap();
+        if kept.review.as_ref().is_some_and(|review| review.expired(now)) {
+            kept.review = None;
         }
-        last.as_ref().filter(|review| review.matches(capture, job, now)).map(|review| review.outcome.clone())
+        kept.review.as_ref().filter(|review| review.matches(capture, job, now)).map(|review| review.outcome.clone())
     }
 
+    /// Drops the remembered review, and any review still running when this is called.
     pub fn forget(&self) {
-        self.0.lock().unwrap().take();
+        let mut kept = self.0.lock().unwrap();
+        kept.review = None;
+        kept.generation += 1;
     }
 }
 
@@ -141,7 +159,7 @@ pub(crate) mod tests {
         let memory = Memory::default();
         let finished = Instant::now();
         let (review, captured, proofread) = example(finished);
-        memory.remember(review);
+        memory.remember(memory.generation(), review);
         (memory, captured, proofread, finished)
     }
 
@@ -238,15 +256,31 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_review_that_started_before_forgetting_is_not_kept() {
+        let memory = Memory::default();
+        let finished = Instant::now();
+        let started_at = memory.generation();
+        // The settings are saved while the AI is still answering.
+        memory.forget();
+        let (review, captured, proofread) = example(finished);
+        memory.remember(started_at, review);
+        assert!(memory.recall(&captured, &proofread, finished).is_none());
+        // A review started after the save is kept.
+        memory.remember(memory.generation(), example(finished).0);
+        assert!(memory.recall(&captured, &proofread, finished).is_some());
+    }
+
+    #[test]
     fn only_the_latest_review_is_kept() {
         let (memory, captured, proofread, finished) = remembered();
         let other = capture("Kyndal moved the OKR review to 1234 Glenmoor Ct.");
         let other_job = job(&other, "proofread", None);
-        memory.remember(LastReview::new(other.clone(), other_job.clone(), outcome(&other.text), finished));
+        let review = LastReview::new(other.clone(), other_job.clone(), outcome(&other.text), finished);
+        memory.remember(memory.generation(), review);
         assert!(memory.recall(&captured, &proofread, finished).is_none());
         assert!(memory.recall(&other, &other_job, finished).is_some());
         // A newer review not worth keeping still replaces it.
-        memory.remember(None);
+        memory.remember(memory.generation(), None);
         assert!(memory.recall(&other, &other_job, finished).is_none());
     }
 

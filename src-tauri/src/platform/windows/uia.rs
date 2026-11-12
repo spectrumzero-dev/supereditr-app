@@ -169,6 +169,9 @@ pub struct Field {
     /// its window. Windows can give it to another element once this one is destroyed, so it says
     /// "the same field" only together with the window and the selection. Empty when unavailable.
     pub runtime_id: Vec<i32>,
+    /// The top-level window the field sits in: its own native window, or its nearest parent's,
+    /// walked up to the root. None when no element on the way has a window.
+    pub root_window: Option<isize>,
     pub class: String,
     pub framework: String,
     pub name: String,
@@ -250,6 +253,7 @@ pub mod system {
     };
     use windows::Win32::System::Ole::{SafeArrayDestroy, SafeArrayGetElement, SafeArrayGetLBound, SafeArrayGetUBound};
     use windows::Win32::UI::Accessibility::*;
+    use windows::Win32::UI::WindowsAndMessaging::{GA_ROOT, GetAncestor};
     use windows::core::Interface;
 
     /// UI Automation's per-hop timeouts.
@@ -257,6 +261,8 @@ pub mod system {
     /// How far up from the focused element to look for the editor holding the text: Chromium and
     /// Electron often report a part of the field as focused.
     const PARENTS: usize = 10;
+    /// How far up from the field to look for an element with a window of its own.
+    const ROOT_PARENTS: usize = 40;
     /// The longest document read whole.
     const MAX_TEXT: i32 = 4_000_000;
 
@@ -336,6 +342,21 @@ pub mod system {
                     .and_then(|range| range.GetText(16))
                     .is_ok_and(|text| !text.is_empty())
             })
+        }
+
+        fn root_window(&self, element: &IUIAutomationElement) -> Option<isize> {
+            let mut current = Some(element.clone());
+            for _ in 0..ROOT_PARENTS {
+                let element = current.take()?;
+                if let Ok(hwnd) = unsafe { element.CurrentNativeWindowHandle() }
+                    && !hwnd.is_invalid()
+                {
+                    let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+                    return (!root.is_invalid()).then_some(root.0 as isize);
+                }
+                current = self.parent(&element);
+            }
+            None
         }
 
         fn runtime_id(&self, element: &IUIAutomationElement) -> Vec<i32> {
@@ -429,6 +450,7 @@ pub mod system {
                 pid: unsafe { focused.CurrentProcessId() }.unwrap_or(0) as u32,
                 control_type,
                 runtime_id: self.runtime_id(&editor),
+                root_window: self.root_window(&editor),
                 class,
                 framework,
                 name,

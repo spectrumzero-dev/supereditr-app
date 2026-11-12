@@ -185,9 +185,8 @@ impl Desktop for System {
     fn cursor(&self) -> Option<(i32, i32)> {
         window::cursor().map(|p| (p.x, p.y))
     }
-    fn watch_input(&self) -> capture::InputWatch {
-        let since = input::last_input();
-        Box::new(move || since.is_none() || input::last_input() != since)
+    fn watch_copy_keys(&self) -> capture::InputWatch {
+        input::watch_copy_keys()
     }
 }
 

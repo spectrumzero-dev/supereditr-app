@@ -7,10 +7,15 @@
 //! sent in between, as PowerToys does.
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, GetLastInputInfo, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT,
-    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, LASTINPUTINFO, SendInput, VIRTUAL_KEY, VK_CONTROL, VK_INSERT, VK_LCONTROL,
-    VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN,
+    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
+    KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_CONTROL, VK_INSERT, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
+    VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN,
 };
+
+use super::capture::InputWatch;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 /// "SESE", marking events SuperEditr sent.
 pub const TAG: usize = 0x5345_5345;
@@ -34,7 +39,61 @@ fn key(vk: VIRTUAL_KEY, up: bool) -> INPUT {
 
 fn send(inputs: &[INPUT]) -> bool {
     let sent = unsafe { SendInput(inputs, std::mem::size_of::<INPUT>() as i32) };
+    LAST_SENT.store(since_start(), Ordering::SeqCst);
     sent as usize == inputs.len()
+}
+
+/// Milliseconds since SuperEditr first asked.
+fn since_start() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
+/// When SuperEditr last sent keys (`since_start`).
+static LAST_SENT: AtomicU64 = AtomicU64::new(0);
+/// For this long after SuperEditr's own keys, a key that's down is taken for one of them.
+const OWN_KEYS_MS: u64 = 150;
+const KEY_POLL: Duration = Duration::from_millis(10);
+/// The longest a key watch runs, whatever its owner does.
+const KEY_WATCH_LIMIT: Duration = Duration::from_secs(30);
+
+/// Whether a copy key is down now: Ctrl with C, X or Insert.
+fn copy_keys_down() -> bool {
+    held(VK_CONTROL) && [VIRTUAL_KEY(u16::from(b'C')), VIRTUAL_KEY(u16::from(b'X')), VK_INSERT].into_iter().any(held)
+}
+
+/// Starts watching, on a thread of its own, for the user pressing a copy key themselves (Ctrl+C,
+/// Ctrl+X or Ctrl+Insert); keys down just after SuperEditr sent its own don't count. The function
+/// returned says whether they did, and says yes when the watch couldn't start. Dropping it ends the
+/// watch.
+pub fn watch_copy_keys() -> InputWatch {
+    struct Stop(Arc<AtomicBool>);
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let pressed = Arc::new(AtomicBool::new(false));
+    let stop = Stop(Arc::new(AtomicBool::new(false)));
+    let (seen, stopped) = (pressed.clone(), stop.0.clone());
+    let watching = std::thread::Builder::new().name("copy keys".into()).spawn(move || {
+        let started = Instant::now();
+        while !stopped.load(Ordering::SeqCst) && started.elapsed() < KEY_WATCH_LIMIT {
+            let ours = since_start().saturating_sub(LAST_SENT.load(Ordering::SeqCst)) < OWN_KEYS_MS;
+            if !ours && copy_keys_down() {
+                seen.store(true, Ordering::SeqCst);
+                return;
+            }
+            std::thread::sleep(KEY_POLL);
+        }
+    });
+    if watching.is_err() {
+        pressed.store(true, Ordering::SeqCst);
+    }
+    Box::new(move || {
+        let _ends_with_this = &stop;
+        pressed.load(Ordering::SeqCst)
+    })
 }
 
 pub fn held(vk: VIRTUAL_KEY) -> bool {
@@ -70,13 +129,6 @@ pub fn wait_for_modifiers(limit: std::time::Duration) {
 pub fn ctrl(letter: u8) -> bool {
     let letter = VIRTUAL_KEY(u16::from(letter));
     send(&[key(VK_CONTROL, false), key(letter, false), key(letter, true), key(VK_CONTROL, true)])
-}
-
-/// When this session last had keyboard or mouse input, in `GetTickCount` milliseconds; SuperEditr's
-/// own keys count too. None when Windows doesn't say.
-pub fn last_input() -> Option<u32> {
-    let mut info = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
-    unsafe { GetLastInputInfo(&mut info) }.as_bool().then_some(info.dwTime)
 }
 
 /// A key that does nothing, so Windows lets SuperEditr bring its panel to the front right after the

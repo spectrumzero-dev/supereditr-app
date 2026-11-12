@@ -23,6 +23,8 @@ pub fn field(text: &str) -> Field {
         pid: 42,
         control_type: 50004,
         runtime_id: vec![42, 0x1_0000, 7],
+        // The test app's window.
+        root_window: Some(100),
         class: String::new(),
         framework: "Win32".into(),
         name: String::new(),
@@ -81,8 +83,12 @@ pub struct World {
     on_release: Mutex<Option<Hook>>,
     /// Runs while the focused field is read.
     on_read: Mutex<Option<Hook>>,
-    /// Counts the user's keyboard and mouse input.
+    /// Counts the user's other keyboard and mouse input, which SuperEditr ignores.
     inputs: Arc<AtomicUsize>,
+    /// Counts the copy keys the user pressed themselves.
+    copy_keys: Arc<AtomicUsize>,
+    /// The user presses Ctrl+C themselves while SuperEditr waits for the app to copy.
+    copy_during_wait: AtomicBool,
     pub clipboard: Clipboard<Fake>,
 }
 
@@ -117,6 +123,8 @@ impl World {
             on_release: Mutex::new(None),
             on_read: Mutex::new(None),
             inputs: Arc::default(),
+            copy_keys: Arc::default(),
+            copy_during_wait: AtomicBool::new(false),
             rechecks_without_text: AtomicUsize::new(0),
             read_limits: Mutex::default(),
             clipboard: Clipboard::new(Fake::with(&[
@@ -246,9 +254,14 @@ impl World {
         *self.on_read.lock().unwrap() = Some(Box::new(move |_| *foreground.lock().unwrap() = Some(OTHER_WINDOW)));
     }
 
-    /// The user types or uses the mouse.
+    /// The user types, presses Esc or uses the mouse: no copy key.
     pub fn user_input(&self) {
         self.inputs.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The user presses Ctrl+C themselves right after SuperEditr's copy key, while it waits.
+    pub fn user_presses_copy_during_the_wait(&self) {
+        self.copy_during_wait.store(true, Ordering::SeqCst);
     }
 
     /// Another window comes to the front while the clipboard is being put aside.
@@ -460,6 +473,9 @@ impl Desktop for World {
     }
     fn send_ctrl(&self, key: Key) -> bool {
         self.keys.lock().unwrap().push(format!("Ctrl+{key:?}"));
+        if self.copy_during_wait.swap(false, Ordering::SeqCst) {
+            self.copy_keys.fetch_add(1, Ordering::SeqCst);
+        }
         match key {
             Key::C | Key::Insert => {
                 if let Some(text) = self.copying.lock().unwrap().clone() {
@@ -497,9 +513,9 @@ impl Desktop for World {
     fn cursor(&self) -> Option<(i32, i32)> {
         Some((900, 500))
     }
-    fn watch_input(&self) -> InputWatch {
-        let inputs = self.inputs.clone();
-        let since = inputs.load(Ordering::SeqCst);
-        Box::new(move || inputs.load(Ordering::SeqCst) != since)
+    fn watch_copy_keys(&self) -> InputWatch {
+        let copies = self.copy_keys.clone();
+        let since = copies.load(Ordering::SeqCst);
+        Box::new(move || copies.load(Ordering::SeqCst) != since)
     }
 }

@@ -60,12 +60,12 @@ pub trait Desktop: Send + Sync {
     fn send_ctrl(&self, key: Key) -> bool;
     fn caret(&self, window: WindowRef) -> Option<PxRect>;
     fn cursor(&self) -> Option<(i32, i32)>;
-    /// Starts watching for keyboard or mouse input: the function returned says whether any came
-    /// since, so it says yes when Windows can't tell.
-    fn watch_input(&self) -> InputWatch;
+    /// Starts watching for the user pressing a copy key themselves (Ctrl+C, Ctrl+X, Ctrl+Insert),
+    /// not counting the keys SuperEditr sends. The watch ends when what it returns is dropped.
+    fn watch_copy_keys(&self) -> InputWatch;
 }
 
-/// Whether the user has given any keyboard or mouse input since the watch started.
+/// Whether the user has pressed a copy key since the watch started.
 pub type InputWatch = Box<dyn Fn() -> bool + Send + Sync>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,6 +201,15 @@ fn read<R: Raw>(
         trace(format_args!("{image}: another window came to the front during the read"));
         return Err(PlatformError::Stale);
     }
+    // The user may have switched away and back while the read ran, and the field read be the other
+    // app's. The field's own window must sit inside the captured one. Its process needn't be the
+    // window's: a WebView2 page, as in the new Outlook, runs in a child process.
+    if let Some(field) = &field
+        && field.root_window.is_some_and(|root| root != window.hwnd)
+    {
+        trace(format_args!("{image}: the field read is in another window"));
+        return Err(PlatformError::Stale);
+    }
     let capture = |field: Field, class: Class| {
         let bounds = anchor(services.desktop, window, field.bounds.or(field.element_bounds));
         let mut capture = Capture::read(window, image, field, class, bounds);
@@ -334,6 +343,9 @@ fn guarded_copy<R: Raw>(
     })?;
     let key = if terminal { Key::Insert } else { Key::C };
     services.desktop.release_modifiers();
+    // From the first copy key on: a copy key the user presses themselves means a later copy from the
+    // app may be theirs, which the late-copy watch then leaves alone.
+    let user_copied = services.desktop.watch_copy_keys();
     let mut copied = None;
     let mut presses = 0;
     let mut moved = false;
@@ -365,7 +377,7 @@ fn guarded_copy<R: Raw>(
         if presses > 0 {
             trace(format_args!("{image}: no copy in time; watching for a late one"));
         }
-        services.clipboard.watch_late_copies(snapshot, name.clone(), presses, services.desktop.watch_input());
+        services.clipboard.watch_late_copies(snapshot, name.clone(), presses, user_copied);
         if moved {
             trace(format_args!("{image}: another window came to the front before the copy"));
             return Err(PlatformError::Stale);
@@ -381,9 +393,7 @@ fn guarded_copy<R: Raw>(
     let now = services.clipboard.sequence();
     match services.clipboard.restore(&snapshot, now) {
         // The first Ctrl+C may have been the one copied, with the second's copy still to come.
-        Restore::Restored => {
-            services.clipboard.watch_late_copies(snapshot, name.clone(), presses - 1, services.desktop.watch_input())
-        }
+        Restore::Restored => services.clipboard.watch_late_copies(snapshot, name.clone(), presses - 1, user_copied),
         other => trace(format_args!("{image}: after the copy, the clipboard {other:?} (copied {copy}, now {now})")),
     }
     if services.desktop.foreground() != Some(window) {
@@ -492,14 +502,42 @@ mod tests {
     }
 
     #[test]
-    fn a_copy_made_after_the_users_input_is_never_undone() {
-        // The app doesn't copy for SuperEditr; the user then selects other text there and copies it.
-        let world = World::new("soffice.bin");
+    fn a_field_in_another_window_read_while_the_user_switched_away_and_back_is_stale() {
+        let mut other = field("Their going");
+        other.root_window = Some(300);
+        let world = World::new("notepad.exe").with_field(other);
+        assert!(matches!(world.capture(true), Err(PlatformError::Stale)));
+        assert!(world.keys_sent().is_empty());
+    }
+
+    #[test]
+    fn a_field_in_a_child_process_of_the_window_is_read() {
+        // A WebView2 page runs in a process of its own, inside the app's window.
+        let mut hosted = field("Their going");
+        hosted.pid = 9090;
+        let world = World::new("olk.exe").with_field(hosted);
+        assert_eq!(world.capture(true).unwrap().text, "Their going");
+    }
+
+    #[test]
+    fn the_users_own_copy_key_during_the_wait_ends_the_late_copy_watch() {
+        // While SuperEditr waits for the app, the user presses Ctrl+C themselves: the app's copy,
+        // when it comes, is theirs.
+        let world = World::new("soffice.bin").copying_late("Their going", Duration::from_millis(60));
+        world.user_presses_copy_during_the_wait();
         assert!(matches!(world.capture(true), Err(PlatformError::NoSelection)));
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(world.clipboard_text().as_deref(), Some("Their going"));
+    }
+
+    #[test]
+    fn closing_the_notice_typing_or_the_mouse_dont_end_the_late_copy_watch() {
+        let world = World::new("soffice.bin").copying_late("Their going", Duration::from_millis(60));
+        assert!(matches!(world.capture(true), Err(PlatformError::NoSelection)));
+        // Esc on the notice, typing, the mouse: none is a copy.
         world.user_input();
-        world.clipboard.raw().copy_from(&apps::display_name("soffice.bin"), "Kyndal's own copy");
-        std::thread::sleep(Duration::from_millis(30));
-        assert_eq!(world.clipboard_text().as_deref(), Some("Kyndal's own copy"));
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(wait_for(|| world.clipboard_text().as_deref() == Some("Rhyan's own copy")));
     }
 
     #[test]

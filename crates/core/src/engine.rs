@@ -164,6 +164,8 @@ impl Outcome {
     }
 }
 
+/// Everything a review is made from. Two equal jobs ask the AI the same question.
+#[derive(Clone, PartialEq)]
 pub struct Job {
     pub text: String,
     pub preset: Preset,

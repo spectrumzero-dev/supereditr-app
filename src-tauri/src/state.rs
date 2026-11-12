@@ -24,6 +24,8 @@ pub struct AppState {
     pub watch_generation: AtomicU64,
     /// Selection events are ignored until this moment (just after we replaced text).
     pub quiet_until: Mutex<Instant>,
+    /// The last finished review, which reopening the panel on the same selection shows again.
+    pub last_review: crate::last_review::Memory,
     /// Counts saves of the settings, so Settings' save of a copy read before another save (the menu
     /// bar's "Turn off in …", the panel's "Always keep") can be refused instead of undoing it.
     revision: AtomicU64,
@@ -72,6 +74,7 @@ impl AppState {
             notice_visible: AtomicBool::new(false),
             watch_generation: AtomicU64::new(0),
             quiet_until: Mutex::new(Instant::now()),
+            last_review: Default::default(),
             revision: AtomicU64::new(0),
         }
     }
@@ -92,6 +95,7 @@ impl AppState {
 
     pub fn set_cached_key(&self, kind: ProviderKind, profile_id: &str, key: Option<String>) {
         self.keys.lock().unwrap().insert(crate::secrets::account(kind, profile_id), key);
+        self.last_review.forget();
     }
 
     /// The active provider with its API key attached, ready for a request.
@@ -129,6 +133,9 @@ impl AppState {
         config.save(&self.config_path)?;
         crate::platform::set_trace(config.diagnostic_log || !crate::updater::ENABLED);
         *current = config;
+        // Any setting may change what a review would say: the AI, its model, the styles, the word
+        // list. The next review asks afresh.
+        self.last_review.forget();
         Ok(Some(self.revision.fetch_add(1, Ordering::Relaxed) + 1))
     }
 }
@@ -156,6 +163,28 @@ mod tests {
         let (_, now) = state.config_at_revision();
         assert_eq!(state.save_config_based_on(edited, Some(now)).unwrap(), Some(now + 1));
         assert_eq!(state.config().style_notes, "Short sentences.");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn saving_the_settings_or_a_key_forgets_the_last_review() {
+        let dir = std::env::temp_dir().join(format!("supereditr-last-review-{}", std::process::id()));
+        let state = AppState::new(dir.join("settings.json"));
+        let now = Instant::now();
+        let shown_again = |state: &AppState| {
+            let (_, captured, job) = crate::last_review::tests::example(now);
+            state.last_review.recall(&captured, &job, now).is_some()
+        };
+        state.last_review.remember(crate::last_review::tests::example(now).0);
+        assert!(shown_again(&state));
+        let mut config = state.config();
+        config.words.push("Kyndal".into());
+        state.save_config(config).unwrap();
+        assert!(!shown_again(&state), "a settings save");
+
+        state.last_review.remember(crate::last_review::tests::example(now).0);
+        state.set_cached_key(ProviderKind::Anthropic, "anthropic", Some("sk-ant-0123456789".into()));
+        assert!(!shown_again(&state), "a new API key");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

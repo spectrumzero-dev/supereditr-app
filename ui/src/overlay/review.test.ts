@@ -53,6 +53,16 @@ describe("review state", () => {
     expect(r.timing).toBe("0.6 s");
   });
 
+  it("shows an earlier result again without a time, since no model ran just now", () => {
+    const r = reduce(emptyReview(), done, true);
+    expect(canUse(r)).toBe(true);
+    expect(r.phase).toBe("done");
+    expect(r.remembered).toBe(true);
+    expect(r.timing).toBe("");
+    expect(r.source).toBe("claude-haiku-5-5");
+    expect(run(done).remembered).toBe(false);
+  });
+
   it("reports the author's terms a rewrite would drop, and why the backup answered", () => {
     const r = run({ ...done, keptTerms: [{ term: "glanceable", changes: [0] }], backupFor: "Claude Code couldn’t answer: timed out" });
     expect(r.keptTerms).toEqual([{ term: "glanceable", changes: [0] }]);

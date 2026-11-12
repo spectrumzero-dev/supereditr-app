@@ -32,6 +32,7 @@
   const phase = $derived(review.phase);
   const source = $derived(review.source);
   const timing = $derived(review.timing);
+  const remembered = $derived(review.remembered);
   const error = $derived(review.error);
   const changedTokens = $derived(review.changedTokens);
   const keptTerms = $derived(keptWording(review, rejected));
@@ -75,10 +76,10 @@
     added = new Set();
   }
 
-  function onEngine(id: number, eventPreset: string, event: EngineEvent) {
+  function onEngine(id: number, eventPreset: string, event: EngineEvent, fromEarlier = false) {
     if (!session || id !== session.id || eventPreset !== presetId) return;
     const wasStreaming = review.phase === "streaming";
-    review = reduce(review, event);
+    review = reduce(review, event, fromEarlier);
     // Changes that would drop the author's own terms start out rejected (␣ accepts one).
     if (event.type === "done") rejected = new Set(event.kept);
     else if (event.type === "failed" && wasStreaming) rejected = new Set();
@@ -286,7 +287,7 @@
         reset(payload);
         reportHeight();
       },
-      engine: (id, preset, event) => onEngine(id, preset, event),
+      engine: (id, preset, event, fromEarlier) => onEngine(id, preset, event, fromEarlier),
       status: (payload: StatusPayload) => {
         session = null;
         notice = payload.message;
@@ -396,7 +397,7 @@
         <p class="tips">Tip: {#if session.canApply}<kbd>{words().applyKey}</kbd> replaces your text with{:else}<kbd>{words().copyKey}</kbd> copies{/if} everything you see · <kbd>tab</kbd> steps through changes · <kbd>␣</kbd> switches a change between yours and the suggestion · <kbd>esc</kbd> closes</p>
       {/if}
       <footer>
-        <div class="status" title={[summarize(view), sourceLabel(source, view), timing].filter(Boolean).join(" · ")}>
+        <div class="status" title={[summarize(view), sourceLabel(source, view), remembered ? "from earlier" : timing].filter(Boolean).join(" · ")}>
           {#if busy}
             <span class="dot pulsing" aria-hidden="true"></span>
             {phase === "streaming" && source ? `${source}…` : "Checking…"}
@@ -410,6 +411,8 @@
                name may shorten with an ellipsis, the time never does. -->
           {#if phase === "done" && source}<span class="muted source">· {sourceLabel(source.replace(" (backup)", ""), view)}</span>{/if}
           {#if session.showTiming && timing}<span class="muted time">· {timing}</span>{/if}
+          <!-- An earlier result of the same selection, shown again: no model ran, so no time. -->
+          {#if phase === "done" && remembered}<span class="muted time">· from earlier</span>{/if}
         </div>
         <!-- ⌥↩ works in every panel, so it is the one replace key shown; ↩ also works in a review
              the user opened. Nothing to replace, nothing to show. Text that can't be replaced shows

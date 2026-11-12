@@ -6,14 +6,16 @@
 //! leaves the keys alone and any typing or clicking elsewhere dismisses it.
 
 use crate::app_toggle;
+use crate::last_review::LastReview;
 use crate::overlay;
 use crate::platform::{self, Capture, PlatformError, ReplaceOutcome, SelectionGesture, WatchEvent};
 use crate::state::{AppState, Session};
 use serde::Serialize;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
+use supereditr_core::prompts::Preset;
 use supereditr_core::provider::{ProviderKind, ProviderProfile};
-use supereditr_core::{Config, Event, Job, sensitive};
+use supereditr_core::{Config, Event, Job, Outcome, sensitive};
 use tauri::{AppHandle, Emitter, Manager};
 
 const INITIAL_HEIGHT: f64 = 210.0;
@@ -47,6 +49,8 @@ struct EnginePayload {
     id: u64,
     preset_id: String,
     event: Event,
+    /// The result of an earlier review of the same selection, shown again: no AI ran just now.
+    remembered: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -244,6 +248,11 @@ fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<Strin
         return Err(AutoOutcome::Secret);
     }
     let preset_id = preset_id.unwrap_or_else(|| config.default_preset().id.clone());
+    // The same selection reviewed the same way a moment ago: show that result again.
+    let remembered = config.preset(&preset_id).cloned().and_then(|preset| {
+        let job = job_for(&config, state.active_profile(), &captured, preset, None);
+        state.last_review.recall(&captured, &job, Instant::now())
+    });
     let id = state.next_session_id();
     let anchor = captured.bounds;
     // Before the session lock: watching the window reads it through the platform, which may wait on
@@ -282,8 +291,50 @@ fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<Strin
     overlay::position(app, anchor, INITIAL_HEIGHT);
     overlay::show(app, !auto);
     crate::hotkeys::set_overlay_shortcuts(app, true);
-    run(app, id, preset_id, None);
+    match remembered {
+        Some(outcome) => show_remembered(app, id, preset_id, outcome),
+        None => run(app, id, preset_id, None),
+    }
     Ok(())
+}
+
+/// What a review of `captured` with `preset` and `steer` asks the engine.
+fn job_for(
+    config: &Config,
+    profile: Option<ProviderProfile>,
+    captured: &Capture,
+    preset: Preset,
+    steer: Option<String>,
+) -> Job {
+    Job {
+        text: captured.text.clone(),
+        preset,
+        steer,
+        profile,
+        style_notes: config.style_notes.clone(),
+        dialect: config.dialect.clone(),
+        words: config.words.clone(),
+        code: captured.protected(),
+        local_checks: true,
+        builtin_ai: true,
+    }
+}
+
+/// Shows a session the result of the last review of the same selection, as if it had just finished.
+/// Switching styles or pressing R runs the AI as usual.
+fn show_remembered(app: &AppHandle, id: u64, preset_id: String, outcome: Outcome) {
+    let state = state(app);
+    {
+        let mut session = state.session.lock().unwrap();
+        let Some(current) = session.as_mut().filter(|s| s.id == id) else { return };
+        current.proofread = is_proofread(&preset_id, None);
+    }
+    platform::trace(format_args!("review: the same selection again, showing the last result"));
+    let _ = app.emit_to(
+        "overlay",
+        "overlay:engine",
+        EnginePayload { id, preset_id, event: Event::Done(outcome), remembered: true },
+    );
 }
 
 /// Starts (or restarts) the model run for a session with a preset and optional steering.
@@ -296,27 +347,23 @@ pub fn run(app: &AppHandle, id: u64, preset_id: String, steer: Option<String>) {
     let Some(current) = session.as_mut().filter(|s| s.id == id) else { return };
     current.cancel();
     current.proofread = is_proofread(&preset_id, steer.as_deref());
-    let job = Job {
-        text: current.capture.text.clone(),
-        preset,
-        steer,
-        profile,
-        style_notes: config.style_notes.clone(),
-        dialect: config.dialect.clone(),
-        words: config.words.clone(),
-        code: current.capture.protected(),
-        local_checks: true,
-        builtin_ai: true,
-    };
+    let job = job_for(&config, profile, &current.capture, preset, steer);
+    // Kept with the result, to tell whether a later review is of the same selection, asked the same way.
+    let asked = (current.capture.clone(), job.clone());
     let engine = state.engine.clone();
     let handle = app.clone();
     current.task = Some(tauri::async_runtime::spawn(async move {
         engine
             .run(job, &mut |event| {
+                if let Event::Done(outcome) = &event {
+                    let (capture, job) = asked.clone();
+                    let review = LastReview::new(capture, job, outcome.clone(), Instant::now());
+                    handle.state::<AppState>().last_review.remember(review);
+                }
                 let _ = handle.emit_to(
                     "overlay",
                     "overlay:engine",
-                    EnginePayload { id, preset_id: preset_id.clone(), event },
+                    EnginePayload { id, preset_id: preset_id.clone(), event, remembered: false },
                 );
             })
             .await;
@@ -337,6 +384,8 @@ pub async fn apply(app: &AppHandle, id: u64, text: String) -> Result<String, Str
         let mut session = state.session.lock().unwrap();
         let current = session.as_mut().filter(|s| s.id == id).ok_or("This review has ended.")?;
         current.cancel();
+        // The text is about to change; a review of it is never shown again.
+        state.last_review.forget();
         // The panel closes for good; the window may change while the text is written.
         current.following = None;
         (current.capture.clone(), current.proofread && keep_formatting)

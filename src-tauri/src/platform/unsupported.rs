@@ -21,6 +21,11 @@ impl Capture {
         self.code.clone()
     }
 
+    /// This platform reads no fields, so the app alone says where text came from.
+    pub fn same_field(&self, _other: &Capture) -> bool {
+        true
+    }
+
     pub fn copy_only_hint(&self) -> Option<String> {
         None
     }

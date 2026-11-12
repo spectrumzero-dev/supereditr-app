@@ -6,6 +6,7 @@ mod commands;
 mod double_press;
 mod follow;
 mod hotkeys;
+mod last_review;
 mod overlay;
 mod permission_guide;
 mod platform;

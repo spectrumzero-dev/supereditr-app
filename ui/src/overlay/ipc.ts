@@ -11,7 +11,8 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 
 interface Handlers {
   session: (payload: SessionPayload) => void;
-  engine: (id: number, presetId: string, event: EngineEvent) => void;
+  /** `remembered`: an earlier review's result for the same selection, shown again. */
+  engine: (id: number, presetId: string, event: EngineEvent, remembered: boolean) => void;
   status: (payload: StatusPayload) => void;
   focus: () => void;
   command: (command: string) => void;
@@ -44,8 +45,8 @@ export const ipc = {
     const stops: Array<() => void> = [];
     import("@tauri-apps/api/event").then(({ listen }) => {
       listen<SessionPayload>("overlay:session", (e) => handlers.session(e.payload)).then((u) => stops.push(u));
-      listen<{ id: number; presetId: string; event: EngineEvent }>("overlay:engine", (e) =>
-        handlers.engine(e.payload.id, e.payload.presetId, e.payload.event),
+      listen<{ id: number; presetId: string; event: EngineEvent; remembered: boolean }>("overlay:engine", (e) =>
+        handlers.engine(e.payload.id, e.payload.presetId, e.payload.event, e.payload.remembered),
       ).then((u) => stops.push(u));
       listen<StatusPayload>("overlay:status", (e) => handlers.status(e.payload)).then((u) => stops.push(u));
       listen("overlay:focus", () => handlers.focus()).then((u) => stops.push(u));

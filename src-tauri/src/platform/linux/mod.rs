@@ -63,6 +63,28 @@ impl Capture {
         self.code.clone()
     }
 
+    /// Whether `other` was read from the same place as this capture, as far as the desktop and
+    /// AT-SPI can tell: the same window, and the same field with the same selection offsets, read
+    /// the same way. A copied selection has no field to compare.
+    pub fn same_field(&self, other: &Capture) -> bool {
+        let same_window = match (&self.window, &other.window) {
+            (Some(a), Some(b)) => a.handle == b.handle && a.pid == b.pid,
+            (None, None) => true,
+            _ => false,
+        };
+        let same_field = match (&self.field, &other.field) {
+            (Some(a), Some(b)) => {
+                a.id == b.id
+                    && (a.start, a.end) == (b.start, b.end)
+                    && a.editable == b.editable
+                    && a.embedded == b.embedded
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        self.source == other.source && same_window && same_field
+    }
+
     /// How to make a copy-only capture replaceable, when SuperEditr knows: a Chromium or Electron
     /// app, VS Code among them, started without the flag hides its text from AT-SPI. Apps that stay
     /// copy-only whatever their flags (terminals, Obsidian) get no hint.
@@ -613,6 +635,40 @@ mod tests {
             restart_hint("Slack", None),
             "To replace text in Slack, start it with --force-renderer-accessibility."
         );
+    }
+
+    #[test]
+    fn the_same_field_is_the_same_window_field_and_selection() {
+        let read = || Capture {
+            pid: 4242,
+            bundle_id: "notes".into(),
+            app_name: "Notes".into(),
+            text: "Rhyan sent the KPI report.".into(),
+            bounds: None,
+            editable: true,
+            playground: false,
+            code: Vec::new(),
+            source: Source::Atspi,
+            window: Some(testing::window("notes")),
+            field: Some(testing::field("Rhyan sent the KPI report.")),
+        };
+        assert!(read().same_field(&read()));
+        let mut retitled = read();
+        retitled.window.as_mut().unwrap().title = "Notes (edited)".into();
+        assert!(read().same_field(&retitled), "a window's title isn't its identity");
+        let mut other_window = read();
+        other_window.window.as_mut().unwrap().handle = "0x562229d30999".into();
+        assert!(!read().same_field(&other_window), "another window");
+        let mut other_field = read();
+        other_field.field.as_mut().unwrap().id.path = "/org/a11y/atspi/accessible/18".into();
+        assert!(!read().same_field(&other_field), "another field");
+        let mut moved = read();
+        let field = moved.field.as_mut().unwrap();
+        (field.start, field.end) = (4, 30);
+        assert!(!read().same_field(&moved), "the same text elsewhere in the field");
+        let mut copied = read();
+        copied.source = Source::Copy;
+        assert!(!read().same_field(&copied), "read by copying");
     }
 
     #[test]

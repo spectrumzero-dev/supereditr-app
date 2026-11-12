@@ -88,7 +88,7 @@ impl ProviderKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderProfile {
     pub id: String,
     pub kind: ProviderKind,

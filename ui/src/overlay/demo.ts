@@ -31,7 +31,7 @@ const done: DiffView = {
 
 type Handlers = {
   session: (payload: SessionPayload) => void;
-  engine: (id: number, presetId: string, event: EngineEvent) => void;
+  engine: (id: number, presetId: string, event: EngineEvent, remembered: boolean) => void;
   status: (payload: StatusPayload) => void;
 };
 
@@ -40,9 +40,9 @@ let handlers: Handlers | null = null;
 function play(presetId: string) {
   const h = handlers;
   if (!h) return;
-  setTimeout(() => h.engine(1, presetId, { type: "local", view: local, ms: 4 }), 30);
-  setTimeout(() => h.engine(1, presetId, { type: "partial", view: { ...done, segments: done.segments.slice(0, 4), pending: " really fast. Lets ship it tommorow." }, firstTokenMs: 290, source: "claude-haiku-5-5" }), 350);
-  setTimeout(() => h.engine(1, presetId, { type: "done", view: done, text: "", source: "claude-haiku-5-5", firstTokenMs: 290, totalMs: 520, changedTokens: [], gradeBefore: null, gradeAfter: null, backupFor: null, kept: [], keptTerms: [], learnable: [] }), 650);
+  setTimeout(() => h.engine(1, presetId, { type: "local", view: local, ms: 4 }, false), 30);
+  setTimeout(() => h.engine(1, presetId, { type: "partial", view: { ...done, segments: done.segments.slice(0, 4), pending: " really fast. Lets ship it tommorow." }, firstTokenMs: 290, source: "claude-haiku-5-5" }, false), 350);
+  setTimeout(() => h.engine(1, presetId, { type: "done", view: done, text: "", source: "claude-haiku-5-5", firstTokenMs: 290, totalMs: 520, changedTokens: [], gradeBefore: null, gradeAfter: null, backupFor: null, kept: [], keptTerms: [], learnable: [] }, false), 650);
 }
 
 export const demo = {

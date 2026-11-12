@@ -22,13 +22,16 @@ export interface Review {
   backupFor: string;
   /** Words the panel may offer to add to the word list. */
   learnable: string[];
+  /** The result of an earlier review of the same selection, shown again: no AI ran just now. */
+  remembered: boolean;
 }
 
 export function emptyReview(): Review {
-  return { view: null, localView: null, complete: false, phase: "idle", source: "", timing: "", error: "", changedTokens: [], keptTerms: [], backupFor: "", learnable: [] };
+  return { view: null, localView: null, complete: false, phase: "idle", source: "", timing: "", error: "", changedTokens: [], keptTerms: [], backupFor: "", learnable: [], remembered: false };
 }
 
-export function reduce(review: Review, event: EngineEvent): Review {
+/** `remembered`: the event is an earlier review's result, shown again, so it has no timing of its own. */
+export function reduce(review: Review, event: EngineEvent, remembered = false): Review {
   switch (event.type) {
     case "local":
       // The local result is complete on its own; it shows until the model's version streams in.
@@ -43,11 +46,12 @@ export function reduce(review: Review, event: EngineEvent): Review {
         complete: true,
         phase: "done",
         source: event.source,
-        timing: seconds(event.totalMs),
+        timing: remembered ? "" : seconds(event.totalMs),
         changedTokens: event.changedTokens,
         keptTerms: event.keptTerms,
         backupFor: event.backupFor ?? "",
         learnable: event.learnable,
+        remembered,
       };
     case "failed":
       // Never leave a partial revision applicable. Fall back to the offline result when there is one.

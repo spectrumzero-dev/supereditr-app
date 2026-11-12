@@ -672,6 +672,22 @@ impl Capture {
         ranges
     }
 
+    /// Whether `other` was read from the same place as this capture, as far as Accessibility can
+    /// tell: the same element, the same range in it, read the same way. Two captures that fell back
+    /// to copying have no element to compare.
+    pub fn same_field(&self, other: &Capture) -> bool {
+        let same_element = match (&self.element, &other.element) {
+            (Some(a), Some(b)) => a.same_as(b),
+            (None, None) => true,
+            _ => false,
+        };
+        same_element
+            && self.range == other.range
+            && self.web == other.web
+            && self.markers == other.markers
+            && self.formatted == other.formatted
+    }
+
     /// How to make a copy-only capture replaceable. macOS has no such case.
     pub fn copy_only_hint(&self) -> Option<String> {
         None
@@ -3019,6 +3035,26 @@ mod tests {
         assert!(!has_chromium_runtime(&bundle("Native.app", "Sparkle.framework", "other.pak")));
         assert!(!has_chromium_runtime(&root.join("NoFrameworks.app")));
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_same_field_has_the_same_selection_read_the_same_way() {
+        let bounds = Rect { x: 10.0, y: 10.0, width: 300.0, height: 20.0 };
+        let read = || playground_capture("Rhyan sent the KPI report.".into(), bounds);
+        assert!(read().same_field(&read()));
+        let mut moved = read();
+        moved.range = Some((4, 26));
+        assert!(!read().same_field(&moved), "another range");
+        let mut web = read();
+        web.web = true;
+        assert!(!read().same_field(&web), "read from a web page");
+        let mut formatted = read();
+        formatted.formatted = true;
+        assert!(!read().same_field(&formatted), "formatting around it");
+        let mut element = read();
+        element.element = Element::from_create(unsafe { AXUIElementCreateSystemWide() });
+        assert!(!read().same_field(&element), "an element against none");
+        assert!(element.same_field(&element.clone()), "the same element");
     }
 
     #[test]

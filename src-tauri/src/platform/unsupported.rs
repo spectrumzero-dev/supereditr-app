@@ -85,6 +85,10 @@ pub fn take_review_keys(_take: bool) -> bool {
 
 pub fn return_focus(_pid: i32) {}
 
+pub fn return_to_field(_capture: &Capture) -> bool {
+    true
+}
+
 pub fn own_pid() -> i32 {
     std::process::id() as i32
 }

@@ -6,7 +6,7 @@
 //! leaves the keys alone and any typing or clicking elsewhere dismisses it.
 
 use crate::app_toggle;
-use crate::last_review::LastReview;
+use crate::last_review::Finished;
 use crate::overlay;
 use crate::platform::{self, Capture, PlatformError, ReplaceOutcome, SelectionGesture, WatchEvent};
 use crate::state::{AppState, Session};
@@ -15,7 +15,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use supereditr_core::prompts::Preset;
 use supereditr_core::provider::{ProviderKind, ProviderProfile};
-use supereditr_core::{Config, Event, Job, Outcome, sensitive};
+use supereditr_core::{Config, Event, Job, sensitive};
 use tauri::{AppHandle, Emitter, Manager};
 
 const INITIAL_HEIGHT: f64 = 210.0;
@@ -247,12 +247,11 @@ fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<Strin
         }
         return Err(AutoOutcome::Secret);
     }
-    let preset_id = preset_id.unwrap_or_else(|| config.default_preset().id.clone());
-    // The same selection reviewed the same way a moment ago: show that result again.
-    let remembered = config.preset(&preset_id).cloned().and_then(|preset| {
-        let job = job_for(&config, state.active_profile(), &captured, preset, None);
-        state.last_review.recall(&captured, &job, Instant::now())
-    });
+    // Reopened on a selection reviewed a moment ago, the panel opens on the style shown last, and
+    // `run` shows that result again.
+    let preset_id = preset_id
+        .or_else(|| state.last_review.last_style(&captured, Instant::now()).filter(|id| config.preset(id).is_some()))
+        .unwrap_or_else(|| config.default_preset().id.clone());
     let id = state.next_session_id();
     let anchor = captured.bounds;
     // Before the session lock: watching the window reads it through the platform, which may wait on
@@ -291,10 +290,7 @@ fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<Strin
     overlay::position(app, anchor, INITIAL_HEIGHT);
     overlay::show(app, !auto);
     crate::hotkeys::set_overlay_shortcuts(app, true);
-    match remembered {
-        Some(outcome) => show_remembered(app, id, preset_id, outcome),
-        None => run(app, id, preset_id, None),
-    }
+    run(app, id, preset_id, None, false);
     Ok(())
 }
 
@@ -320,25 +316,10 @@ fn job_for(
     }
 }
 
-/// Shows a session the result of the last review of the same selection, as if it had just finished.
-/// Switching styles or pressing R runs the AI as usual.
-fn show_remembered(app: &AppHandle, id: u64, preset_id: String, outcome: Outcome) {
-    let state = state(app);
-    {
-        let mut session = state.session.lock().unwrap();
-        let Some(current) = session.as_mut().filter(|s| s.id == id) else { return };
-        current.proofread = is_proofread(&preset_id, None);
-    }
-    platform::trace(format_args!("review: the same selection again, showing the last result"));
-    let _ = app.emit_to(
-        "overlay",
-        "overlay:engine",
-        EnginePayload { id, preset_id, event: Event::Done(outcome), remembered: true },
-    );
-}
-
-/// Starts (or restarts) the model run for a session with a preset and optional steering.
-pub fn run(app: &AppHandle, id: u64, preset_id: String, steer: Option<String>) {
+/// Starts (or restarts) the model run for a session with a preset and optional steering. When the
+/// same selection already has a result for the style, asked the same way, it is shown again as if
+/// it had just finished, unless `fresh` asks the AI again (R).
+pub fn run(app: &AppHandle, id: u64, preset_id: String, steer: Option<String>, fresh: bool) {
     let state = state(app);
     // Read before the settings and key: a save from here on forgets, so this run's result isn't
     // kept when it may have been asked with settings from before the save.
@@ -351,6 +332,16 @@ pub fn run(app: &AppHandle, id: u64, preset_id: String, steer: Option<String>) {
     current.cancel();
     current.proofread = is_proofread(&preset_id, steer.as_deref());
     let job = job_for(&config, profile, &current.capture, preset, steer);
+    if !fresh && let Some(outcome) = state.last_review.recall(&current.capture, &job, Instant::now()) {
+        drop(session);
+        platform::trace(format_args!("review: the same selection again, showing the last result"));
+        let _ = app.emit_to(
+            "overlay",
+            "overlay:engine",
+            EnginePayload { id, preset_id, event: Event::Done(outcome), remembered: true },
+        );
+        return;
+    }
     // Kept with the result, to tell whether a later review is of the same selection, asked the same way.
     let asked = (current.capture.clone(), job.clone());
     let engine = state.engine.clone();
@@ -360,7 +351,7 @@ pub fn run(app: &AppHandle, id: u64, preset_id: String, steer: Option<String>) {
             .run(job, &mut |event| {
                 if let Event::Done(outcome) = &event {
                     let (capture, job) = asked.clone();
-                    let review = LastReview::new(capture, job, outcome.clone(), Instant::now());
+                    let review = Finished::new(capture, job, outcome.clone(), Instant::now());
                     handle.state::<AppState>().last_review.remember(generation, review);
                 }
                 let _ = handle.emit_to(

@@ -1,4 +1,5 @@
 import type { EngineEvent, SessionPayload, StatusPayload } from "../lib/types";
+import type { RunRequest } from "./review";
 import { demo } from "./demo";
 
 export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -29,7 +30,8 @@ export interface PanelKeyPayload {
 }
 
 export const ipc = {
-  runPreset: (id: number, presetId: string, steer: string | null) => invoke("run_preset", { id, presetId, steer }),
+  /** Runs a style; see `runRequest` for what `steer` and `fresh` mean. */
+  runPreset: (id: number, request: RunRequest) => invoke("run_preset", { id, ...request }),
   apply: (id: number, text: string) => invoke<string>("apply_text", { id, text }),
   dismiss: (id: number | null) => invoke("dismiss", { id }),
   copy: (text: string) => invoke("copy_text", { text }),

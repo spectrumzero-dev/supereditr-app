@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DiffView, EngineEvent } from "../lib/types";
-import { canUse, emptyReview, keptWording, offerToKeep, reduce } from "./review";
+import { canUse, emptyReview, keptWording, offerToKeep, reduce, runRequest } from "./review";
 
 const view = (text: string): DiffView => ({ segments: [{ type: "equal", text }], pending: "", changeCount: 0 });
 const local: EngineEvent = { type: "local", view: view("local"), ms: 3 };
@@ -67,6 +67,18 @@ describe("review state", () => {
     const r = run({ ...done, keptTerms: [{ term: "glanceable", changes: [0] }], backupFor: "Claude Code couldn’t answer: timed out" });
     expect(r.keptTerms).toEqual([{ term: "glanceable", changes: [0] }]);
     expect(r.backupFor).toContain("Claude Code");
+  });
+});
+
+describe("running a style", () => {
+  it("shows a style's earlier result when switching to it, and asks the AI again for R", () => {
+    expect(runRequest("polish", undefined, false)).toEqual({ presetId: "polish", steer: null, fresh: false });
+    expect(runRequest("polish", undefined, true)).toEqual({ presetId: "polish", steer: null, fresh: true });
+  });
+
+  it("sends an instruction trimmed, and a blank one as none", () => {
+    expect(runRequest("proofread", "  make it warmer ", false).steer).toBe("make it warmer");
+    expect(runRequest("proofread", "   ", false).steer).toBeNull();
   });
 });
 

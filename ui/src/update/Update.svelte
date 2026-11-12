@@ -6,6 +6,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
   import type { UpdateStatus } from "../lib/types";
+  import { isWindows } from "../lib/platform";
 
   interface View {
     heading: string;
@@ -25,14 +26,19 @@
       case "downloading":
         return {
           heading: `Downloading SuperEditr ${status.version}…`,
-          detail: "You can close this window. The menu-bar menu offers the restart when it’s ready.",
+          // On Windows the update installs by itself once SuperEditr is idle (updater.rs).
+          detail: isWindows()
+            ? "You can close this window. SuperEditr installs the update while you’re not using it."
+            : "You can close this window. The menu-bar menu offers the restart when it’s ready.",
           progress: status.percent,
           dismiss: "Close",
         };
       case "ready":
         return {
           heading: `SuperEditr ${status.version} is ready`,
-          detail: "Restart SuperEditr to start using it. You can also restart later from the menu-bar menu.",
+          detail: isWindows()
+            ? "SuperEditr installs it while you’re not using it, and opens again afterwards. Or restart now to install it."
+            : "Restart SuperEditr to start using it. You can also restart later from the menu-bar menu.",
           action: "Restart Now",
           dismiss: "Later",
         };

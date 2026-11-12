@@ -183,7 +183,12 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             app_toggle::ID => app_toggle::on_menu(app),
             "settings" => show_settings(app, None),
             "update" => updater::on_menu(app),
-            "quit" => app.exit(0),
+            "quit" => {
+                // A downloaded update installs as SuperEditr quits, without starting it again.
+                #[cfg(windows)]
+                updater::install(app, false);
+                app.exit(0)
+            }
             _ => {}
         })
         .build(app)?;
@@ -484,6 +489,17 @@ fn autostart() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 }
 
 pub fn run() {
+    // The uninstaller runs this when "Delete app data" is ticked, before it removes the program.
+    #[cfg(windows)]
+    if std::env::args().nth(1).as_deref() == Some("delete-saved-keys") {
+        std::process::exit(match secrets::delete_all() {
+            Ok(_) => 0,
+            Err(e) => {
+                eprintln!("SuperEditr: couldn't delete the saved keys: {e}");
+                1
+            }
+        });
+    }
     // A replacement reads the clipboard through a short-lived copy of the program, which can be
     // stopped if the app that owns the clipboard stalls (see `platform::windows::clipboard`).
     #[cfg(windows)]
@@ -550,7 +566,7 @@ pub fn run() {
             }
             build_tray(&handle)?;
             show_ai_status(&handle);
-            if updater::ENABLED {
+            if updater::checks_automatically() {
                 updater::start(&handle);
             }
             #[cfg(target_os = "linux")]

@@ -300,6 +300,18 @@ pub fn own_pid() -> i32 {
     std::process::id() as i32
 }
 
+/// How long since the user last typed or moved the mouse in this session.
+pub fn input_idle() -> std::time::Duration {
+    use windows::Win32::System::SystemInformation::GetTickCount;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+    let mut info = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    if !unsafe { GetLastInputInfo(&mut info) }.as_bool() {
+        return std::time::Duration::ZERO;
+    }
+    // Both are milliseconds since startup, wrapping every 49.7 days.
+    std::time::Duration::from_millis(u64::from(unsafe { GetTickCount() }.wrapping_sub(info.dwTime)))
+}
+
 /// Reads the selection in the window in front: through UI Automation, or, with `allow_clipboard` (a
 /// shortcut press), a guarded copy. Selecting the sentence before the caret isn't done on Windows
 /// yet. Runs on a worker thread.

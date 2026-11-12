@@ -26,6 +26,8 @@ windows:
   - changed-files:
       - any-glob-to-any-file:
           - src-tauri/src/platform/windows/**
+          - src-tauri/tauri.windows.conf.json
+          - src-tauri/windows/**
           - src-tauri/icons/icon.ico
 
 development:
@@ -64,6 +66,8 @@ shared:
           - '!packaging/linux/**'
           - '!scripts/linux-release.sh'
           - '!src-tauri/src/platform/windows/**'
+          - '!src-tauri/tauri.windows.conf.json'
+          - '!src-tauri/windows/**'
           - '!src-tauri/icons/icon.ico'
           - '!**/*.md'
           - '!tests/**'

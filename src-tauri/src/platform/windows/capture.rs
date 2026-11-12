@@ -202,10 +202,11 @@ fn read<R: Raw>(
         return Err(PlatformError::Stale);
     }
     // The user may have switched away and back while the read ran, and the field read be the other
-    // app's. The field's own window must sit inside the captured one. Its process needn't be the
-    // window's: a WebView2 page, as in the new Outlook, runs in a child process.
+    // app's. The field's own window must sit inside the captured one, and a field whose window
+    // can't be found doesn't count. Its process needn't be the window's: a WebView2 page, as in the
+    // new Outlook, runs in a child process.
     if let Some(field) = &field
-        && field.root_window.is_some_and(|root| root != window.hwnd)
+        && field.root_window.is_none_or(|root| root != window.hwnd)
     {
         trace(format_args!("{image}: the field read is in another window"));
         return Err(PlatformError::Stale);
@@ -391,6 +392,13 @@ fn guarded_copy<R: Raw>(
     std::thread::sleep(Duration::from_millis(if cfg!(test) { 0 } else { 30 }));
     let text = services.clipboard.text();
     let now = services.clipboard.sequence();
+    // The user pressed a copy key themselves while SuperEditr waited: the copy may be theirs, so
+    // the clipboard stays as it is, and what's on it can't be taken for the selection SuperEditr
+    // asked for.
+    if user_copied() {
+        trace(format_args!("{image}: the user copied during the guarded copy; their clipboard stays"));
+        return Err(PlatformError::Stale);
+    }
     match services.clipboard.restore(&snapshot, now) {
         // The first Ctrl+C may have been the one copied, with the second's copy still to come.
         Restore::Restored => services.clipboard.watch_late_copies(snapshot, name.clone(), presses - 1, user_copied),
@@ -508,6 +516,24 @@ mod tests {
         let world = World::new("notepad.exe").with_field(other);
         assert!(matches!(world.capture(true), Err(PlatformError::Stale)));
         assert!(world.keys_sent().is_empty());
+    }
+
+    #[test]
+    fn a_field_whose_window_cant_be_found_is_stale() {
+        let mut lost = field("Their going");
+        lost.root_window = None;
+        let world = World::new("notepad.exe").with_field(lost);
+        assert!(matches!(world.capture(true), Err(PlatformError::Stale)));
+    }
+
+    #[test]
+    fn a_users_own_copy_during_the_wait_is_never_overwritten() {
+        // The user presses Ctrl+C themselves while SuperEditr waits, and a copy lands then.
+        let world = World::new("soffice.bin").copying("Their going");
+        world.user_presses_copy_during_the_wait();
+        assert!(matches!(world.capture(true), Err(PlatformError::Stale)));
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(world.clipboard_text().as_deref(), Some("Their going"), "the copy stays");
     }
 
     #[test]

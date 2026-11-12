@@ -79,6 +79,8 @@ pub fn watch_copy_keys() -> InputWatch {
     let watching = std::thread::Builder::new().name("copy keys".into()).spawn(move || {
         let started = Instant::now();
         while !stopped.load(Ordering::SeqCst) && started.elapsed() < KEY_WATCH_LIMIT {
+            // The key state can't say who pressed a key: a user's own Ctrl+C within OWN_KEYS_MS of
+            // SuperEditr's keys is taken for SuperEditr's; only a keyboard hook could tell them apart.
             let ours = since_start().saturating_sub(LAST_SENT.load(Ordering::SeqCst)) < OWN_KEYS_MS;
             if !ours && copy_keys_down() {
                 seen.store(true, Ordering::SeqCst);

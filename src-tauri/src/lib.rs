@@ -386,6 +386,12 @@ pub fn run() {
             app.manage(AppState::new(settings));
             launch_at_login_by_default(app.handle());
             app.manage(hotkeys::Registry::default());
+            // The windows are made here, after the state their pages' commands read, rather than by
+            // Tauri before `setup`: on Windows, making a webview runs a message loop that can deliver
+            // a command from a page that has already loaded.
+            for window in app.config().app.windows.clone() {
+                tauri::WebviewWindowBuilder::from_config(app.handle(), &window)?.build()?;
+            }
             write_status_file(config_dir.join("status.json"));
 
             let handle = app.handle().clone();
@@ -535,7 +541,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{OLD_IDENTIFIER, copy_old_settings, lasting_app_path, settings_file};
+    use super::{OLD_IDENTIFIER, copy_old_settings, lasting_app_path};
 
     #[test]
     fn an_update_keeps_the_settings_from_the_old_folder() {
@@ -584,6 +590,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_failed_copy_is_tried_again_on_the_next_launch() {
+        use super::settings_file;
         use std::os::unix::fs::PermissionsExt;
         let root = std::env::temp_dir().join(format!("supereditr-old-retry-{}", std::process::id()));
         let old = root.join(OLD_IDENTIFIER);

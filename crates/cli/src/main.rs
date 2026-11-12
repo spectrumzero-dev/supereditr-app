@@ -224,7 +224,7 @@ async fn check(args: Args) {
 
 async fn detect() {
     let engine = Engine::new("American English");
-    let home = std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+    let home = std::env::home_dir().unwrap_or_default();
     let started = Instant::now();
     let found = supereditr_core::detect::scan(&engine.providers, &home).await;
     for c in &found {

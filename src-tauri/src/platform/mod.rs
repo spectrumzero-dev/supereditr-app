@@ -47,7 +47,7 @@ pub enum PlatformError {
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     #[error("The text changed since it was checked. Select it again.")]
     Stale,
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     #[error("Couldn’t replace the text in this app. The suggestion is on your clipboard.")]
     ReplaceFailed,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]

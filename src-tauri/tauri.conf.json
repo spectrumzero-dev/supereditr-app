@@ -15,6 +15,7 @@
     "windows": [
       {
         "label": "overlay",
+        "create": false,
         "url": "overlay.html",
         "title": "SuperEditr",
         "width": 548,
@@ -31,6 +32,7 @@
       },
       {
         "label": "settings",
+        "create": false,
         "url": "settings.html",
         "title": "SuperEditr Settings",
         "width": 900,
@@ -44,6 +46,7 @@
       },
       {
         "label": "guide",
+        "create": false,
         "url": "guide.html",
         "title": "SuperEditr",
         "width": 424,

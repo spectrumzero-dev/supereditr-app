@@ -86,6 +86,7 @@ pub fn codex_candidate(home: &Path) -> Option<Candidate> {
         .then(|| Candidate::new(ProviderKind::OpenAi, "Codex CLI settings (~/.codex/auth.json)").with_key(key))
 }
 
+#[cfg(not(windows))]
 pub fn find_executable(name: &str, path_var: &str, home: &Path) -> Option<PathBuf> {
     let extra = [
         home.join(".local/bin"),
@@ -96,15 +97,61 @@ pub fn find_executable(name: &str, path_var: &str, home: &Path) -> Option<PathBu
     std::env::split_paths(path_var).chain(extra).map(|dir| dir.join(name)).find(|candidate| candidate.is_file())
 }
 
+/// On Windows, a program is `name.exe`: the Claude Code installer's in `~\.local\bin` and Ollama's in
+/// `%LOCALAPPDATA%\Programs\Ollama`. An npm `.cmd` shim isn't used: `cmd.exe` would parse the
+/// system prompt passed as an argument.
+#[cfg(windows)]
+pub fn find_executable(name: &str, path_var: &str, home: &Path) -> Option<PathBuf> {
+    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|| home.join("AppData/Local"));
+    let extra = [home.join(".local/bin"), local.join("Programs/Ollama")];
+    let file = format!("{name}.exe");
+    std::env::split_paths(path_var).chain(extra).map(|dir| dir.join(&file)).find(|candidate| candidate.is_file())
+}
+
 /// Where the Claude desktop app keeps its own copy of Claude Code: one folder per version, so the
 /// path changes whenever the app updates.
+#[cfg(not(windows))]
 pub fn claude_app_code_dir(home: &Path) -> PathBuf {
     home.join("Library/Application Support/Claude/claude-code")
 }
 
+/// Where the Claude desktop app keeps its own copy of Claude Code on Windows:
+/// `%APPDATA%\Claude\claude-code`, one folder per version. When the app is installed as a package
+/// and that folder doesn't exist, Windows keeps the app's roaming data in the package's own
+/// `LocalCache\Roaming` folder instead, so that is looked at too.
+#[cfg(windows)]
+pub fn claude_app_code_dir(home: &Path) -> PathBuf {
+    let env = |name: &str| std::env::var_os(name).map(PathBuf::from).filter(|dir| dir.is_absolute());
+    let roaming = env("APPDATA").unwrap_or_else(|| home.join(r"AppData\Roaming"));
+    let local = env("LOCALAPPDATA").unwrap_or_else(|| home.join(r"AppData\Local"));
+    windows_claude_app_code_dir(&roaming, &local)
+}
+
+#[cfg(any(windows, test))]
+fn windows_claude_app_code_dir(roaming: &Path, local: &Path) -> PathBuf {
+    let direct = roaming.join("Claude").join("claude-code");
+    if direct.is_dir() {
+        return direct;
+    }
+    let packaged = std::fs::read_dir(local.join("Packages")).into_iter().flatten().flatten().find_map(|entry| {
+        let name = entry.file_name();
+        let dir =
+            ["LocalCache", "Roaming", "Claude", "claude-code"].iter().fold(entry.path(), |dir, part| dir.join(part));
+        (name.to_str()?.starts_with("Claude_") && dir.is_dir()).then_some(dir)
+    });
+    packaged.unwrap_or(direct)
+}
+
+/// The Claude Code program's file name in a version folder, with the macOS app's bundle as well.
+#[cfg(not(windows))]
+const CLAUDE_APP_PROGRAMS: &[&str] = &["claude", "claude.app/Contents/MacOS/claude"];
+#[cfg(windows)]
+const CLAUDE_APP_PROGRAMS: &[&str] = &["claude.exe"];
+
 /// The newest copy of Claude Code that the Claude desktop app installed for itself, under `dir`
 /// (see [`claude_app_code_dir`]). Each version folder holds the program, either directly or one
-/// folder further down, and either as a bare `claude` or inside a `claude.app` bundle. Version
+/// folder further down, and either as a bare `claude` or inside a `claude.app` bundle (`claude.exe`
+/// on Windows). Version
 /// folders are compared by version number, so 2.10.0 is newer than 2.9.1; a folder whose name isn't
 /// a version, or that holds no program (an update still downloading), is skipped.
 pub fn claude_app_code(dir: &Path) -> Option<PathBuf> {
@@ -117,9 +164,10 @@ pub fn claude_app_code(dir: &Path) -> Option<PathBuf> {
     versions.into_iter().find_map(|(_, folder)| program_in(&folder).or_else(|| program_below(&folder)))
 }
 
-/// The program directly inside a folder: `claude`, or `claude.app/Contents/MacOS/claude`.
+/// The program directly inside a folder: `claude`, or `claude.app/Contents/MacOS/claude`
+/// (`claude.exe` on Windows).
 fn program_in(folder: &Path) -> Option<PathBuf> {
-    [folder.join("claude"), folder.join("claude.app/Contents/MacOS/claude")].into_iter().find(|p| is_executable(p))
+    CLAUDE_APP_PROGRAMS.iter().map(|name| folder.join(name)).find(|p| is_executable(p))
 }
 
 /// The program one folder down, where the app keeps a version's build under a folder of its own.
@@ -177,7 +225,7 @@ impl Version {
 /// new version folder when the app updates, so when the saved one is gone, the newest copy there is
 /// used instead.
 pub fn claude_program(saved: &str) -> String {
-    let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
+    let home = std::env::home_dir().unwrap_or_default();
     resolve_claude_program(saved, &claude_app_code_dir(&home))
 }
 
@@ -199,6 +247,10 @@ fn resolve_claude_program(saved: &str, app_dir: &Path) -> String {
 /// Environment of the user's login shell. Apps launched from Finder don't inherit exports from
 /// `~/.zshrc`, which is where most people keep API keys.
 pub async fn login_shell_env() -> HashMap<String, String> {
+    // Windows has no login shell: apps inherit the user's environment variables.
+    if cfg!(windows) {
+        return HashMap::new();
+    }
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
     let output = tokio::time::timeout(
         Duration::from_secs(4),
@@ -341,18 +393,27 @@ mod tests {
             Self(dir)
         }
 
-        /// Writes an executable at `relative` and returns its path.
+        /// `relative`, with `/` between its parts, under this folder.
+        fn path(&self, relative: &str) -> PathBuf {
+            relative.split('/').fold(self.0.clone(), |path, part| path.join(part))
+        }
+
+        /// Writes an executable at `relative` and returns its path. `{P}` in `relative` stands for
+        /// the program's file name: `claude`, or `claude.exe` on Windows.
         fn program(&self, relative: &str) -> PathBuf {
-            use std::os::unix::fs::PermissionsExt;
-            let path = self.0.join(relative);
+            let path = self.path(&relative.replace("{P}", CLAUDE_APP_PROGRAMS[0]));
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, "#!/bin/sh\n").unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
             path
         }
 
         fn folder(&self, relative: &str) {
-            std::fs::create_dir_all(self.0.join(relative)).unwrap();
+            std::fs::create_dir_all(self.path(relative)).unwrap();
         }
     }
 
@@ -365,26 +426,27 @@ mod tests {
     #[test]
     fn the_claude_apps_newest_version_is_chosen_by_number() {
         let dir = AppDir::new("newest");
-        dir.program("2.1.9/claude");
-        let newest = dir.program("2.1.10/claude");
-        dir.program("2.0.99/claude");
+        dir.program("2.1.9/{P}");
+        let newest = dir.program("2.1.10/{P}");
+        dir.program("2.0.99/{P}");
         assert_eq!(claude_app_code(&dir.0), Some(newest));
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn the_claude_apps_build_folder_and_bundle_are_found() {
         let dir = AppDir::new("bundle");
-        dir.program("2.1.300/claude");
-        let newest = dir.program("2.1.321/0a1b2c3d4e5f/claude.app/Contents/MacOS/claude");
+        dir.program("2.1.300/{P}");
+        let newest = dir.program("2.1.321/0a1b2c3d4e5f/claude.app/Contents/MacOS/{P}");
         std::fs::write(dir.0.join("2.1.321/0a1b2c3d4e5f/.verified"), "").unwrap();
-        dir.program("2.1.321/9f8e7d6c5b4a/claude.app/Contents/MacOS/claude");
+        dir.program("2.1.321/9f8e7d6c5b4a/claude.app/Contents/MacOS/{P}");
         assert_eq!(claude_app_code(&dir.0), Some(newest), "the build marked verified wins");
     }
 
     #[test]
     fn an_empty_version_folder_is_skipped() {
         let dir = AppDir::new("empty");
-        let installed = dir.program("2.1.320/claude");
+        let installed = dir.program("2.1.320/{P}");
         dir.folder("2.1.321");
         dir.folder("2.1.322/0123abcd");
         assert_eq!(claude_app_code(&dir.0), Some(installed));
@@ -393,11 +455,11 @@ mod tests {
     #[test]
     fn a_folder_that_isnt_a_version_is_skipped() {
         let dir = AppDir::new("names");
-        let installed = dir.program("2.1.320/claude");
-        dir.program("latest/claude");
-        dir.program("9.0/claude");
-        dir.program("10.0.0.1/claude");
-        dir.program(".tmp-3.0.0/claude");
+        let installed = dir.program("2.1.320/{P}");
+        dir.program("latest/{P}");
+        dir.program("9.0/{P}");
+        dir.program("10.0.0.1/{P}");
+        dir.program(".tmp-3.0.0/{P}");
         assert_eq!(claude_app_code(&dir.0), Some(installed));
         assert_eq!(claude_app_code(&dir.0.join("missing")), None);
     }
@@ -405,20 +467,52 @@ mod tests {
     #[test]
     fn a_release_is_newer_than_its_prerelease() {
         let dir = AppDir::new("prerelease");
-        dir.program("3.0.0-beta.2/claude");
-        let release = dir.program("3.0.0/claude");
+        dir.program("3.0.0-beta.2/{P}");
+        let release = dir.program("3.0.0/{P}");
         assert_eq!(claude_app_code(&dir.0), Some(release));
         assert!(Version::parse("3.0.0+build.7").is_some());
     }
 
     #[test]
+    fn the_claude_apps_build_folders_are_found() {
+        // As on Windows, `%APPDATA%\Claude\claude-code\<version>\<build>\claude.exe`, with whichever
+        // program name this system uses.
+        let dir = AppDir::new("build");
+        dir.program("2.1.300/0f0f0f0f/{P}");
+        let verified = dir.program("2.1.321/0a1b2c3d4e5f/{P}");
+        std::fs::write(dir.path("2.1.321/0a1b2c3d4e5f/.verified"), "").unwrap();
+        dir.program("2.1.321/9f8e7d6c5b4a/{P}");
+        assert_eq!(claude_app_code(&dir.0), Some(verified), "the build marked verified wins");
+        // Without a mark, the most recently written build wins.
+        let dir = AppDir::new("unmarked");
+        dir.program("2.1.321/0a1b2c3d4e5f/{P}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let newer = dir.program("2.1.321/9f8e7d6c5b4a/{P}");
+        assert_eq!(claude_app_code(&dir.0), Some(newer));
+    }
+
+    #[test]
+    fn a_packaged_claude_apps_folder_is_found_on_windows() {
+        let dir = AppDir::new("packaged");
+        let (roaming, local) = (dir.path("Roaming"), dir.path("Local"));
+        let direct = dir.path("Roaming/Claude/claude-code");
+        assert_eq!(windows_claude_app_code_dir(&roaming, &local), direct, "neither exists");
+        dir.folder("Local/Packages/ClaudeHelper_1a2b/LocalCache/Roaming/Claude/claude-code");
+        dir.folder("Local/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude-code");
+        let packaged = dir.path("Local/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude-code");
+        assert_eq!(windows_claude_app_code_dir(&roaming, &local), packaged);
+        dir.folder("Roaming/Claude/claude-code");
+        assert_eq!(windows_claude_app_code_dir(&roaming, &local), direct, "the ordinary folder comes first");
+    }
+
+    #[test]
     fn a_claude_app_copy_that_moved_is_found_again() {
         let dir = AppDir::new("moved");
-        let old = dir.0.join("2.1.320/claude").display().to_string();
-        let newest = dir.program("2.1.321/claude");
+        let old = dir.path("2.1.320/claude").display().to_string();
+        let newest = dir.program("2.1.321/{P}");
         assert_eq!(resolve_claude_program(&old, &dir.0), newest.display().to_string());
         // A copy that is still there stays as saved, and so does any other program.
-        let kept = dir.program("2.1.300/claude").display().to_string();
+        let kept = dir.program("2.1.300/{P}").display().to_string();
         assert_eq!(resolve_claude_program(&kept, &dir.0), kept);
         assert_eq!(resolve_claude_program("/opt/tools/claude", &dir.0), "/opt/tools/claude");
         assert_eq!(resolve_claude_program("", &dir.0), "claude");

@@ -7,9 +7,9 @@
 //! sent in between, as PowerToys does.
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
-    KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_CONTROL, VK_INSERT, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
-    VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN,
+    GetAsyncKeyState, GetLastInputInfo, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT,
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, LASTINPUTINFO, SendInput, VIRTUAL_KEY, VK_CONTROL, VK_INSERT, VK_LCONTROL,
+    VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN,
 };
 
 /// "SESE", marking events SuperEditr sent.
@@ -70,6 +70,13 @@ pub fn wait_for_modifiers(limit: std::time::Duration) {
 pub fn ctrl(letter: u8) -> bool {
     let letter = VIRTUAL_KEY(u16::from(letter));
     send(&[key(VK_CONTROL, false), key(letter, false), key(letter, true), key(VK_CONTROL, true)])
+}
+
+/// When this session last had keyboard or mouse input, in `GetTickCount` milliseconds; SuperEditr's
+/// own keys count too. None when Windows doesn't say.
+pub fn last_input() -> Option<u32> {
+    let mut info = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    unsafe { GetLastInputInfo(&mut info) }.as_bool().then_some(info.dwTime)
 }
 
 /// A key that does nothing, so Windows lets SuperEditr bring its panel to the front right after the

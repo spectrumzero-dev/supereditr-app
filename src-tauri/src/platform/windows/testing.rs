@@ -2,7 +2,7 @@
 //! with a selection, SuperEditr's panel, UI Automation over the document, and a clipboard.
 
 use super::Capture;
-use super::capture::{self, Desktop, Key, Services};
+use super::capture::{self, Desktop, InputWatch, Key, Services};
 use super::clipboard::fake::Fake;
 use super::clipboard::{CF_UNICODETEXT, Clipboard, Raw, utf16z};
 use super::replace;
@@ -79,6 +79,10 @@ pub struct World {
     rechecks_without_text: AtomicUsize,
     /// Runs while SuperEditr waits for the user to let go of their modifiers.
     on_release: Mutex<Option<Hook>>,
+    /// Runs while the focused field is read.
+    on_read: Mutex<Option<Hook>>,
+    /// Counts the user's keyboard and mouse input.
+    inputs: Arc<AtomicUsize>,
     pub clipboard: Clipboard<Fake>,
 }
 
@@ -111,6 +115,8 @@ impl World {
             focus_requests: AtomicUsize::new(0),
             on_focus: Mutex::new(None),
             on_release: Mutex::new(None),
+            on_read: Mutex::new(None),
+            inputs: Arc::default(),
             rechecks_without_text: AtomicUsize::new(0),
             read_limits: Mutex::default(),
             clipboard: Clipboard::new(Fake::with(&[
@@ -234,6 +240,17 @@ impl World {
         *self.foreground.lock().unwrap() = Some(OTHER_WINDOW);
     }
 
+    /// Another window comes to the front while the focused field is being read.
+    pub fn other_window_in_front_during_read(&self) {
+        let foreground = self.foreground.clone();
+        *self.on_read.lock().unwrap() = Some(Box::new(move |_| *foreground.lock().unwrap() = Some(OTHER_WINDOW)));
+    }
+
+    /// The user types or uses the mouse.
+    pub fn user_input(&self) {
+        self.inputs.fetch_add(1, Ordering::SeqCst);
+    }
+
     /// Another window comes to the front while the clipboard is being put aside.
     pub fn other_window_in_front_during_snapshot(&self) {
         let foreground = self.foreground.clone();
@@ -352,6 +369,10 @@ fn context(text: &[u16], start: usize, end: usize) -> (Vec<u16>, Vec<u16>) {
 impl Fields for World {
     fn focused(&self, limit: Duration) -> Result<Field, ReadError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
+        let act = self.on_read.lock().unwrap().take();
+        if let Some(act) = act {
+            act(self);
+        }
         self.read_limits.lock().unwrap().push(limit);
         if self.late.load(Ordering::SeqCst) > 0 {
             self.late.fetch_sub(1, Ordering::SeqCst);
@@ -475,5 +496,10 @@ impl Desktop for World {
     }
     fn cursor(&self) -> Option<(i32, i32)> {
         Some((900, 500))
+    }
+    fn watch_input(&self) -> InputWatch {
+        let inputs = self.inputs.clone();
+        let since = inputs.load(Ordering::SeqCst);
+        Box::new(move || inputs.load(Ordering::SeqCst) != since)
     }
 }

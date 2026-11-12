@@ -22,8 +22,9 @@
 //!   user's.
 //! - **A late copy.** A guarded copy that gave up on an app may still see the app copy afterwards,
 //!   when it gets to the Ctrl+C. For a few seconds the put-aside clipboard is kept, and a change the
-//!   app itself made is undone, once per Ctrl+C sent. A change by any other program is the user's:
-//!   it stays, and the watch ends. The next transaction settles the watch first.
+//!   app itself made is undone, once per Ctrl+C sent. A change by any other program, or any change
+//!   after the user typed or used the mouse, is the user's: it stays, and the watch ends. The next
+//!   transaction settles the watch first.
 //!
 //! [`Raw`] is the clipboard itself, so the transaction can be tested against a fake.
 
@@ -328,6 +329,9 @@ struct Late {
     seen: u32,
     /// Copies still to come: one per Ctrl+C sent, less those seen.
     copies: usize,
+    /// Whether the user has typed or used the mouse since the Ctrl+C. After that, a copy from the
+    /// app may be one they made themselves, so the watch ends and the clipboard stays as it is.
+    user_acted: super::capture::InputWatch,
 }
 
 pub struct Clipboard<R: Raw> {
@@ -354,15 +358,23 @@ impl<R: Raw> Clipboard<R> {
     }
 
     /// After a guarded copy: keeps `snapshot` for a few seconds, on a thread of its own, and puts it
-    /// back if `app` copies after all, up to `copies` times. Anything another program puts on the
-    /// clipboard is the user's: it stays, and the watch ends.
-    pub fn watch_late_copies(&self, snapshot: Snapshot, app: String, copies: usize) {
+    /// back if `app` copies after all, up to `copies` times, as long as the user hasn't typed or
+    /// used the mouse since (`user_acted`). Anything another program puts on the clipboard, and
+    /// anything after the user's own input, is the user's: it stays, and the watch ends.
+    pub fn watch_late_copies(
+        &self,
+        snapshot: Snapshot,
+        app: String,
+        copies: usize,
+        user_acted: super::capture::InputWatch,
+    ) {
         if copies == 0 {
             return;
         }
         let id = self.watches.fetch_add(1, Ordering::SeqCst) + 1;
         let seen = self.raw.sequence();
-        *self.late.lock().unwrap_or_else(|p| p.into_inner()) = Some(Late { id, snapshot, app, seen, copies });
+        *self.late.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some(Late { id, snapshot, app, seen, copies, user_acted });
         let (raw, late) = (self.raw.clone(), self.late.clone());
         let watching = std::thread::Builder::new().name("late copy".into()).spawn(move || {
             let until = Instant::now() + LATE_WAIT;
@@ -548,6 +560,12 @@ fn restore(raw: &dyn Raw, snapshot: &Snapshot, ours: u32) -> Restore {
 /// watch is over: every Ctrl+C's copy was undone, another program wrote the clipboard, or it
 /// couldn't be put back.
 fn undo_late_copy(raw: &dyn Raw, watch: &mut Late) -> bool {
+    // A copy the user made themselves must never be lost; one the app makes late, of their own
+    // selection, is the lesser harm.
+    if (watch.user_acted)() {
+        super::trace(format_args!("clipboard: input after a guarded copy in {}; the clipboard stays", watch.app));
+        return false;
+    }
     let now = raw.sequence();
     if now == watch.seen {
         return true;
@@ -1242,6 +1260,7 @@ pub mod fake {
 mod tests {
     use super::fake::Fake;
     use super::*;
+    use std::sync::atomic::AtomicBool;
 
     const HTML: u32 = 0xC100;
     const PRIVATE: u32 = 0xC101;
@@ -1466,8 +1485,18 @@ mod tests {
 
     /// The app the guarded copy sent Ctrl+C to copies after SuperEditr gave up waiting.
     fn given_up_copy(clipboard: &Clipboard<Fake>, copies: usize) {
+        given_up_copy_watching(clipboard, copies, Arc::new(AtomicBool::new(false)));
+    }
+
+    /// As [`given_up_copy`], with `user_acted` standing in for the user's keyboard and mouse.
+    fn given_up_copy_watching(clipboard: &Clipboard<Fake>, copies: usize, user_acted: Arc<AtomicBool>) {
         let snapshot = clipboard.snapshot(&quick()).unwrap();
-        clipboard.watch_late_copies(snapshot, "Google Chrome".into(), copies);
+        clipboard.watch_late_copies(
+            snapshot,
+            "Google Chrome".into(),
+            copies,
+            Box::new(move || user_acted.load(Ordering::SeqCst)),
+        );
     }
 
     fn wait_for(what: impl Fn() -> bool) -> bool {
@@ -1491,6 +1520,29 @@ mod tests {
         // The second Ctrl+C's copy comes later still.
         clipboard.raw().copy_from("Google Chrome", "Their going");
         assert!(wait_for(|| clipboard.raw().text().as_deref() == Some("Rhyan's own copy")), "put back again");
+    }
+
+    #[test]
+    fn a_copy_from_the_app_after_the_users_input_is_theirs_and_stays() {
+        let clipboard = users_clipboard();
+        let user_acted = Arc::new(AtomicBool::new(false));
+        given_up_copy_watching(&clipboard, 2, user_acted.clone());
+        // The user selects something else in the same app and copies it: input, then a copy.
+        user_acted.store(true, Ordering::SeqCst);
+        clipboard.raw().copy_from("Google Chrome", "Kyndal's own copy");
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(clipboard.raw().text().as_deref(), Some("Kyndal's own copy"));
+        // The watch is over, and the next transaction doesn't undo it either.
+        clipboard.settle_late();
+        assert_eq!(clipboard.raw().text().as_deref(), Some("Kyndal's own copy"));
+    }
+
+    #[test]
+    fn a_late_copy_with_no_input_since_is_undone() {
+        let clipboard = users_clipboard();
+        given_up_copy_watching(&clipboard, 1, Arc::new(AtomicBool::new(false)));
+        clipboard.raw().copy_from("Google Chrome", "Their going");
+        assert!(wait_for(|| clipboard.raw().text().as_deref() == Some("Rhyan's own copy")), "put back");
     }
 
     #[test]

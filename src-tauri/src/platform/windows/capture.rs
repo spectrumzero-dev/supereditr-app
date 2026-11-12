@@ -60,7 +60,13 @@ pub trait Desktop: Send + Sync {
     fn send_ctrl(&self, key: Key) -> bool;
     fn caret(&self, window: WindowRef) -> Option<PxRect>;
     fn cursor(&self) -> Option<(i32, i32)>;
+    /// Starts watching for keyboard or mouse input: the function returned says whether any came
+    /// since, so it says yes when Windows can't tell.
+    fn watch_input(&self) -> InputWatch;
 }
+
+/// Whether the user has given any keyboard or mouse input since the watch started.
+pub type InputWatch = Box<dyn Fn() -> bool + Send + Sync>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
@@ -189,6 +195,12 @@ fn read<R: Raw>(
             None
         }
     };
+    // A read can take a few seconds. If another window came to the front meanwhile, the field read
+    // may be that window's, which this app's profile and exclusions don't cover.
+    if services.desktop.foreground() != Some(window) {
+        trace(format_args!("{image}: another window came to the front during the read"));
+        return Err(PlatformError::Stale);
+    }
     let capture = |field: Field, class: Class| {
         let bounds = anchor(services.desktop, window, field.bounds.or(field.element_bounds));
         let mut capture = Capture::read(window, image, field, class, bounds);
@@ -324,8 +336,14 @@ fn guarded_copy<R: Raw>(
     services.desktop.release_modifiers();
     let mut copied = None;
     let mut presses = 0;
+    let mut moved = false;
     // Two tries, as PowerToys does: an app busy at the first may take the second.
     for _ in 0..2 {
+        // The copy key goes to whatever window is in front: only ever the one being reviewed.
+        if services.desktop.foreground() != Some(window) {
+            moved = true;
+            break;
+        }
         if !services.desktop.send_ctrl(key) {
             break;
         }
@@ -347,7 +365,11 @@ fn guarded_copy<R: Raw>(
         if presses > 0 {
             trace(format_args!("{image}: no copy in time; watching for a late one"));
         }
-        services.clipboard.watch_late_copies(snapshot, name.clone(), presses);
+        services.clipboard.watch_late_copies(snapshot, name.clone(), presses, services.desktop.watch_input());
+        if moved {
+            trace(format_args!("{image}: another window came to the front before the copy"));
+            return Err(PlatformError::Stale);
+        }
         return Err(match terminal {
             true => PlatformError::Other(format!("Nothing was selected in {name}.")),
             false => PlatformError::NoSelection,
@@ -359,8 +381,14 @@ fn guarded_copy<R: Raw>(
     let now = services.clipboard.sequence();
     match services.clipboard.restore(&snapshot, now) {
         // The first Ctrl+C may have been the one copied, with the second's copy still to come.
-        Restore::Restored => services.clipboard.watch_late_copies(snapshot, name.clone(), presses - 1),
+        Restore::Restored => {
+            services.clipboard.watch_late_copies(snapshot, name.clone(), presses - 1, services.desktop.watch_input())
+        }
         other => trace(format_args!("{image}: after the copy, the clipboard {other:?} (copied {copy}, now {now})")),
+    }
+    if services.desktop.foreground() != Some(window) {
+        trace(format_args!("{image}: another window came to the front during the copy"));
+        return Err(PlatformError::Stale);
     }
     let text = text.unwrap_or_default();
     let text = if terminal { terminal_text(&text) } else { text };
@@ -444,6 +472,34 @@ mod tests {
         assert!(capture.editable);
         assert_eq!(capture.text, "Their going");
         assert!(world.keys_sent().is_empty(), "UI Automation needs no keys");
+    }
+
+    #[test]
+    fn a_field_read_while_another_window_came_to_the_front_isnt_used() {
+        let world = World::new("notepad.exe").with_field(field("Their going"));
+        world.other_window_in_front_during_read();
+        assert!(matches!(world.capture(true), Err(PlatformError::Stale)));
+        assert!(world.keys_sent().is_empty());
+    }
+
+    #[test]
+    fn no_copy_key_goes_to_a_window_that_came_to_the_front() {
+        let world = World::new("soffice.bin").copying("Their going");
+        world.other_window_in_front_during_snapshot();
+        assert!(matches!(world.capture(true), Err(PlatformError::Stale)));
+        assert!(world.keys_sent().is_empty(), "no Ctrl+C to the other window");
+        assert_eq!(world.clipboard_text().as_deref(), Some("Rhyan's own copy"));
+    }
+
+    #[test]
+    fn a_copy_made_after_the_users_input_is_never_undone() {
+        // The app doesn't copy for SuperEditr; the user then selects other text there and copies it.
+        let world = World::new("soffice.bin");
+        assert!(matches!(world.capture(true), Err(PlatformError::NoSelection)));
+        world.user_input();
+        world.clipboard.raw().copy_from(&apps::display_name("soffice.bin"), "Kyndal's own copy");
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(world.clipboard_text().as_deref(), Some("Kyndal's own copy"));
     }
 
     #[test]

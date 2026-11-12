@@ -501,7 +501,9 @@ async fn engine_rejects_a_wrapped_empty_revision() {
     assert!(matches!(events.last(), Some(Event::Failed { .. })), "{events:?}");
 }
 
-/// A stand-in for the `claude` binary that prints the given stream-json lines and exit code.
+/// A stand-in for the `claude` binary that prints the given stream-json lines and exit code. It's a
+/// shell script, so it and its test are Unix only.
+#[cfg(unix)]
 fn fake_claude(name: &str, lines: &[&str], exit_code: i32) -> ProviderProfile {
     let dir = std::env::temp_dir().join(format!("supereditr-fake-claude-{}-{name}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -518,8 +520,10 @@ fn fake_claude(name: &str, lines: &[&str], exit_code: i32) -> ProviderProfile {
     p
 }
 
+#[cfg(unix)]
 const CLI_DELTA: &str = r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"This is teh"}}}"#;
 
+#[cfg(unix)]
 #[tokio::test]
 async fn claude_cli_needs_a_final_result() {
     let providers = Providers::new();

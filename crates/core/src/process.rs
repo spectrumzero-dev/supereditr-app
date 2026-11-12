@@ -6,6 +6,9 @@
 //! `PATH` or `SHELL`, and the shell runs the user's startup files, so on macOS they're started
 //! with `posix_spawn` and the responsibility disclaimer: macOS then treats the child as its own
 //! app, with its own (usually no) permissions. Elsewhere this is `tokio::process::Command`.
+//!
+//! The app has no console of its own, so on Windows a console program it starts would open a
+//! console window, which flashes on screen; every program started here sets `CREATE_NO_WINDOW`.
 
 use std::io;
 use std::path::Path;
@@ -66,6 +69,20 @@ pub(crate) async fn output(program: &str, args: &[&str]) -> io::Result<Output> {
     spawn(program, args, None, Stdin::Null)?.output().await
 }
 
+/// Windows' `CREATE_NO_WINDOW` process creation flag.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// A plain `tokio::process::Command` for a program SuperEditr ships itself (the Apple
+/// Intelligence helper), which needs no disclaimer, with no console window on Windows.
+pub(crate) fn command(program: impl AsRef<std::ffi::OsStr>) -> tokio::process::Command {
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut command = tokio::process::Command::new(program);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+}
+
 #[cfg(not(target_os = "macos"))]
 mod imp {
     use super::Child;
@@ -86,7 +103,7 @@ mod imp {
     }
 
     pub fn spawn(program: &str, args: &[&str], dir: Option<&Path>, stdin: super::Stdin) -> io::Result<Child> {
-        let mut command = tokio::process::Command::new(program);
+        let mut command = super::command(program);
         command.args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         command.stdin(if stdin == super::Stdin::Piped { Stdio::piped() } else { Stdio::null() });
         if let Some(dir) = dir {
@@ -327,8 +344,11 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use tokio::io::AsyncWriteExt;
 
+    // The tests that run `sh`, `cat` and `pwd` need a Unix system.
+    #[cfg(unix)]
     #[tokio::test]
     async fn output_captures_both_streams_and_the_exit_code() {
         // In the temp folder: a disclaimed child doesn't inherit the parent's access to a
@@ -341,6 +361,7 @@ mod tests {
         assert_eq!(out.status.code(), Some(3));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn piped_stdin_reaches_the_program_and_closes() {
         let mut child = spawn("cat", &[], None, Stdin::Piped).unwrap();
@@ -352,6 +373,7 @@ mod tests {
         assert!(out.status.success());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn runs_in_the_given_directory() {
         let dir = std::env::temp_dir().canonicalize().unwrap();

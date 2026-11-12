@@ -1,6 +1,7 @@
 //! Apple Intelligence as the built-in AI: it reviews when nothing else is chosen and takes over when
 //! the chosen AI can't answer. Uses a mock helper through `SUPEREDITR_FM_HELPER`, so this file holds
-//! a single test (the variable is process-wide).
+//! a single test (the variable is process-wide). The mock is a shell script, so this runs on Unix only.
+#![cfg(unix)]
 
 use supereditr_core::engine::{Engine, Event, Job};
 use supereditr_core::prompts::builtin_presets;

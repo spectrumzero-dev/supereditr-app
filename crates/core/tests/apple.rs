@@ -1,5 +1,7 @@
 //! Apple Intelligence provider tests against a mock helper that speaks the helper's JSON-lines
-//! protocol, so they run on any Mac (and in CI) without the on-device model.
+//! protocol, so they run on any Mac (and in CI) without the on-device model. The mock is a shell
+//! script, so these run on Unix only.
+#![cfg(unix)]
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

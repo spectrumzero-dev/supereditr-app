@@ -219,7 +219,7 @@ fn matching_profile(state: &AppState, candidate: &Candidate) -> Option<ProviderP
 
 #[tauri::command]
 pub async fn scan_accounts(state: State<'_, AppState>) -> CmdResult<Vec<CandidateView>> {
-    let home = std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+    let home = std::env::home_dir().unwrap_or_default();
     // Apple Intelligence is built in and shown separately (see `builtin_ai`), not as an account.
     let mut found = detect::scan(&state.engine.providers, &home).await;
     found.retain(|c| c.kind != ProviderKind::AppleIntelligence);

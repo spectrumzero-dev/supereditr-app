@@ -15,7 +15,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
 use tokio::sync::{mpsc, watch};
 
 const HELPER_NAME: &str = "supereditr-fm";
@@ -87,7 +86,7 @@ pub(super) struct Helper {
 
 impl Helper {
     fn spawn(path: PathBuf) -> Result<Arc<Self>, ProviderError> {
-        let mut child = Command::new(&path)
+        let mut child = crate::process::command(&path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

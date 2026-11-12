@@ -206,6 +206,14 @@ first_run() {
   local vs_code_flag
   vs_code_flag="$(vm 'grep -c -- --force-renderer-accessibility ~/.config/code-flags.conf')"
   check "Set up Omarchy adds the VS Code flag" "$(ok is "$vs_code_flag" 1)" "$vs_code_flag"
+  # With no AI, Get Started's badge offers Set up AI, and so does a line on Styles, where only
+  # Proofread works. Each opens Models.
+  local no_ai
+  no_ai="$(vm 'python3 $SMOKE/probe.py press "SuperEditr Settings" "Set up AI"; sleep 1
+    python3 $SMOKE/probe.py press "SuperEditr Settings" "Styles"; sleep 1; shot 03-no-ai-styles
+    python3 $SMOKE/probe.py press "SuperEditr Settings" "Set up AI"')"
+  check "with no AI, Get Started offers Set up AI" "$(ok has "$(sed -n 1p <<< "$no_ai")" '"pressed": true')" "$(sed -n 1p <<< "$no_ai")"
+  check "with no AI, Styles offers Set up AI" "$(ok has "$(sed -n 3p <<< "$no_ai")" '"pressed": true')" "$(sed -n 3p <<< "$no_ai")"
   # The tests need foot reviewed (copy-only) rather than skipped as an excluded app.
   vm 'app_quit; jq ".excluded_apps -= [\"foot\"]" "$SETTINGS" > "$SETTINGS.new" && mv "$SETTINGS.new" "$SETTINGS"'
   vm 'app_start'

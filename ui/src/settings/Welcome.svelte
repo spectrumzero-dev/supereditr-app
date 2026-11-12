@@ -8,6 +8,7 @@
   import { keySymbols } from "../lib/diff";
   import { api } from "./ipc";
   import { isMac } from "../lib/platform";
+  import { aiState } from "./ai";
 
   interface Props {
     config: Config;
@@ -33,6 +34,8 @@
     chosenCheck = null;
     if (id) api.checkProvider(id).then((c) => id === chosen?.id && (chosenCheck = c));
   });
+  /** The same answer the Styles page gives. */
+  const ai = $derived(aiState(!!chosen, chosenCheck, builtin));
 
   /** Whether suggestions appear on their own after a selection, or only on the shortcut. */
   async function setAuto(on: boolean) {
@@ -98,10 +101,11 @@
         <span class="ai">Checking {chosen.label}…</span>
       {:else if builtin?.available}
         <span class="ai on" title="Private, works offline, fast, and free.">Apple Intelligence · on-device · recommended</span>
-      {:else if builtin?.supported}
+      {:else if ai === "off"}
         <span class="ai off" title="Turn it on for private, offline fixes.">Apple Intelligence is off · <button class="linklike" onclick={() => api.openAppleIntelligence()}>Turn on</button></span>
-      {:else if builtin}
-        <span class="ai off">Rule-based spelling and grammar</span>
+      {:else if ai === "none"}
+        <!-- Only the rule-based checker reviews: Proofread on English text. -->
+        <span class="ai off" title="Without an AI, SuperEditr checks English spelling and grammar offline. Other styles and languages need an AI.">No AI set up · spelling and grammar only · <button class="linklike" onclick={openModels}>Set up AI</button></span>
       {/if}
     </div>
     {#if trusted}

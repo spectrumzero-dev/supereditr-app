@@ -1,17 +1,52 @@
 <script lang="ts">
-  import type { Config, Preset } from "../lib/types";
+  import { onMount, untrack } from "svelte";
+  import type { BuiltinAi, Config, Preset, ProviderCheck } from "../lib/types";
   import ShortcutInput from "./ShortcutInput.svelte";
   import Playground from "./Playground.svelte";
   import { api } from "./ipc";
+  import { aiState, needsAi } from "./ai";
+  import { watchBuiltinAi } from "./builtin";
   import { describeLosses, isDefault, losesWork, resetLosses } from "./styles";
 
   interface Props {
     config: Config;
     onchange: () => void;
+    /** Opens the Models page, to set up an AI. */
+    openModels: () => void;
   }
-  let { config = $bindable(), onchange }: Props = $props();
+  let { config = $bindable(), onchange, openModels }: Props = $props();
   let selected = $state(config.presets[0]?.id ?? "");
   const preset = $derived(config.presets.find((p) => p.id === selected));
+
+  // Without an AI only Proofread works, so the page says so, as Get Started's badge does.
+  let builtin = $state<BuiltinAi | null>(null);
+  let chosenCheck = $state<ProviderCheck | null>(null);
+  const chosenId = $derived(config.providers.find((p) => p.id === config.active_provider)?.id ?? null);
+  /** The AI `chosenCheck` is for. */
+  let checkedId: string | null = null;
+  /** Checks the chosen AI. Checking it again keeps the last result until the new one is back, so
+   * the notice doesn't flicker. */
+  function check() {
+    const id = chosenId;
+    if (id !== checkedId) chosenCheck = null;
+    checkedId = id;
+    if (id) api.checkProvider(id).then((c) => id === chosenId && (chosenCheck = c));
+  }
+  $effect(() => {
+    void chosenId;
+    untrack(check);
+  });
+  const ai = $derived(aiState(chosenId !== null, chosenCheck, builtin));
+  const noAi = $derived(ai === "off" || ai === "none");
+  onMount(() => {
+    const unwatch = watchBuiltinAi(api.builtinAi, (b) => (builtin = b));
+    // An AI can start or stop working while the page is open: Ollama quits, or a key runs out.
+    window.addEventListener("focus", check);
+    return () => {
+      unwatch();
+      window.removeEventListener("focus", check);
+    };
+  });
 
   function addPreset() {
     const id = `custom-${Date.now().toString(36)}`;
@@ -65,6 +100,15 @@
 <div class="page">
   <h1>Styles</h1>
   <p class="lede">Styles are the instructions SuperEditr gives the model. The first seven appear in the overlay, where <kbd>1</kbd>–<kbd>7</kbd> switch between them. Edit, reorder, or delete them, or write your own.</p>
+  {#if noAi}
+    <div class="needs-ai" role="note">
+      <span>Styles other than Proofread need an AI.</span>
+      <span class="actions">
+        {#if ai === "off"}<button class="btn small" onclick={() => api.openAppleIntelligence()}>Turn on Apple Intelligence</button>{/if}
+        <button class="btn small" onclick={openModels}>Set up AI</button>
+      </span>
+    </div>
+  {/if}
 
   <div class="group-title">Your voice</div>
   <div class="group">
@@ -79,6 +123,7 @@
       <div>
         <div class="label">Default style</div>
         <div class="hint">Used for automatic suggestions and quick fix.</div>
+        {#if noAi && needsAi(config.default_preset)}<div class="hint needs-ai-hint">Needs an AI</div>{/if}
       </div>
       <select bind:value={config.default_preset} onchange={onchange}>
         {#each config.presets as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
@@ -240,5 +285,23 @@
   }
   .pad {
     padding: 14px;
+  }
+  .needs-ai {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: -4px 0 18px;
+    padding: 8px 8px 8px 14px;
+    border-radius: 10px;
+    background: var(--warn-bg);
+    color: var(--warn);
+    font-size: 12.5px;
+  }
+  .needs-ai .actions {
+    flex: none;
+  }
+  .needs-ai-hint {
+    color: var(--warn);
   }
 </style>

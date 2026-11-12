@@ -199,6 +199,8 @@ How it differs from macOS:
 - Release builds download an update when they find one and install it when you're not using SuperEditr (no review, panel or SuperEditr window open, and no typing for a minute), when you choose Restart to Update, or when you quit. The installer starts SuperEditr again afterwards.
 - The diagnostic log is `%LOCALAPPDATA%\SuperEditr\Logs\capture.log`.
 
+`scripts/ui-smoke-windows.sh` runs the live Windows UI tests on a disposable Windows test machine over SSH; see the script's header for its options.
+
 ## Architecture
 
 | Part | Path | Role |

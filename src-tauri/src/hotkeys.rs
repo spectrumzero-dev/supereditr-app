@@ -9,14 +9,21 @@
 //!
 //! On Linux, Wayland gives apps no global keys: the compositor binds review and quick fix and
 //! hands them to SuperEditr (`platform::set_shortcuts`), and the panel takes focus for its own keys.
+//!
+//! On Windows, shortcuts are registered with `RegisterHotKey` by `platform::hotkey`, by the virtual
+//! key the recorder saved (see `keys`), which the global-shortcut plugin can't do. Windows switches
+//! windows with Alt+Esc itself, so there the panel takes plain Esc while it shows, whether or not it
+//! has the keyboard, and hands it to the panel's page like a key typed there: an instruction being
+//! typed is cancelled first, and otherwise the panel or notice closes. A registered hotkey never
+//! reaches a window, so the page sees each press once.
 
 use crate::{double_press, platform, review};
 use std::collections::HashMap;
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 use std::str::FromStr;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 #[derive(Clone, Debug)]
@@ -28,8 +35,11 @@ enum Action {
     Preset(String),
     #[cfg_attr(target_os = "linux", allow(dead_code))]
     OverlayApply,
-    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     OverlayDismiss,
+    /// A key for the panel, passed to its page as if typed into it (see `review_keys::Key`).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    PanelKey(&'static str),
 }
 
 #[derive(Default)]
@@ -43,9 +53,13 @@ pub struct Registry {
 }
 
 const OVERLAY_APPLY: &str = "Alt+Enter";
+#[cfg(not(windows))]
 const OVERLAY_DISMISS: &str = "Alt+Escape";
+/// Plain Esc, while the panel or a notice shows: Windows uses Alt+Esc to switch windows.
+#[cfg(windows)]
+const OVERLAY_DISMISS: &str = "Escape";
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 pub fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     tauri_plugin_global_shortcut::Builder::new()
         .with_handler(|app, shortcut, event| {
@@ -75,6 +89,16 @@ fn run(app: &AppHandle, action: Action) {
             let _ = app.emit_to("overlay", "overlay:command", "apply");
         }
         Action::OverlayDismiss => review::dismiss(app, None),
+        Action::PanelKey(key) => {
+            let key = crate::review_keys::Key {
+                key: key.into(),
+                meta_key: false,
+                ctrl_key: false,
+                alt_key: false,
+                shift_key: false,
+            };
+            let _ = app.emit_to("overlay", "overlay:key", key);
+        }
     }
 }
 
@@ -140,7 +164,19 @@ pub fn taken_by_another_app(_app: &AppHandle, accelerator: &str) -> bool {
     platform::shortcut_taken(accelerator).is_some()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+pub fn taken_by_another_app(app: &AppHandle, accelerator: &str) -> bool {
+    let Some(chord) = crate::keys::chord(accelerator) else { return false };
+    // One SuperEditr registered itself would test as taken.
+    let config = app.state::<crate::state::AppState>().config();
+    let ours = [config.hotkeys.review.as_str(), config.hotkeys.quick_fix.as_str(), OVERLAY_APPLY, OVERLAY_DISMISS]
+        .into_iter()
+        .chain(config.presets.iter().filter_map(|p| p.shortcut.as_deref()))
+        .any(|own| crate::keys::chord(own) == Some(chord));
+    !ours && matches!(platform::hotkey::available(chord.into()), Err(platform::hotkey::RegisterError::Taken))
+}
+
+#[cfg(target_os = "macos")]
 pub fn taken_by_another_app(app: &AppHandle, accelerator: &str) -> bool {
     let chord = accelerator.split_whitespace().next().unwrap_or_default();
     let Ok(shortcut) = Shortcut::from_str(chord) else { return false };
@@ -172,7 +208,9 @@ pub fn pause(app: &AppHandle, paused: bool) {
     if paused {
         #[cfg(target_os = "linux")]
         platform::set_shortcuts(&[]);
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(windows)]
+        unregister_all(app);
+        #[cfg(target_os = "macos")]
         let _ = app.global_shortcut().unregister_all();
         registry.actions.lock().unwrap().clear();
     } else {
@@ -221,7 +259,7 @@ pub fn register_from_config(app: &AppHandle) -> Vec<String> {
 
 /// Registers shortcuts from settings. Returns a description of any that failed (usually
 /// because another app already owns them).
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 pub fn register_from_config(app: &AppHandle) -> Vec<String> {
     let config = app.state::<crate::state::AppState>().config();
     let registry = app.state::<Registry>();
@@ -289,7 +327,7 @@ pub fn register_from_config(app: &AppHandle) -> Vec<String> {
 /// any lock the main thread may want) while registering waited for the main thread while the main
 /// thread waited for it, and every shortcut stopped. So the change runs on the main thread, in
 /// order, and no lock is held across a call to the plugin.
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 pub fn set_overlay_shortcuts(app: &AppHandle, active: bool) {
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || set_overlay_shortcuts_now(&handle, active));
@@ -299,7 +337,7 @@ pub fn set_overlay_shortcuts(app: &AppHandle, active: bool) {
 #[cfg(target_os = "linux")]
 pub fn set_overlay_shortcuts(_app: &AppHandle, _active: bool) {}
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 fn set_overlay_shortcuts_now(app: &AppHandle, active: bool) {
     let registry = app.state::<Registry>();
     {
@@ -324,5 +362,139 @@ fn set_overlay_shortcuts_now(app: &AppHandle, active: bool) {
             let _ = shortcuts.unregister(shortcut);
             registry.actions.lock().unwrap().remove(&shortcut.id());
         }
+    }
+}
+
+/// Ids SuperEditr's own registrations use with `platform::hotkey`; the panel's keys have fixed ones.
+#[cfg(windows)]
+const OVERLAY_IDS: [(i32, &str); 2] = [(0xB001, OVERLAY_APPLY), (0xB002, OVERLAY_DISMISS)];
+
+#[cfg(windows)]
+fn unregister_all(app: &AppHandle) {
+    let registry = app.state::<Registry>();
+    let ids: Vec<u32> = registry.actions.lock().unwrap().drain().map(|(id, _)| id).collect();
+    for id in ids {
+        platform::hotkey::unregister(id as i32);
+    }
+}
+
+/// A shortcut Windows reported (`WM_HOTKEY`), run on the main thread like the others.
+#[cfg(windows)]
+pub fn on_windows_hotkey(app: &AppHandle, id: i32) {
+    let registry = app.state::<Registry>();
+    if *registry.paused.lock().unwrap() {
+        return;
+    }
+    let action = registry.actions.lock().unwrap().get(&(id as u32)).cloned();
+    platform::trace(format_args!("shortcut {id:#x}: {action:?}"));
+    if let Some(action) = action {
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || run(&handle, action));
+    }
+}
+
+/// Registers shortcuts from settings with `RegisterHotKey`. Returns a description of any that
+/// failed.
+#[cfg(windows)]
+pub fn register_from_config(app: &AppHandle) -> Vec<String> {
+    use platform::hotkey::{self, RegisterError};
+    let config = app.state::<crate::state::AppState>().config();
+    let registry = app.state::<Registry>();
+    if *registry.paused.lock().unwrap() {
+        return Vec::new();
+    }
+    unregister_all(app);
+    *registry.overlay_active.lock().unwrap() = false;
+    let mut wanted =
+        vec![(config.hotkeys.review.clone(), Action::Review), (config.hotkeys.quick_fix.clone(), Action::QuickFix)];
+    for preset in &config.presets {
+        if let Some(key) = preset.shortcut.as_ref().filter(|k| !k.is_empty()) {
+            wanted.push((key.clone(), Action::Preset(preset.id.clone())));
+        }
+    }
+    let mut problems = Vec::new();
+    let mut actions = HashMap::new();
+    for (id, (accelerator, action)) in (1..).zip(wanted) {
+        if accelerator.trim().is_empty() {
+            continue;
+        }
+        if double_press::parse(&accelerator).is_some() {
+            problems.push(format!("{accelerator}: double presses work only on macOS for now"));
+            continue;
+        }
+        let Some(chord) = crate::keys::chord(&accelerator) else {
+            problems.push(format!("{accelerator}: not a shortcut Windows can register"));
+            continue;
+        };
+        match hotkey::register(id, chord.into()) {
+            Ok(()) => {
+                actions.insert(id as u32, action);
+            }
+            Err(RegisterError::Taken) => problems.push(format!("{accelerator}: Windows or another app uses this")),
+            Err(RegisterError::Failed(why)) => problems.push(format!("{accelerator}: {why}")),
+        }
+    }
+    registry.actions.lock().unwrap().extend(actions);
+    platform::set_double_presses(Vec::new());
+    problems
+}
+
+/// The panel's own keys while it shows: Alt+Enter applies, and Esc goes to the panel's page.
+#[cfg(windows)]
+fn overlay_actions() -> [(i32, &'static str, Action); 2] {
+    let [(apply_id, apply), (close_id, close)] = OVERLAY_IDS;
+    [(apply_id, apply, Action::OverlayApply), (close_id, close, Action::PanelKey("Escape"))]
+}
+
+/// Adds or removes the panel's Alt+Enter and Esc, while a panel or notice shows. Esc that can't be
+/// registered (another app has it) is logged, and the panel then takes it only with the keyboard.
+#[cfg(windows)]
+pub fn set_overlay_shortcuts(app: &AppHandle, active: bool) {
+    let registry = app.state::<Registry>();
+    {
+        let mut current = registry.overlay_active.lock().unwrap();
+        if *current == active {
+            return;
+        }
+        *current = active;
+    }
+    if *registry.paused.lock().unwrap() {
+        return;
+    }
+    for (id, accelerator, action) in overlay_actions() {
+        if active {
+            let registered = crate::keys::chord(accelerator).map(|chord| platform::hotkey::register(id, chord.into()));
+            match registered {
+                Some(Ok(())) => {
+                    registry.actions.lock().unwrap().insert(id as u32, action);
+                }
+                other => platform::trace(format_args!("{accelerator}: not registered ({other:?})")),
+            }
+        } else {
+            platform::hotkey::unregister(id);
+            registry.actions.lock().unwrap().remove(&(id as u32));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_panels_keys_are_listed_for_the_shortcut_check() {
+        let others = others(&supereditr_core::Config::default(), "review");
+        assert!(others.iter().any(|(key, what)| key == OVERLAY_APPLY && what == "applying a suggestion"));
+        assert!(others.iter().any(|(key, what)| key == OVERLAY_DISMISS && what == "closing a suggestion"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn plain_esc_goes_to_the_panel_as_a_key() {
+        let [(_, apply, apply_action), (_, close, close_action)] = overlay_actions();
+        assert_eq!(crate::keys::chord(apply), Some(crate::keys::Chord { modifiers: double_press::ALT, vk: 0x0D }));
+        assert!(matches!(apply_action, Action::OverlayApply));
+        assert_eq!(crate::keys::chord(close), Some(crate::keys::Chord { modifiers: 0, vk: 0x1B }), "no modifiers");
+        assert!(matches!(close_action, Action::PanelKey("Escape")), "through the page, so / typing is cancelled first");
     }
 }

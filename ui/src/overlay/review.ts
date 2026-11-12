@@ -111,3 +111,33 @@ export function keptWording(review: Review, rejected: ReadonlySet<number>): stri
 export function canUse(review: Review): boolean {
   return review.complete && review.view !== null;
 }
+
+/**
+ * A replacement in flight, and what the apply key does next. When the backend couldn't put the
+ * user's clipboard aside (Windows), it brings the review back and the next apply replaces anyway,
+ * leaving the fix on the clipboard.
+ */
+export interface Replacing<S extends { id: number }> {
+  /** The review being applied, kept so it can come back. */
+  applying: S | null;
+  /** The next apply goes ahead without the clipboard put aside. */
+  anyway: boolean;
+}
+
+export function notReplacing<S extends { id: number }>(): Replacing<S> {
+  return { applying: null, anyway: false };
+}
+
+/** The apply key was pressed in `session`: what to ask the backend for. */
+export function startReplacing<S extends { id: number }>(state: Replacing<S>, session: S): { state: Replacing<S>; anyway: boolean } {
+  return { state: { applying: session, anyway: state.anyway }, anyway: state.anyway };
+}
+
+/**
+ * The backend offered to replace anyway for review `id`: the review to show again, or null when
+ * the offer is for a review that isn't the one being applied.
+ */
+export function offerAnyway<S extends { id: number }>(state: Replacing<S>, id: number): { state: Replacing<S>; session: S } | null {
+  if (!state.applying || state.applying.id !== id) return null;
+  return { state: { applying: null, anyway: true }, session: state.applying };
+}

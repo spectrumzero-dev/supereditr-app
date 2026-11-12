@@ -85,7 +85,6 @@ pub fn current_label(app: &AppHandle) -> Option<String> {
 }
 
 /// Another app came to the front.
-#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 pub fn on_app_switch(app: &AppHandle, pid: i32) {
     let Some(target) = target_for(pid) else { return };
     let Some(toggle) = app.try_state::<AppToggle>() else { return };

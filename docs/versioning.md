@@ -22,11 +22,12 @@ The platform ships when the diff touches a file in its row or the shared row. `-
 |---|---|
 | macOS | `src-tauri/src/platform/macos.rs`, `src-tauri/Info.plist`, `src-tauri/tauri.macos.conf.json`, `src-tauri/icons/icon.icns`, `src-tauri/icons/64x64.png`, `helpers/foundation-models/`, `scripts/build.sh` |
 | Linux | `src-tauri/src/platform/linux/`, `src-tauri/src/tray_linux.rs`, `src-tauri/icons/tray-light.png`, `packaging/arch/`, `packaging/linux/`, `scripts/linux-release.sh` |
+| Windows | `src-tauri/src/platform/windows/`, `src-tauri/icons/icon.ico` |
 | Not shipped | Markdown files; the Omarchy bar widget (`manifest.json`, `packaging/omarchy/`), which Omarchy installs from the repository rather than a release; tests (`tests/`, `scripts/ui-smoke*.sh`, Rust `tests` modules and files, UI `*.test.ts`); CI (`.github/`); development tools (`scripts/check.sh`, `scripts/count-lines.sh`, formatter and linter configuration) |
 | Release bookkeeping | a change to the version alone, in the files above, and the version and SHA-256 lines of `packaging/arch/PKGBUILD` |
 | Shared | everything else |
 
-Shared ships every platform. It covers code with platform branches, such as `lib.rs` and `crates/core/src/config.rs`, because a change there can alter any platform's build, and every file outside the other rows: a file nobody has classified counts as shared. Bookkeeping counts only when it is the whole change; a dependency change in `Cargo.toml` or a lock file is shared. When a new file belongs to one platform only, add it to that platform's row, and to that platform's label in `.github/labeler.yml`, in the same pull request. A Windows row joins the table, and the labeler, with the Windows port.
+Shared ships every platform. It covers code with platform branches, such as `lib.rs` and `crates/core/src/config.rs`, because a change there can alter any platform's build, and every file outside the other rows: a file nobody has classified counts as shared. Bookkeeping counts only when it is the whole change; a dependency change in `Cargo.toml` or a lock file is shared. When a new file belongs to one platform only, add it to that platform's row, and to that platform's label in `.github/labeler.yml`, in the same pull request.
 
 The version pull request lists every platform with its baseline and whether it ships ("macOS: ships, baseline v0.1.5. Linux: skips, baseline v0.1.6"). The release title names the platforms it ships ("SuperEditr 0.2.0 for macOS and Linux"), and its notes start with them ("**Platforms:** macOS, Linux"). GitHub groups the generated notes by the labels `.github/labeler.yml` gives each pull request from the table above; the version pull request carries the `release` label, which leaves it out of the notes.
 

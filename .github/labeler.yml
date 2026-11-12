@@ -22,6 +22,12 @@ linux:
           - packaging/linux/**
           - scripts/linux-release.sh
 
+windows:
+  - changed-files:
+      - any-glob-to-any-file:
+          - src-tauri/src/platform/windows/**
+          - src-tauri/icons/icon.ico
+
 development:
   - changed-files:
       - any-glob-to-any-file:
@@ -57,6 +63,8 @@ shared:
           - '!packaging/arch/**'
           - '!packaging/linux/**'
           - '!scripts/linux-release.sh'
+          - '!src-tauri/src/platform/windows/**'
+          - '!src-tauri/icons/icon.ico'
           - '!**/*.md'
           - '!tests/**'
           - '!**/tests/**'

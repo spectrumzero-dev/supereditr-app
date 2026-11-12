@@ -5,7 +5,7 @@
   import { applyView, changeLabel, changes, sourceLabel, summarize } from "../lib/diff";
   import type { EngineEvent, SessionPayload, StatusPayload } from "../lib/types";
   import { ipc } from "./ipc";
-  import { canUse, emptyReview, keptWording, offerToKeep, reduce, runRequest, type Review } from "./review";
+  import { canUse, emptyReview, keptWording, notReplacing, offerAnyway, offerToKeep, reduce, runRequest, startReplacing, type Replacing, type Review } from "./review";
   import { words } from "../lib/platform";
 
   let session = $state<SessionPayload | null>(null);
@@ -25,6 +25,8 @@
   let flashTimer: ReturnType<typeof setTimeout> | undefined;
   /** Words added to the word list from this panel, so the offer doesn't repeat. */
   let added = $state(new Set<string>());
+  /** A replacement in flight, and whether the next one goes ahead without the clipboard put aside. */
+  let replacing = $state<Replacing<SessionPayload>>(notReplacing());
   let card: HTMLElement | undefined = $state();
   let steerInput: HTMLInputElement | undefined = $state();
 
@@ -74,6 +76,7 @@
     clearTimeout(flashTimer);
     flash = "";
     added = new Set();
+    replacing = notReplacing();
   }
 
   function onEngine(id: number, eventPreset: string, event: EngineEvent, fromEarlier = false) {
@@ -119,12 +122,24 @@
     }
     const text = result;
     const id = session.id;
+    const started = startReplacing(replacing, session);
+    replacing = started.state;
     session = null;
     try {
-      await ipc.apply(id, text);
+      await ipc.apply(id, text, started.anyway);
     } catch {
-      /* the backend shows the reason */
+      /* the backend shows the reason, or brings the review back to replace anyway */
     }
+  }
+
+  /** The clipboard couldn't be put aside for review `id`: it comes back, and the apply key again replaces anyway. */
+  function onAnyway(id: number) {
+    const offer = offerAnyway(replacing, id);
+    if (!offer) return;
+    replacing = offer.state;
+    session = offer.session;
+    keyboard = true;
+    reportHeight();
   }
 
   async function alwaysKeep(word: string) {
@@ -300,6 +315,7 @@
         if (command === "apply") apply();
       },
       key: (key) => onKeydown({ ...key, preventDefault: () => {} }, true),
+      anyway: onAnyway,
     });
     const observer = new ResizeObserver(reportHeight);
     if (card) observer.observe(card);
@@ -394,7 +410,9 @@
       {#if !session.canApply && !unchanged}
         <p class="tips">SuperEditr can’t replace text here.{#if session.copyOnlyHint} {session.copyOnlyHint}{/if} Press <kbd>{words().copyKey}</kbd> to copy the fix.</p>
       {/if}
-      {#if showTips && keyboard && phase === "done" && list.length}
+      {#if replacing.anyway}
+        <p class="anyway" role="status">Your clipboard can’t be restored after replacing. <kbd>{words().applyKey}</kbd> again to replace anyway.</p>
+      {:else if showTips && keyboard && phase === "done" && list.length}
         <p class="tips">Tip: {#if session.canApply}<kbd>{words().applyKey}</kbd> replaces your text with{:else}<kbd>{words().copyKey}</kbd> copies{/if} everything you see · <kbd>{words().tabKey}</kbd> steps through changes · <kbd>␣</kbd> switches a change between yours and the suggestion · <kbd>{words().escKey}</kbd> closes</p>
       {/if}
       <footer>
@@ -532,6 +550,14 @@
     font-size: 12px;
     color: var(--text-2);
     background: var(--accent-soft);
+    border-top: 1px solid var(--border);
+  }
+  .anyway {
+    margin: 0;
+    padding: 8px 18px;
+    font-size: 12px;
+    color: var(--warn);
+    background: var(--warn-bg);
     border-top: 1px solid var(--border);
   }
   .kept {

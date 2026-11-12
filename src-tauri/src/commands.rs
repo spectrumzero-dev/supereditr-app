@@ -20,8 +20,8 @@ pub fn run_preset(app: AppHandle, id: u64, preset_id: String, steer: Option<Stri
 }
 
 #[tauri::command]
-pub async fn apply_text(app: AppHandle, id: u64, text: String) -> CmdResult<String> {
-    review::apply(&app, id, text).await
+pub async fn apply_text(app: AppHandle, id: u64, text: String, anyway: Option<bool>) -> CmdResult<String> {
+    review::apply(&app, id, text, anyway.unwrap_or(false)).await
 }
 
 #[tauri::command]
@@ -96,6 +96,8 @@ pub struct SettingsPayload {
     /// Where capture.log is written.
     log_path: Option<String>,
     hotkey_problems: Vec<String>,
+    /// What the keys saved by virtual key ("VkBA") show on the current keyboard layout, such as Ü.
+    key_labels: HashMap<String, String>,
     /// The revision `config` was saved at, for `save_settings`.
     revision: u64,
 }
@@ -130,6 +132,10 @@ pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> SettingsPaylo
         platform: std::env::consts::OS,
         log_path: platform::log_path().map(|path| path.display().to_string()),
         hotkey_problems: Vec::new(),
+        #[cfg(windows)]
+        key_labels: platform::key_labels(),
+        #[cfg(not(windows))]
+        key_labels: HashMap::new(),
         revision,
     }
 }
@@ -492,16 +498,23 @@ pub struct BuiltinAi {
 pub fn check_shortcut(app: AppHandle, state: State<'_, AppState>, accelerator: String, slot: String) -> Option<String> {
     let config = state.config();
     let others = hotkeys::others(&config, &slot);
-    if let Some(problem) =
-        crate::shortcut_check::conflict(&accelerator, &others, &crate::shortcut_check::user_hotkeys())
-    {
-        return Some(problem);
+    #[cfg(windows)]
+    let problem = crate::keys::windows_conflict(&accelerator, &others);
+    #[cfg(not(windows))]
+    let problem = crate::shortcut_check::conflict(&accelerator, &others, &crate::shortcut_check::user_hotkeys());
+    if problem.is_some() {
+        return problem;
     }
     #[cfg(target_os = "linux")]
     if let Some(what) = platform::shortcut_taken(&accelerator) {
         return Some(format!("Your desktop already uses this for “{what}”."));
     }
-    hotkeys::taken_by_another_app(&app, &accelerator).then(|| "Another app already uses this shortcut.".into())
+    let taken = if cfg!(windows) {
+        "Windows or another app uses this shortcut."
+    } else {
+        "Another app already uses this shortcut."
+    };
+    hotkeys::taken_by_another_app(&app, &accelerator).then(|| taken.into())
 }
 
 /// The built-in styles as first installed, for resetting the Styles page.
@@ -547,7 +560,18 @@ pub fn review_playground(app: AppHandle, window: tauri::WebviewWindow, text: Str
         bounds.x += frame.origin.x;
         bounds.y += primary - (frame.origin.y + frame.size.height);
     }
-    #[cfg(not(target_os = "macos"))]
+    // The web view fills the window below its title bar, and the panel is placed in physical pixels.
+    #[cfg(windows)]
+    let bounds = match (window.inner_position(), window.scale_factor()) {
+        (Ok(at), Ok(scale)) => platform::Rect {
+            x: f64::from(at.x) + rect.x * scale,
+            y: f64::from(at.y) + rect.y * scale,
+            width: rect.width * scale,
+            height: rect.height * scale,
+        },
+        _ => rect,
+    };
+    #[cfg(not(any(target_os = "macos", windows)))]
     let bounds = {
         let _ = window;
         rect
@@ -573,8 +597,39 @@ pub fn fit_settings_height(window: tauri::WebviewWindow, height: f64) {
         frame.size.height = height;
         ns_window.setFrame_display(frame, true);
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    fit_on_screen(&window, Some(height));
+    #[cfg(not(any(target_os = "macos", windows)))]
     let _ = (window, height);
+}
+
+/// Sizes Settings to `height` logical pixels of page (its current height when None), as far as the
+/// screen above the taskbar allows with the title bar, and moves it up if its bottom would be
+/// hidden. Settings opens at 760 high, taller than a small laptop's screen at 150%.
+#[cfg(windows)]
+pub fn fit_on_screen(window: &tauri::WebviewWindow, height: Option<f64>) {
+    let (Ok(scale), Ok(inner), Ok(outer), Ok(position), Ok(Some(monitor))) = (
+        window.scale_factor(),
+        window.inner_size(),
+        window.outer_size(),
+        window.outer_position(),
+        window.current_monitor(),
+    ) else {
+        return;
+    };
+    let work = monitor.work_area();
+    let frame = outer.height.saturating_sub(inner.height);
+    let available = f64::from(work.size.height.saturating_sub(frame)) / scale;
+    let wanted = height.unwrap_or(f64::from(inner.height) / scale);
+    let page = (wanted.min(available).max(480.0) * scale).round() as u32;
+    if inner.height.abs_diff(page) > 1 {
+        let _ = window.set_size(tauri::PhysicalSize::new(inner.width, page));
+    }
+    let work_bottom = work.position.y + work.size.height as i32;
+    let top = position.y.min(work_bottom - (page + frame) as i32).max(work.position.y);
+    if top != position.y {
+        let _ = window.set_position(tauri::PhysicalPosition::new(position.x, top));
+    }
 }
 
 /// Turns SuperEditr's shortcuts off while Settings records one (see `hotkeys::pause`).
@@ -586,20 +641,17 @@ pub fn pause_shortcuts(app: AppHandle, paused: bool) {
 /// Whether macOS opens SuperEditr when the user logs in, including after a restart.
 #[tauri::command]
 pub fn launch_at_login(app: AppHandle) -> bool {
-    use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch().is_enabled().unwrap_or(false)
+    crate::login_item::is_enabled(&app).unwrap_or(false)
 }
 
 /// Turns opening at login on or off and returns the state macOS now reports.
 #[tauri::command]
 pub fn set_launch_at_login(app: AppHandle, enabled: bool) -> CmdResult<bool> {
-    use tauri_plugin_autostart::ManagerExt;
-    let launcher = app.autolaunch();
-    let result = if enabled { launcher.enable() } else { launcher.disable() };
+    let result = if enabled { crate::login_item::enable(&app) } else { crate::login_item::disable(&app) };
     result.map_err(|e| format!("Couldn't change opening at login: {e}"))?;
     #[cfg(target_os = "linux")]
     platform::setup::reload_autostart();
-    launcher.is_enabled().map_err(|e| e.to_string())
+    crate::login_item::is_enabled(&app)
 }
 
 /// The Linux setup page's report; `None` on other systems.

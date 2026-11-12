@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DiffView, EngineEvent } from "../lib/types";
-import { canUse, emptyReview, keptWording, offerToKeep, reduce, runRequest } from "./review";
+import { canUse, emptyReview, keptWording, notReplacing, offerAnyway, offerToKeep, reduce, runRequest, startReplacing } from "./review";
 
 const view = (text: string): DiffView => ({ segments: [{ type: "equal", text }], pending: "", changeCount: 0 });
 const local: EngineEvent = { type: "local", view: view("local"), ms: 3 };
@@ -128,5 +128,30 @@ describe("kept wording", () => {
     expect(keptWording(r, new Set([0, 2]))).toEqual(["Rhyan"]);
     expect(keptWording(r, new Set([2]))).toEqual(["Rhyan"]);
     expect(keptWording(r, new Set())).toEqual([]);
+  });
+});
+
+describe("replacing anyway", () => {
+  const review = { id: 7, text: "Their going." };
+
+  it("asks for an ordinary replacement first", () => {
+    const { state, anyway } = startReplacing(notReplacing<typeof review>(), review);
+    expect(anyway).toBe(false);
+    expect(state.applying).toBe(review);
+  });
+
+  it("brings the review back when the clipboard couldn't be put aside, and the next apply goes ahead anyway", () => {
+    const first = startReplacing(notReplacing<typeof review>(), review);
+    const offer = offerAnyway(first.state, 7);
+    expect(offer?.session).toBe(review);
+    expect(offer?.state.applying).toBeNull();
+    const second = startReplacing(offer!.state, review);
+    expect(second.anyway).toBe(true);
+  });
+
+  it("ignores an offer for a review that isn't the one being applied", () => {
+    const first = startReplacing(notReplacing<typeof review>(), review);
+    expect(offerAnyway(first.state, 8)).toBeNull();
+    expect(offerAnyway(notReplacing<typeof review>(), 7)).toBeNull();
   });
 });

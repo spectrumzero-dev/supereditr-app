@@ -1,9 +1,8 @@
 //! Operating-system integration: reading the user's selection, replacing it, and noticing new
 //! selections. Everything above this module is platform-independent.
 //!
-//! macOS is implemented with the Accessibility API, Core Graphics events and NSPasteboard, and
-//! Linux in `linux/`. Another platform implements the same interface, for example with UI
-//! Automation's TextPattern on Windows.
+//! macOS is implemented with the Accessibility API, Core Graphics events and NSPasteboard, Linux
+//! in `linux/`, and Windows in `windows/`, so far a skeleton that reads and writes nothing.
 
 use serde::Serialize;
 use std::time::Duration;
@@ -20,9 +19,14 @@ mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::*;
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::*;
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod unsupported;
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 pub use unsupported::*;
 
 /// Screen rectangle in points, origin at the top-left of the primary display.
@@ -76,10 +80,20 @@ pub enum PlatformError {
     /// nothing was written: a paste could have landed somewhere else.
     #[error("SuperEditr couldn’t get back to the text you selected, so the suggestion is on your clipboard.")]
     FocusNotReturned,
+    /// An input method is still composing text in the field. Taking focus from it would commit the
+    /// composition, so the panel doesn't.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    #[error("Finish what you’re typing first: your input method is still composing it.")]
+    Composing,
     /// The clipboard couldn't be put aside to paste through, so nothing was written.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     #[error("{0}")]
     ClipboardNotKept(String),
+    /// Like `ClipboardNotKept`, from a platform whose panel then offers to replace anyway, leaving
+    /// the fix on the clipboard (Windows). The message is for where no panel can offer that.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    #[error("{0}")]
+    ClipboardUnrestorable(String),
     #[error("{0}")]
     Other(String),
 }
@@ -97,11 +111,11 @@ pub enum WindowChange {
 
 /// Watches the window a capture's text is in, until dropped. A platform without a way to watch
 /// another app's window has none, and the panel stays where it opened.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 #[allow(dead_code)]
 pub struct WindowWatch;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 #[allow(dead_code)]
 impl WindowWatch {
     /// The window's frame now, when the platform can read it cheaply.
@@ -112,7 +126,7 @@ impl WindowWatch {
 
 /// Starts watching the window `capture` came from, calling `on_change` when it moves or goes, and
 /// returns the watch with the window's frame now.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn watch_window(
     _capture: &Capture,
     _on_change: impl Fn(WindowChange) + Send + 'static,
@@ -122,13 +136,13 @@ pub fn watch_window(
 
 /// Whether the mouse press the selection watcher just reported landed on the window at `frame` of
 /// app `pid`. Asked once per press.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn pressed_on_window(_pid: i32, _frame: Rect) -> bool {
     false
 }
 
 /// Whether the left mouse button is down.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn mouse_button_down() -> bool {
     false
 }
@@ -200,7 +214,9 @@ impl From<Result<ReplaceMethod, PlatformError>> for ReplaceOutcome {
         match result {
             Ok(_) => Self::Applied,
             Err(error @ (PlatformError::Unverified | PlatformError::Partial { .. })) => Self::Uncertain(error),
-            Err(error @ PlatformError::ClipboardNotKept(_)) => Self::ClipboardKept(error),
+            Err(error @ (PlatformError::ClipboardNotKept(_) | PlatformError::ClipboardUnrestorable(_))) => {
+                Self::ClipboardKept(error)
+            }
             Err(error) => Self::CopyOnly(error),
         }
     }
@@ -223,6 +239,11 @@ mod tests {
     fn a_clipboard_that_couldnt_be_put_aside_is_kept() {
         let error = PlatformError::ClipboardNotKept("image/png".into());
         assert!(matches!(ReplaceOutcome::from(Err(error)), ReplaceOutcome::ClipboardKept(_)));
+        let error = PlatformError::ClipboardUnrestorable("Notes isn’t answering".into());
+        assert!(matches!(
+            ReplaceOutcome::from(Err(error)),
+            ReplaceOutcome::ClipboardKept(PlatformError::ClipboardUnrestorable(_))
+        ));
     }
 
     #[test]

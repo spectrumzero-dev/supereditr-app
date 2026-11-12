@@ -28,9 +28,32 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 tauri-plugin-updater = "2.14"
 semver = "1"
 
-# Global shortcuts. On Linux the compositor owns the keys instead (see `platform/linux/desktop`).
-[target.'cfg(not(target_os = "linux"))'.dependencies]
-tauri-plugin-global-shortcut = "2"
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
+  "Win32_Security",
+  "Win32_Security_Credentials",
+  "Win32_System_Com",
+  "Win32_System_DataExchange",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Memory",
+  "Win32_System_Ole",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
+  "Win32_System_Variant",
+  "Win32_UI_Accessibility",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
+# The Run value for open at login.
+windows-registry = "0.6"
+# WebView2's own interfaces, for starting a window's page again when its processes stop. The version
+# Tauri's WebView2 runtime uses.
+webview2-com = "0.39"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 async-trait = "0.1"
@@ -55,6 +78,9 @@ unicode-segmentation = "1"
 ksni = { version = "0.3", default-features = false, features = ["tokio"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# Global shortcuts. On Linux the compositor owns the keys instead (see `platform/linux/desktop`), and
+# Windows registers them itself, by virtual key (see `platform/windows/hotkey.rs`).
+tauri-plugin-global-shortcut = "2"
 tauri-nspanel = "2.1.1"
 core-foundation = "0.10"
 core-graphics = { version = "0.25", features = ["elcapitan"] }

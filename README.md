@@ -4,12 +4,13 @@
 
 <h1 align="center">SuperEditr</h1>
 
-<p align="center">Fast proofreading in any Mac app. Also runs on Linux with Omarchy.</p>
+<p align="center">Fast proofreading in any Mac app. Also runs on Windows, and on Linux with Omarchy.</p>
 
 <p align="center">
   <a href="https://github.com/spectrumzero-dev/supereditr-app/actions/workflows/ci.yml"><img src="https://github.com/spectrumzero-dev/supereditr-app/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
   <a href="https://github.com/spectrumzero-dev/supereditr-app/releases/latest"><img src="https://img.shields.io/github/v/release/spectrumzero-dev/supereditr-app" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/macOS-13%2B-blue" alt="Requires macOS 13 or later">
+  <img src="https://img.shields.io/badge/Windows-11-blue" alt="Runs on Windows 11">
   <img src="https://img.shields.io/badge/Linux-Omarchy-blue" alt="Runs on Linux with Omarchy">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="Apache 2.0 license"></a>
 </p>
@@ -18,7 +19,7 @@
 
 Select text in any Mac app and get fixes in about half a second. Accept them with one key. SuperEditr uses Apple Intelligence on your Mac, the AI you already pay for (Claude, OpenAI, Gemini), a local model, or nothing at all: a built-in offline checker handles English spelling and grammar on its own.
 
-SuperEditr is built for the Mac first: the shortcuts, settings and install steps below are the Mac ones. It also runs on Linux with [Omarchy](https://omarchy.org), with the same engine, styles and panel; [Other platforms](#other-platforms) covers installing it there and what differs.
+SuperEditr is built for the Mac first: the shortcuts, settings and install steps below are the Mac ones. It also runs on Windows, and on Linux with [Omarchy](https://omarchy.org), with the same engine, styles and panel; [Other platforms](#other-platforms) covers installing it there and what differs.
 
 ## How it works
 
@@ -87,7 +88,7 @@ Consumer Claude, ChatGPT and Gemini plans don't give other apps API access. The 
 
 ## Privacy
 
-SuperEditr has no accounts or analytics, and its only server is the update server. Official macOS release builds check for updates through `updates.supereditr.app`, which counts each check by app version and Mac architecture (Apple silicon or Intel) and passes it on to `latest.json` on the newest GitHub Release. The app sends no identifier, and the server doesn't store IP addresses. Builds from source and Linux builds never check. The text you review goes from your computer directly to the provider you chose, or nowhere if you use the offline checker or a local model. Password fields are never read. Apple's Passwords app, the password managers 1Password, NordPass, Bitwarden and KeePassXC, Keychain Access, and terminals are excluded by default (Settings → Privacy); add any other app there with **Add app…**. To turn SuperEditr off in the app you're using, click its menu-bar icon and choose Turn off in *that app*; Turn on in *that app* undoes it. To diagnose a problem in a particular app, turn on Settings → General → Keep a diagnostic log. SuperEditr then keeps a small local log (`~/Library/Logs/SuperEditr/capture.log` on a Mac) with the app, timing and length of each read and write, never the text. It's off by default, and turning it off deletes the log.
+SuperEditr has no accounts or analytics, and its only server is the update server. Official macOS release builds check for updates through `updates.supereditr.app`, which counts each check by app version and Mac architecture (Apple silicon or Intel) and passes it on to `latest.json` on the newest GitHub Release. The app sends no identifier, and the server doesn't store IP addresses. Builds from source, Windows builds and Linux builds never check. The text you review goes from your computer directly to the provider you chose, or nowhere if you use the offline checker or a local model. Password fields are never read. Apple's Passwords app, the password managers 1Password, NordPass, Bitwarden and KeePassXC (and KeePass on Windows), Keychain Access, and terminals are excluded by default (Settings → Privacy); add any other app there, with **Add app…** on a Mac or by its program file name on Windows. To turn SuperEditr off in the app you're using, click its menu-bar icon (on Windows, its icon in the notification area) and choose Turn off in *that app*; Turn on in *that app* undoes it. To diagnose a problem in a particular app, turn on Settings → General → Keep a diagnostic log. SuperEditr then keeps a small local log (`~/Library/Logs/SuperEditr/capture.log` on a Mac, `%LOCALAPPDATA%\SuperEditr\Logs\capture.log` on Windows) with the app, timing and length of each read and write, never the text. It's off by default, and turning it off deletes the log.
 
 A selection that holds a secret SuperEditr recognizes is never reviewed: not by the offline checker, and never sent to any AI. It recognizes private keys, access tokens and API keys from common services (GitHub, AWS, OpenAI, Anthropic, Stripe, Slack and others), passwords given in settings (`DB_PASSWORD=…`), passwords in links, and random-looking keys right after words like "token" or "API key". It says what it found and on which line, never the secret itself. Detection works by pattern, so a secret in an unrecognized format, or a bare random string with no label (an AWS secret access key on its own, for example), can still get through; don't select text you wouldn't paste into the AI yourself. The rules are listed in [`crates/core/src/sensitive.rs`](crates/core/src/sensitive.rs), each naming the document that defines its format where there is one.
 
@@ -172,6 +173,30 @@ How it differs from macOS:
 
 `scripts/ui-smoke-linux.sh` runs the live Linux UI tests against SuperEditr in a desktop virtual machine on a Proxmox host, pressing real keys through the host; see the script's header for its options.
 
+### Windows
+
+SuperEditr runs on Windows 11 on x64 PCs.
+
+To build it from source, the requirements are Windows 11 on x64, Visual Studio 2022 Build Tools with "Desktop development with C++" (MSVC and the Windows 11 SDK), Rust (via `rustup`), Node.js 22+ and Git for Windows. In Git Bash:
+
+```bash
+./scripts/check.sh
+./ui/node_modules/.bin/tauri build --bundles nsis
+```
+
+The installer is written to `target/release/bundle/nsis/`.
+
+How it differs from macOS:
+
+- The review shortcut is Ctrl+Shift+F2, the same key on common keyboard layouts; quick fix starts unbound. Settings → Shortcuts records others by the key Windows reports, so they follow your keyboard layout. Double presses aren't available, and a review starts only from the shortcut: suggestions don't appear on their own.
+- The panel takes the keyboard for the review and gives it back to your app when it closes. Alt+Enter (or Enter) replaces your text, Tab steps through changes, Ctrl+C copies the fix and Esc closes it.
+- SuperEditr reads text through UI Automation and writes a fix with a checked paste: just before pasting it checks that the same field and selection are still there, afterwards it checks the text changed as expected, and it puts your clipboard back. When it can't confirm a step, nothing is written, or the panel stays open with the fix to copy. Terminals are copy-only; so are remote-desktop and virtual-machine windows, whose paste goes to another computer, and LibreOffice. Password fields and apps running as administrator are refused. VS Code exposes its editor's text only with `editor.accessibilitySupport` set to `on`.
+- Windows needs no permission for SuperEditr to read the text you select.
+- API keys are saved in Windows Credential Manager, not in SuperEditr's settings.
+- Opening at login is a value under your user's Run key, which Task Manager's Startup apps can also turn off.
+- There are no in-app updates: build a newer version and run its installer.
+- The diagnostic log is `%LOCALAPPDATA%\SuperEditr\Logs\capture.log`.
+
 ## Architecture
 
 | Part | Path | Role |
@@ -181,6 +206,7 @@ How it differs from macOS:
 | Desktop shell | `src-tauri` | Tauri 2 app: menu-bar item, global shortcuts, overlay panel, settings window, keychain. |
 | macOS layer | `src-tauri/src/platform/macos.rs` | Accessibility capture and replacement, clipboard transactions, keyboard-layout-aware ⌘C/⌘V, selection watcher. |
 | Linux layer | `src-tauri/src/platform/linux` | AT-SPI capture and replacement, clipboard transactions, the Hyprland and portal shortcuts and panel placement, Set up Omarchy. |
+| Windows layer | `src-tauri/src/platform/windows` | UI Automation capture, the checked paste and its clipboard transaction, `RegisterHotKey` shortcuts by virtual key, the non-activating panel and its placement in physical pixels, open at login. |
 | UI | `ui` | Svelte 5 overlay and settings pages. |
 | Apple Intelligence helper | `helpers/foundation-models` | Small Swift program bundled in the app. FoundationModels is Swift-only, so the engine keeps this helper running and talks to it over JSON lines. |
 
@@ -192,7 +218,7 @@ A review runs like this:
 4. The model streams the edited text; SuperEditr diffs it word by word into individual changes.
 5. On ↩︎, SuperEditr confirms the same field and selection are still there, then writes the text back: an Accessibility write for native fields, a clipboard-preserving paste for web and Electron apps. ⌘Z in the app undoes it.
 
-Another platform needs only its own `src-tauri/src/platform` implementation, as Linux has (on Windows, with UI Automation); the engine, UI and settings are shared.
+Another platform needs only its own `src-tauri/src/platform` implementation, as Linux and Windows have; the engine, UI and settings are shared.
 
 ## Contributing
 

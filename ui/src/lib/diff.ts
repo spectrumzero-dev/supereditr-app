@@ -1,5 +1,5 @@
 import type { DiffView, Segment } from "./types";
-import { isMac } from "./platform";
+import { isMac, isWindows, keyLabel } from "./platform";
 
 type Change = Extract<Segment, { type: "change" }>;
 
@@ -54,11 +54,13 @@ export function keySymbols(accelerator: string, mac = isMac()): string {
     const key = first.split("+").pop() ?? "";
     return `${keySymbols(first, mac)} ${key.toUpperCase()}`;
   }
+  // The key with the Windows logo is Super on Linux.
+  const logo = isWindows() ? "Win+" : "Super+";
   const map: Record<string, string> = mac
     ? { control: "⌃", ctrl: "⌃", alt: "⌥", option: "⌥", shift: "⇧", command: "⌘", cmd: "⌘", cmdorctrl: "⌘", super: "⌘", enter: "↩", escape: "⎋", space: "Space", tab: "⇥" }
-    : { control: "Ctrl+", ctrl: "Ctrl+", alt: "Alt+", shift: "Shift+", command: "Super+", super: "Super+", cmdorctrl: "Ctrl+", enter: "Enter", escape: "Esc", space: "Space", tab: "Tab" };
+    : { control: "Ctrl+", ctrl: "Ctrl+", alt: "Alt+", shift: "Shift+", command: logo, super: logo, cmdorctrl: "Ctrl+", enter: "Enter", escape: "Esc", space: "Space", tab: "Tab" };
   return accelerator
     .split("+")
-    .map((part) => map[part.toLowerCase()] ?? part.toUpperCase())
+    .map((part) => map[part.toLowerCase()] ?? keyLabel(part) ?? part.toUpperCase())
     .join("");
 }

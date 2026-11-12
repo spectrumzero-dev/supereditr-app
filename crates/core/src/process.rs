@@ -73,6 +73,25 @@ pub(crate) async fn output(program: &str, args: &[&str]) -> io::Result<Output> {
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+/// Windows' `CREATE_NEW_CONSOLE` process creation flag.
+#[cfg(windows)]
+const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+
+/// Starts `program` in a console window of its own, for the user to see and answer, and doesn't
+/// wait for it or keep it: closing the window ends it. Like every program here it runs as the
+/// user, with SuperEditr's environment, never elevated. Windows opens the console in the default
+/// terminal (Windows Terminal on Windows 11).
+#[cfg(windows)]
+pub(crate) fn spawn_in_console(program: &str, args: &[&str]) -> io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    std::process::Command::new(program)
+        .args(args)
+        .current_dir(std::env::temp_dir())
+        .creation_flags(CREATE_NEW_CONSOLE)
+        .spawn()
+        .map(drop)
+}
+
 /// A plain `tokio::process::Command` for a program SuperEditr ships itself (the Apple
 /// Intelligence helper), which needs no disclaimer, with no console window on Windows.
 pub(crate) fn command(program: impl AsRef<std::ffi::OsStr>) -> tokio::process::Command {

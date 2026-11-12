@@ -150,10 +150,18 @@ mod tests {
     }
 
     /// A default-excluded terminal and password manager, by this platform's app IDs.
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", windows)))]
     const TERMINAL: &str = "com.apple.Terminal";
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", windows)))]
     const PASSWORD_MANAGER: &str = "com.1password.1password";
+    #[cfg(windows)]
+    const TERMINAL: &str = "WindowsTerminal.exe";
+    #[cfg(windows)]
+    const PASSWORD_MANAGER: &str = "1Password.exe";
+    #[cfg(not(windows))]
+    const OTHER_TERMINAL: &str = "com.mitchellh.ghostty";
+    #[cfg(windows)]
+    const OTHER_TERMINAL: &str = "cmd.exe";
     #[cfg(target_os = "linux")]
     const TERMINAL: &str = "foot";
     #[cfg(target_os = "linux")]
@@ -192,7 +200,7 @@ mod tests {
         let mut config = Config::default();
         let terminal = app(TERMINAL, "Terminal");
         assert_eq!(label(&config, &terminal), None);
-        assert!(!offered(&config, "com.mitchellh.ghostty"));
+        assert!(!offered(&config, OTHER_TERMINAL));
         // Once the user has turned a terminal on in Settings, the menu can turn it off again.
         config.set_excluded(TERMINAL, false);
         assert_eq!(label(&config, &terminal).as_deref(), Some("Turn off in Terminal"));

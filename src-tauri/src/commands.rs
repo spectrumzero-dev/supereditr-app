@@ -279,6 +279,9 @@ pub struct ProviderCheck {
     ready: bool,
     /// What's wrong, in words the user can act on.
     problem: Option<String>,
+    /// For a problem the settings UI words itself and may offer to fix, its code:
+    /// `claude_sign_in` when Claude Code isn't signed in.
+    code: Option<String>,
     models: Vec<String>,
 }
 
@@ -290,7 +293,12 @@ impl ProviderCheck {
 
 pub async fn check(state: &AppState, profile_id: &str) -> ProviderCheck {
     let Some(profile) = state.profile(profile_id) else {
-        return ProviderCheck { ready: false, problem: Some("This AI was removed.".into()), models: Vec::new() };
+        return ProviderCheck {
+            ready: false,
+            problem: Some("This AI was removed.".into()),
+            code: None,
+            models: Vec::new(),
+        };
     };
     match state.engine.providers.check(&profile).await {
         // The saved model must be one the server offers; activation picks one if it isn't.
@@ -301,11 +309,32 @@ pub async fn check(state: &AppState, profile_id: &str) -> ProviderCheck {
             } else {
                 format!("Choose a model: {} isn’t available", profile.model)
             }),
+            code: None,
             models,
         },
-        Ok(models) => ProviderCheck { ready: true, problem: None, models },
-        Err(problem) => ProviderCheck { ready: false, problem: Some(problem), models: Vec::new() },
+        Ok(models) => ProviderCheck { ready: true, problem: None, code: None, models },
+        Err(problem) => ProviderCheck {
+            ready: false,
+            problem: Some(problem.to_string()),
+            code: problem.code().map(Into::into),
+            models: Vec::new(),
+        },
     }
+}
+
+/// Starts Claude Code's own sign-in for a Claude subscription profile, in a console window the user
+/// sees (Windows). Settings then checks again every few seconds until it's signed in.
+#[tauri::command]
+pub fn claude_sign_in(state: State<'_, AppState>, profile_id: String) -> CmdResult<()> {
+    let profile = state.profile(&profile_id).ok_or("This AI was removed.")?;
+    if profile.kind != ProviderKind::ClaudeCli {
+        return Err("Only Claude Code signs in this way.".into());
+    }
+    #[cfg(windows)]
+    return supereditr_core::provider::start_claude_sign_in(&profile.base_url)
+        .map_err(|e| format!("Couldn’t start Claude Code’s sign-in: {e}"));
+    #[cfg(not(windows))]
+    Err("Sign in to Claude Code in a terminal: run `claude auth login`.".into())
 }
 
 /// Checks an AI. When it is the one in use, the menu-bar menu shows the result.

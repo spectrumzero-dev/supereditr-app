@@ -7,7 +7,8 @@
   import LinuxSetup from "./LinuxSetup.svelte";
   import { keySymbols } from "../lib/diff";
   import { api } from "./ipc";
-  import { isMac } from "../lib/platform";
+  import { problemText } from "./signin";
+  import { isLinux, isMac, isWindows } from "../lib/platform";
   import { aiState } from "./ai";
 
   interface Props {
@@ -94,7 +95,7 @@
     <div class="try-head">
       <h2>Try it now</h2>
       {#if chosen && chosenCheck && !chosenCheck.ready}
-        <span class="ai off">{chosen.label} isn’t working: {chosenCheck.problem} · <button class="linklike" onclick={openModels}>Fix</button></span>
+        <span class="ai off">{chosen.label} isn’t working: {problemText(chosenCheck)} · <button class="linklike" onclick={openModels}>Fix</button></span>
       {:else if chosen && chosenCheck}
         <span class="ai on">Using {chosen.label}{chosen.model ? ` · ${chosen.model}` : ""}</span>
       {:else if chosen}
@@ -128,6 +129,8 @@
           </div>
           {#if !trusted}
             <div class="hint">Allow SuperEditr to read and replace the text you select. It never reads password fields.</div>
+          {:else if isWindows()}
+            <div class="hint">Windows needs no permission for SuperEditr to read the text you select. It never reads password fields.</div>
           {/if}
         </div>
         {#if !trusted}
@@ -157,7 +160,7 @@
     </li>
     {#if !trusted}<li class="try-slot">{@render tryCard()}</li>{/if}
 
-    {#if !isMac()}
+    {#if isLinux()}
       <li>
         <div class="step-head">
           <span class="badge">⚙</span>

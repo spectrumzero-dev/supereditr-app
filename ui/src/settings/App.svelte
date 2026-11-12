@@ -11,7 +11,7 @@
   import LinuxSetup from "./LinuxSetup.svelte";
   import { api } from "./ipc";
   import { mergeUnsaved, saveUntilCurrent } from "./merge";
-  import { isMac, setPlatform } from "../lib/platform";
+  import { isLinux, isMac, isWindows, setKeyLabels, setPlatform } from "../lib/platform";
 
   type Section = "welcome" | "setup" | "models" | "styles" | "dictionary" | "general" | "shortcuts" | "privacy" | "about";
   // The pages about the writing, then a gap, then the app's own.
@@ -21,7 +21,7 @@
     { id: "styles", name: "Styles", icon: "¶" },
     { id: "dictionary", name: "Dictionary", icon: "Aa" },
     { id: "general", name: "General", icon: "⚙", gap: true },
-    ...(isMac() ? [] : [{ id: "setup" as Section, name: "Desktop setup", icon: "▣" }]),
+    ...(isLinux() ? [{ id: "setup" as Section, name: "Desktop setup", icon: "▣" }] : []),
     { id: "shortcuts", name: "Shortcuts", icon: isMac() ? "⌘" : "⌨" },
     { id: "privacy", name: "Privacy", icon: "⚿" },
     { id: "about", name: "About", icon: "ⓘ" },
@@ -53,6 +53,7 @@
   async function reload() {
     const fresh = await api.get();
     setPlatform(fresh.platform);
+    setKeyLabels(fresh.keyLabels ?? {});
     const latest = structuredClone(fresh.config);
     // Changes waiting to be saved, or still being saved, survive a reload.
     if (config && base && edits !== savedEdits) {
@@ -118,7 +119,16 @@
       window.removeEventListener("focus", refresh);
     };
   });
+
+  // On macOS a click anywhere closes the review panel, Settings included. Windows closes it only
+  // when another app comes to the front, so a click in Settings (Set up AI under Try it now, say)
+  // has to close it here.
+  function closeReview() {
+    if (isWindows()) api.dismissReview();
+  }
 </script>
+
+<svelte:window onpointerdown={closeReview} />
 
 <div class="shell">
   <aside data-tauri-drag-region>

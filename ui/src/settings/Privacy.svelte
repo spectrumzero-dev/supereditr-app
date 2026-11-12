@@ -2,7 +2,7 @@
   import type { AppInfo, Config } from "../lib/types";
   import { excludedRows, withApps } from "./excluded";
   import { api } from "./ipc";
-  import { isMac, words } from "../lib/platform";
+  import { isMac, isWindows, words } from "../lib/platform";
 
   interface Props {
     config: Config;
@@ -82,9 +82,10 @@
   <div class="group-title">Apps where SuperEditr never reads text</div>
   <div class="group">
     <div class="row">
-      <button class="btn small" onclick={pickApps} disabled={picking}>Add app…</button>
+      <!-- Choosing apps from a list is macOS's open panel; elsewhere an app is added by its ID. -->
+      {#if isMac()}<button class="btn small" onclick={pickApps} disabled={picking}>Add app…</button>{/if}
       <form class="add-id" onsubmit={(e) => { e.preventDefault(); add([newApp]); newApp = ""; }}>
-        <input type="text" placeholder="Or a bundle ID, e.g. com.apple.Notes" bind:value={newApp} spellcheck="false" />
+        <input type="text" placeholder={isWindows() ? "A program’s file name, e.g. notepad.exe" : "Or a bundle ID, e.g. com.apple.Notes"} bind:value={newApp} spellcheck="false" />
         <button class="btn small" type="submit" disabled={!newApp.trim()}>Add</button>
       </form>
     </div>

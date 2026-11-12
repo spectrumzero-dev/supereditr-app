@@ -12,8 +12,11 @@
   }
   let { config = $bindable(), logPath, onchange }: Props = $props();
   const w = words();
-  /** The log's path with the home folder as ~, as people write it. */
-  const shownLogPath = $derived((logPath ?? "").replace(/^\/(Users|home)\/[^/]+\//, "~/"));
+  /** The log's path with the home folder as ~, or on Windows the local app data folder as
+   * %LOCALAPPDATA%, as people write them. */
+  const shownLogPath = $derived(
+    (logPath ?? "").replace(/^\/(Users|home)\/[^/]+\//, "~/").replace(/^[A-Za-z]:\\Users\\[^\\]+\\AppData\\Local\\/i, "%LOCALAPPDATA%\\"),
+  );
   let launchAtLogin = $state(true);
   let launchError = $state("");
 
@@ -73,7 +76,7 @@
     <div class="row">
       <div>
         <div class="label">Open at login</div>
-        <div class="hint">Starts SuperEditr in {w.tray} when you log in, so it’s running again after you restart {isMac() ? "your Mac" : "your computer"}.</div>
+        <div class="hint">Starts SuperEditr in {w.tray} when you log in, so it’s running again after you restart {w.yourDevice}.</div>
       </div>
       <input type="checkbox" class="switch" aria-label="Open at login" checked={launchAtLogin} onchange={(e) => setLaunchAtLogin(e.currentTarget.checked)} />
     </div>

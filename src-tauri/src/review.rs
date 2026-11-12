@@ -123,8 +123,9 @@ fn check_target(app: &AppHandle) -> Target {
 
 fn excluded_message(config: &Config, bundle_id: &str, name: &str) -> String {
     if app_toggle::offered(config, bundle_id) {
+        let tray = if cfg!(windows) { "notification area" } else { "menu bar" };
         format!(
-            "SuperEditr is turned off in {name}. Turn it on from the pen icon in the menu bar, or in Settings → Privacy."
+            "SuperEditr is turned off in {name}. Turn it on from the pen icon in the {tray}, or in Settings → Privacy."
         )
     } else {
         format!("SuperEditr is turned off in {name}. Change this in Settings → Privacy.")
@@ -767,12 +768,17 @@ mod tests {
     fn the_excluded_message_points_to_the_menu_where_it_can_turn_the_app_on() {
         let mut config = Config::default();
         config.set_excluded("com.apple.Notes", true);
+        let tray = if cfg!(windows) { "notification area" } else { "menu bar" };
         assert_eq!(
             excluded_message(&config, "com.apple.Notes", "Notes"),
-            "SuperEditr is turned off in Notes. Turn it on from the pen icon in the menu bar, or in Settings → Privacy."
+            format!(
+                "SuperEditr is turned off in Notes. Turn it on from the pen icon in the {tray}, or in Settings → Privacy."
+            )
         );
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", windows)))]
         let terminal = "com.apple.Terminal";
+        #[cfg(windows)]
+        let terminal = "WindowsTerminal.exe";
         #[cfg(target_os = "linux")]
         let terminal = "foot";
         assert_eq!(

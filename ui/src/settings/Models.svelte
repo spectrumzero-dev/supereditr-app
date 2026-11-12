@@ -6,7 +6,9 @@
   import { watchBuiltinAi } from "./builtin";
   import { api } from "./ipc";
   import { earlyAccess, profileFor as pickProfile, setupAction } from "./profiles";
-  import { words } from "../lib/platform";
+  import { isWindows, words } from "../lib/platform";
+  import ClaudeSignIn from "./ClaudeSignIn.svelte";
+  import { problemText } from "./signin";
 
   interface Props {
     config: Config;
@@ -62,6 +64,11 @@
   let scanError = $state("");
   let adopting = $state<number | null>(null);
   let adoptErrors = $state<Record<number, string>>({});
+  /** A found account added but not ready, with its profile and check, when the check has a code
+   * Settings can act on (Claude Code not signed in). */
+  let adoptChecks = $state<Record<number, { profileId: string; check: ProviderCheck }>>({});
+  /** Profiles signed in to Claude from here on this visit, whose warning no longer shows. */
+  let signedIn = $state<Record<string, boolean>>({});
   const found = (kind: ProviderKind) => (candidates ?? []).filter((c) => c.kind === kind && c.profileId === null);
   const foundCount = $derived(kinds.reduce((n, k) => n + found(k.kind).length, 0));
 
@@ -69,6 +76,7 @@
     scanning = true;
     scanError = "";
     adoptErrors = {};
+    adoptChecks = {};
     try {
       candidates = await api.scan();
     } catch (e) {
@@ -93,15 +101,20 @@
     } catch (e) {
       adoptErrors[c.index] = String(e);
       await reload();
+      // It was added either way: its own check says what's missing, in Settings' words.
+      const added = profilesOf(c.kind).find((q) => q.base_url === c.baseUrl);
+      const check = added ? await api.checkProvider(added.id).catch(() => null) : null;
+      if (added && check?.code) adoptChecks[c.index] = { profileId: added.id, check };
     }
     adopting = null;
   }
 
-  function problemLabel(problem: string): string {
+  function problemLabel(check: ProviderCheck): string {
+    if (check.code === "claude_sign_in") return "Sign in needed";
+    const problem = check.problem ?? "";
     if (problem.startsWith("Add an API key")) return "Needs key";
     if (problem.startsWith("Choose a model")) return "Choose a model";
     if (problem.startsWith("No models")) return "No models";
-    if (problem.startsWith("Sign in")) return "Sign in needed";
     return "Can’t connect";
   }
 
@@ -110,7 +123,7 @@
     const c = checks[p.id];
     const inUse = config.active_provider === p.id;
     if (c === "checking") return { label: "Checking…", tone: "" };
-    if (c && !c.ready) return { label: problemLabel(c.problem ?? ""), tone: "warn" };
+    if (c && !c.ready) return { label: problemLabel(c), tone: "warn" };
     if (inUse) return { label: "In use", tone: "accent" };
     return c?.ready ? { label: "Ready", tone: "good" } : null;
   }
@@ -156,7 +169,9 @@
       await reload();
       if (config.active_provider === p.id) setUp = p.label;
     } catch (e) {
-      checks[p.id] = { ready: false, problem: String(e), models: [] };
+      // The check behind the refusal, for a problem Settings words itself.
+      const again = await api.checkProvider(p.id).catch(() => null);
+      checks[p.id] = again && !again.ready ? again : { ready: false, problem: String(e), code: null, models: [] };
     }
   }
 
@@ -310,7 +325,7 @@
           {:else if scanError}<span class="warn-text">{scanError}</span>
           {:else if candidates && foundCount}Found {foundCount === 1 ? "an account" : `${foundCount} accounts`}, marked below.
           {:else if candidates}Nothing new found. Set up an AI below, or install <button class="linklike" onclick={() => api.openUrl("https://ollama.com/download")}>Ollama</button> for free local models.
-          {:else}Looks for API keys in your shell profile and Codex settings, a signed-in Claude Code, and Ollama or LM Studio running locally. Nothing is sent anywhere.{/if}
+          {:else}Looks for API keys in your {isWindows() ? "environment variables" : "shell profile"} and Codex settings, a signed-in Claude Code, and Ollama or LM Studio running locally. Nothing is sent anywhere.{/if}
         </span>
       </div>
       <button class="btn small" onclick={scan} disabled={scanning}>{scanning ? "Scanning…" : candidates ? "Scan again" : "Scan"}</button>
@@ -358,16 +373,24 @@
         {#if shown !== k.kind && !(found(k.kind).length && !p)}<button class="btn small" onclick={() => openSetup(k.kind)}>{p ? "Settings" : "Set up"}</button>{/if}
       </div>
       {#each found(k.kind) as fc (fc.index)}
+        {@const signInHere = adoptChecks[fc.index]?.check.code === "claude_sign_in" && isWindows()}
         <div class="found">
           <span>
             <span class="label">Found on {words().device} {#if fc.keyHint}<span class="pill">{fc.keyHint}</span>{/if}</span>
             <span class="hint">{fc.source}{#if fc.models.length} · {fc.models.length} model{fc.models.length === 1 ? "" : "s"}{/if}</span>
             {#if fc.note}<span class="hint note">{fc.note}</span>{/if}
-            {#if adoptErrors[fc.index]}<span class="alert">⚠︎ {adoptErrors[fc.index]}</span>{/if}
+            {#if adoptChecks[fc.index]}
+              {@const ac = adoptChecks[fc.index]}
+              {#if !signedIn[ac.profileId]}<span class="alert">⚠︎ {problemText(ac.check)}</span>{/if}
+              <!-- Signing in puts the account in use, so there's no Use to press afterwards. -->
+              {#if signInHere}
+                <ClaudeSignIn profileId={ac.profileId} onsignedin={() => { signedIn[ac.profileId] = true; adopt(fc); }} />
+              {/if}
+            {:else if adoptErrors[fc.index]}<span class="alert">⚠︎ {adoptErrors[fc.index]}</span>{/if}
           </span>
-          <!-- After a refusal fixed elsewhere it's Try again. An account that can't be used yet (Ollama
-               not running) has its note instead of a disabled Use. -->
-          {#if fc.ready}
+          <!-- Sign in is the only next step while it's pending; after a refusal fixed elsewhere, it's Try
+               again. An account that can't be used yet (Ollama not running) has its note instead. -->
+          {#if !signInHere && fc.ready}
             <button class="btn small primary" disabled={adopting !== null} onclick={() => adopt(fc)}>
               {adopting === fc.index ? "Setting up…" : adoptErrors[fc.index] ? "Try again" : "Use"}
             </button>
@@ -377,7 +400,12 @@
       {#if shown === k.kind && p}
         <div class="setup">
           {#if c && c !== "checking" && !c.ready}
-            <p class="problem">⚠︎ {c.problem}{!isActive(p.id) ? `. Reviews keep using ${activeChoice === "builtin" ? (builtin?.available ? "Apple Intelligence" : "the built-in checker") : (kinds.find((x) => x.kind === activeChoice)?.name ?? "the current AI")}.` : ""}</p>
+            <p class="problem">⚠︎ {problemText(c)}{!isActive(p.id) ? `. Reviews keep using ${activeChoice === "builtin" ? (builtin?.available ? "Apple Intelligence" : "the built-in checker") : (kinds.find((x) => x.kind === activeChoice)?.name ?? "the current AI")}.` : ""}</p>
+          {/if}
+          {#if c && c !== "checking" && c.code === "claude_sign_in" && isWindows()}
+            <div class="signin-row">
+              <ClaudeSignIn profileId={p.id} onsignedin={() => { signedIn[p.id] = true; tryActivate(p); }} />
+            </div>
           {/if}
           {#if profilesOf(k.kind).length > 1}
             <div class="row">
@@ -521,8 +549,13 @@
     background: var(--bg-sunken);
   }
   .setup {
+    /* flow-root keeps a first child's top margin inside the tint instead of leaving a gap above it. */
+    display: flow-root;
     background: var(--bg-sunken);
     padding: 0 0 6px 28px;
+  }
+  .signin-row {
+    margin: 0 14px 6px;
   }
   .setup .row {
     border-top: none;

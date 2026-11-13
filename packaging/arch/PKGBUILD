@@ -4,7 +4,7 @@
 # LICENSE beside it licenses these packaging files under 0BSD, as the AUR asks; SuperEditr itself
 # is Apache-2.0.
 pkgname=supereditr-bin
-pkgver=0.1.7
+pkgver=0.1.8
 pkgrel=1
 pkgdesc="Instant, keyboard-first proofreading for any text field"
 arch=(x86_64)
@@ -26,7 +26,7 @@ conflicts=(supereditr)
 options=(!strip !debug)
 install=supereditr.install
 source=("$url/releases/download/v$pkgver/supereditr-$pkgver-x86_64.tar.gz")
-sha256sums=('4000ed53f1637252c8dfb840edab8c7e11b812cf61d02cd8c1ee7cfc92450585')
+sha256sums=('ec8d1b1721a2c086cf24cec8dc370194c62c8711677db7e8020670bb994535fc')
 
 package() {
   cd "supereditr-$pkgver-x86_64"

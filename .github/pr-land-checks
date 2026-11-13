@@ -1,0 +1,10 @@
+# The checks a pull request waits for before it merges, one "Workflow / job" per line. The landing
+# script reads this file from the pull request's base commit, so a pull request can't change its
+# own gates. Every check named here must succeed; the others are reported but not waited for.
+#
+# The code scanning jobs aren't listed: they skip pull requests that change only documentation or
+# images, and a check that is named here but never starts blocks the merge. Their findings appear
+# under the repository's code scanning alerts.
+CI / check
+CI / check-linux
+CI / check-windows

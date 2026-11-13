@@ -4,11 +4,17 @@ name: CI
 # GitHub-hosted runners with a read-only token, so contributor code never reaches the machines that
 # sign official builds. The jobs run only in this repository; forks skip them. Each platform has its
 # own job, and they run at the same time.
+#
+# A pull request runs the three check jobs. The Windows installer, which takes longer to build than
+# all three together, is built for each commit on main, and for a branch on request: start this
+# workflow by hand (Actions, CI, Run workflow) on a branch that changes how the app is packaged.
+# .github/pr-land-checks lists the jobs a pull request waits for before it merges.
 
 on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -104,7 +110,34 @@ jobs:
           save-if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
       - name: Run every check
         run: ./scripts/check.sh
-      # The installer, unsigned and without updater files: a release build of the app, bundled the
-      # way a release is, so a change that only breaks packaging fails here too.
+
+  # The installer, unsigned and without updater files: a release build of the app, bundled the way
+  # a release is, so a change that only breaks packaging fails here. Not on pull requests: see the
+  # top of this file.
+  installer-windows:
+    if: github.repository == 'spectrumzero-dev/supereditr-app' && github.event_name != 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Install the Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      # Only pushes to main save, so a branch built by hand reuses main's compiled dependencies
+      # without adding a cache of its own.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.event_name == 'push' }}
+      - name: Install the UI's packages
+        run: npm --prefix ui ci
       - name: Build the installer
         run: ./ui/node_modules/.bin/tauri build --bundles nsis

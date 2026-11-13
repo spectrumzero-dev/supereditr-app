@@ -8,10 +8,14 @@
 //! On Linux (Wayland) an app can't place its own windows or keep keys from another app's window.
 //! The desktop places the panel through a window rule, and for a review started with the shortcut
 //! the panel takes keyboard focus, then hands it back to the app when it closes.
+//!
+//! On Windows the panel is a window that never activates on a click (`WS_EX_NOACTIVATE`), shown,
+//! placed and hidden with Win32 calls in physical pixels (`platform::overlay`). A review started
+//! with the shortcut gives it keyboard focus, and closing it gives focus back to the app.
 
 use crate::platform::{self, Rect};
 use std::sync::atomic::{AtomicI32, Ordering};
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 use tauri::LogicalPosition;
 use tauri::{AppHandle, LogicalSize, Manager, WebviewWindow};
 
@@ -22,11 +26,11 @@ static TYPING_FOR: AtomicI32 = AtomicI32::new(0);
 /// The window, including transparent room around the card for its shadow (Overlay.svelte's `main`
 /// padding). The card itself is 496 points wide.
 pub const WIDTH: f64 = 548.0;
-const PAD_SIDE: f64 = 26.0;
-const PAD_TOP: f64 = 16.0;
-const PAD_BOTTOM: f64 = 38.0;
-const GAP: f64 = 8.0;
-const MARGIN: f64 = 10.0;
+pub const PAD_SIDE: f64 = 26.0;
+pub const PAD_TOP: f64 = 16.0;
+pub const PAD_BOTTOM: f64 = 38.0;
+pub const GAP: f64 = 8.0;
+pub const MARGIN: f64 = 10.0;
 
 #[cfg(target_os = "macos")]
 tauri_nspanel::tauri_panel! {
@@ -66,7 +70,11 @@ pub fn init(app: &AppHandle) {
     if let Some(window) = window(app) {
         let _ = window.set_title(platform::OVERLAY_TITLE);
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
+    if let Some(window) = window(app) {
+        platform::overlay::init(&window);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     let _ = app;
 }
 
@@ -74,15 +82,23 @@ pub fn init(app: &AppHandle) {
 static PLACED: std::sync::Mutex<Option<Rect>> = std::sync::Mutex::new(None);
 
 /// Where the overlay last opened at the pointer.
+#[cfg_attr(windows, allow(dead_code))]
 static POINTER_ANCHOR: std::sync::Mutex<Option<Rect>> = std::sync::Mutex::new(None);
 
 /// Where the overlay last opened at the pointer, for a review with no selection bounds to go by.
 pub fn pointer_anchor() -> Option<Rect> {
+    #[cfg(windows)]
+    return platform::overlay::pointer_anchor();
+    #[cfg(not(windows))]
     *POINTER_ANCHOR.lock().unwrap()
 }
 
 /// Places the overlay just below the selection, or above it when there's no room below.
 pub fn position(app: &AppHandle, anchor: Option<Rect>, height: f64) {
+    #[cfg(windows)]
+    if let Some(window) = window(app) {
+        return on_main(app, move |_| platform::overlay::place(&window, anchor, height, false));
+    }
     let anchor = anchor.unwrap_or_else(|| {
         let (x, y) = platform::mouse_location();
         let at_pointer = Rect { x: x - 24.0, y: y - 10.0, width: 1.0, height: 20.0 };
@@ -95,6 +111,10 @@ pub fn position(app: &AppHandle, anchor: Option<Rect>, height: f64) {
 /// Places the overlay again at a new height. With no selection to go by, it stays where it opened
 /// instead of following the pointer: a desktop may move the pointer onto a window that takes focus.
 pub fn resize(app: &AppHandle, anchor: Option<Rect>, height: f64) {
+    #[cfg(windows)]
+    if let Some(window) = window(app) {
+        return on_main(app, move |_| platform::overlay::place(&window, anchor, height, true));
+    }
     // Read on its own line: a lock taken in a match's scrutinee is held until the match ends, and
     // `position` below takes it again, which would hang the main thread.
     let at_pointer = *POINTER_ANCHOR.lock().unwrap();
@@ -104,6 +124,7 @@ pub fn resize(app: &AppHandle, anchor: Option<Rect>, height: f64) {
     }
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 fn place(app: &AppHandle, anchor: Rect, height: f64) {
     let Some(window) = window(app) else { return };
     let (x, y) = target(app, anchor, height);
@@ -111,11 +132,12 @@ fn place(app: &AppHandle, anchor: Rect, height: f64) {
     let _ = window.set_size(LogicalSize::new(WIDTH, height));
     #[cfg(target_os = "linux")]
     platform::place_overlay(Rect { x, y, width: WIDTH, height }, window.is_visible().unwrap_or(false));
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     let _ = window.set_position(LogicalPosition::new(x, y));
 }
 
 /// Where the overlay window goes for a selection at `anchor`: the top-left corner, in points.
+#[cfg_attr(windows, allow(dead_code))]
 fn target(app: &AppHandle, anchor: Rect, height: f64) -> (f64, f64) {
     let (sx, sy, sw, sh) = screen_for(app, anchor.x + 1.0, anchor.y + 1.0);
     // Placement is worked out for the card; the window extends past it by the shadow padding.
@@ -137,6 +159,15 @@ fn target(app: &AppHandle, anchor: Rect, height: f64) -> (f64, f64) {
 /// left to finish. Where there's no glide, or the height changed too, it is placed at once.
 pub fn glide(app: &AppHandle, anchor: Rect, height: f64) {
     let Some(window) = window(app) else { return };
+    // Windows places the panel in physical pixels, as it gets the anchor.
+    #[cfg(windows)]
+    on_main(app, move |_| platform::overlay::glide(&window, anchor, height));
+    #[cfg(not(windows))]
+    glide_in_points(app, window, anchor, height);
+}
+
+#[cfg(not(windows))]
+fn glide_in_points(app: &AppHandle, window: WebviewWindow, anchor: Rect, height: f64) {
     let (x, y) = target(app, anchor, height);
     let to = Rect { x, y, width: WIDTH, height };
     let placed = PLACED.lock().unwrap().replace(to);
@@ -170,11 +201,24 @@ pub fn stop_glide(app: &AppHandle) {
             }
         });
     }
+    #[cfg(windows)]
+    platform::overlay::stop_glide();
     #[cfg(not(target_os = "macos"))]
     let _ = app;
 }
 
+/// On Windows, after the user dragged the reviewed window: clicking its title bar took the keyboard
+/// from the panel, so a panel that had it gets it back, and its keys work again.
+#[cfg(windows)]
+pub fn take_focus_back(app: &AppHandle) {
+    if let Some(window) = window(app) {
+        // Off the main thread, which the glide starting now needs for each of its steps.
+        std::thread::spawn(move || platform::overlay::refocus(&window));
+    }
+}
+
 /// Logical bounds of the display containing a point (falls back to the primary display).
+#[cfg_attr(windows, allow(dead_code))]
 fn screen_for(app: &AppHandle, x: f64, y: f64) -> (f64, f64, f64, f64) {
     let monitors = app.available_monitors().unwrap_or_default();
     let logical = |m: &tauri::Monitor| {
@@ -205,12 +249,12 @@ fn on_main(app: &AppHandle, f: impl FnOnce(&AppHandle) + Send + 'static) {
             return;
         }
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     {
         let handle = app.clone();
         let _ = app.run_on_main_thread(move || f(&handle));
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", windows)))]
     f(app);
 }
 
@@ -230,6 +274,11 @@ pub fn show(app: &AppHandle, keys: bool) {
                 }
                 return;
             }
+        }
+        #[cfg(windows)]
+        if let Some(window) = window(app) {
+            platform::overlay::show(&window, take_focus);
+            return;
         }
         if let Some(window) = window(app) {
             let _ = window.show();
@@ -264,6 +313,11 @@ pub fn start_typing(app: &AppHandle, pid: i32) {
                 panel.show_and_make_key();
                 return;
             }
+        }
+        #[cfg(windows)]
+        if let Some(window) = window(app) {
+            platform::overlay::show(&window, true);
+            return;
         }
         if let Some(window) = window(app) {
             let _ = window.set_focus();
@@ -308,6 +362,10 @@ fn give_focus_back(app: &AppHandle) -> bool {
 
 pub fn hide(app: &AppHandle) {
     platform::take_review_keys(false);
+    // At once, not on the main thread: the app coming back to the front from here on isn't the user
+    // moving on.
+    #[cfg(windows)]
+    let had_focus = platform::overlay::hiding();
     #[cfg(target_os = "linux")]
     let had_focus = platform::overlay_focused();
     give_focus_back(app);
@@ -320,6 +378,11 @@ pub fn hide(app: &AppHandle) {
                 panel.hide();
                 return;
             }
+        }
+        #[cfg(windows)]
+        if let Some(window) = window(app) {
+            platform::overlay::hide(&window, had_focus);
+            return;
         }
         if let Some(window) = window(app) {
             let _ = window.hide();

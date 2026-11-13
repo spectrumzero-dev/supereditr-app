@@ -12,7 +12,7 @@ Requirements and build steps are in the [README](README.md#build-from-source). R
 
 It runs formatting, Clippy with warnings as errors, the Rust tests, and the UI type check, tests and build. CI runs the same script on every pull request.
 
-Code that captures or replaces text in other apps lives in `src-tauri/src/platform/`. Changes there are hard to test automatically, so say in the pull request which apps you tried and on which macOS version or Linux desktop.
+Code that captures or replaces text in other apps lives in `src-tauri/src/platform/`. Changes there are hard to test automatically, so say in the pull request which apps you tried and on which macOS version, Windows version or Linux desktop.
 
 ### Secret rules
 

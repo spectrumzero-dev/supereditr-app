@@ -3,11 +3,13 @@
 //! `overlay`'s usual rules (on screen, clear of the selection). When the window is minimised,
 //! hidden or closed, the panel closes as it does on Esc.
 //!
+//! On Windows, positions here are physical pixels, as the platform reports them.
+//!
 //! This part is the same on every platform. A platform reports what happened to the window as a
 //! [`WindowChange`] (it started moving, it settled at a frame, it went) through [`window_changed`],
 //! and `overlay::glide` does the glide. macOS watches another app's window through Accessibility
-//! (`platform::watch_window`); Settings' "Try it now" box, whose window is SuperEditr's own,
-//! reports through the window's own events ([`settings_event`]).
+//! and Windows through window events (`platform::watch_window`); Settings' "Try it now" box, whose
+//! window is SuperEditr's own, reports through the window's own events ([`settings_event`]).
 //!
 //! A click elsewhere closes the panel, but dragging the window by its title bar starts with a
 //! click on that window. So a click on the reviewed window holds the close for [`HOLD`] (and for as
@@ -98,12 +100,12 @@ impl Hold {
 }
 
 /// How long the panel takes to glide to its new place once its window has settled, in seconds.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 pub const GLIDE: f64 = 0.2;
 
 /// The ease-out the glide follows: CSS's `ease-out`, a cubic Bézier through (0.58, 1). `t` is the
 /// share of the glide's time gone, from 0 to 1; the result, the share of the distance covered.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 pub fn ease_out(t: f64) -> f64 {
     let t = t.clamp(0.0, 1.0);
     // The curve's x and y for a parameter s, with control points (0, 0) and (0.58, 1).
@@ -125,7 +127,7 @@ pub fn ease_out(t: f64) -> f64 {
 /// Where a glide from `from` to `to` (top-left corners, in points) is `elapsed` seconds after its
 /// first frame, and whether it's done. Going by time, not by frame count, a late frame lands
 /// further along the curve instead of a step behind. A platform calls this once per frame.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 pub fn glide_point(from: (f64, f64), to: (f64, f64), elapsed: f64) -> ((f64, f64), bool) {
     // A frame due within a millisecond of the end is the end, so no frame is left over that
     // moves the panel by a rounding error.
@@ -300,7 +302,7 @@ pub fn window_changed(app: &AppHandle, id: u64, change: WindowChange) {
         }
         WindowChange::Moved(frame) => frame,
     };
-    let (anchor, height) = {
+    let (anchor, height, dragged) = {
         let mut session = state.session.lock().unwrap();
         let Some(current) = session.as_mut().filter(|s| s.id == id) else { return };
         let Some(anchor) = current.anchor.or_else(overlay::pointer_anchor) else { return };
@@ -308,11 +310,23 @@ pub fn window_changed(app: &AppHandle, id: u64, change: WindowChange) {
         if following.follow.offset(frame) != (0.0, 0.0) {
             following.hold.moved();
         }
+        // On Windows no selection watcher reports the drag's mouse-up (`gesture_ended`), so the
+        // window settling ends the drag.
+        let dragged = cfg!(windows) && following.hold == Hold::Dragging;
+        if dragged {
+            following.hold = Hold::Idle;
+        }
         let moved = following.follow.follow(anchor, frame);
         current.anchor = Some(moved);
-        (moved, current.height)
+        (moved, current.height, dragged)
     };
     overlay::glide(app, anchor, height.clamp(90.0, 670.0));
+    #[cfg(windows)]
+    if dragged {
+        overlay::take_focus_back(app);
+    }
+    #[cfg(not(windows))]
+    let _ = dragged;
 }
 
 /// An event of the Settings window, for a review of its "Try it now" box.
@@ -359,12 +373,23 @@ pub fn settings_event(app: &AppHandle, window: &WebviewWindow, event: &WindowEve
     }
 }
 
-/// One of SuperEditr's own windows, in points.
+/// One of SuperEditr's own windows, in points; on Windows in physical pixels, as the "Try it now"
+/// box's bounds are.
 fn own_frame(window: &WebviewWindow) -> Option<Rect> {
-    let scale = window.scale_factor().ok()?;
-    let position = window.outer_position().ok()?.to_logical::<f64>(scale);
-    let size = window.outer_size().ok()?.to_logical::<f64>(scale);
-    Some(Rect { x: position.x, y: position.y, width: size.width, height: size.height })
+    let (position, size) = (window.outer_position().ok()?, window.outer_size().ok()?);
+    #[cfg(windows)]
+    return Some(Rect {
+        x: f64::from(position.x),
+        y: f64::from(position.y),
+        width: f64::from(size.width),
+        height: f64::from(size.height),
+    });
+    #[cfg(not(windows))]
+    {
+        let scale = window.scale_factor().ok()?;
+        let (position, size) = (position.to_logical::<f64>(scale), size.to_logical::<f64>(scale));
+        Some(Rect { x: position.x, y: position.y, width: size.width, height: size.height })
+    }
 }
 
 #[cfg(test)]

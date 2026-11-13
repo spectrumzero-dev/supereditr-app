@@ -19,6 +19,8 @@ interface Handlers {
   command: (command: string) => void;
   /** A key the keyboard tap took from the app under review, for the panel. */
   key: (key: PanelKeyPayload) => void;
+  /** Review `id` couldn't be applied with the clipboard put aside: offer to replace anyway. */
+  anyway: (id: number) => void;
 }
 
 export interface PanelKeyPayload {
@@ -32,7 +34,8 @@ export interface PanelKeyPayload {
 export const ipc = {
   /** Runs a style; see `runRequest` for what `steer` and `fresh` mean. */
   runPreset: (id: number, request: RunRequest) => invoke("run_preset", { id, ...request }),
-  apply: (id: number, text: string) => invoke<string>("apply_text", { id, text }),
+  /** With `anyway`, the clipboard isn't put aside first and the fix stays on it (Windows). */
+  apply: (id: number, text: string, anyway = false) => invoke<string>("apply_text", { id, text, anyway }),
   dismiss: (id: number | null) => invoke("dismiss", { id }),
   copy: (text: string) => invoke("copy_text", { text }),
   resize: (height: number) => invoke("resize_overlay", { height }),
@@ -54,6 +57,7 @@ export const ipc = {
       listen("overlay:focus", () => handlers.focus()).then((u) => stops.push(u));
       listen<string>("overlay:command", (e) => handlers.command(e.payload)).then((u) => stops.push(u));
       listen<PanelKeyPayload>("overlay:key", (e) => handlers.key(e.payload)).then((u) => stops.push(u));
+      listen<number>("overlay:replace-anyway", (e) => handlers.anyway(e.payload)).then((u) => stops.push(u));
     });
     return () => stops.forEach((stop) => stop());
   },

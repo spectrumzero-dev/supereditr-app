@@ -33,6 +33,7 @@ type Handlers = {
   session: (payload: SessionPayload) => void;
   engine: (id: number, presetId: string, event: EngineEvent, remembered: boolean) => void;
   status: (payload: StatusPayload) => void;
+  anyway?: (id: number) => void;
 };
 
 let handlers: Handlers | null = null;
@@ -60,6 +61,10 @@ export const demo = {
       else play(presetId, !args?.steer);
     }
     if (cmd === "add_word") return true;
+    // ?anyway previews the panel after a replacement that couldn't put the clipboard aside.
+    if (cmd === "apply_text" && !args?.anyway && new URLSearchParams(location.search).has("anyway")) {
+      setTimeout(() => handlers?.anyway?.(1), 300);
+    }
     return undefined;
   },
   listen(h: Handlers) {

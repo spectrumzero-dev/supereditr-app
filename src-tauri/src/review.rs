@@ -173,8 +173,15 @@ pub async fn start_manual(app: &AppHandle, preset_id: Option<String>) {
         Ok(captured) => {
             let _ = begin(app, captured, false, preset_id);
         }
-        Err(error) => show_error(app, error.to_string()),
+        Err(error) => show_capture_error(app, error),
     }
+}
+
+/// Says why nothing could be read. While an input method is composing, the panel doesn't take
+/// focus: that would commit the composition into the user's text.
+fn show_capture_error(app: &AppHandle, error: PlatformError) {
+    let keys = !matches!(error, PlatformError::Composing);
+    show_notice_with(app, error.to_string(), None, keys);
 }
 
 /// Shows a standalone message (no selection to work on) near the pointer.
@@ -209,6 +216,10 @@ fn copies_suggestion(outcome: &ReplaceOutcome) -> bool {
 }
 
 fn show_notice(app: &AppHandle, message: String, copy: Option<String>) {
+    show_notice_with(app, message, copy, true);
+}
+
+fn show_notice_with(app: &AppHandle, message: String, copy: Option<String>, keys: bool) {
     let state = state(app);
     let id = state.next_session_id();
     if let Some(mut old) = state.session.lock().unwrap().take() {
@@ -217,7 +228,10 @@ fn show_notice(app: &AppHandle, message: String, copy: Option<String>) {
     state.notice_visible.store(true, Ordering::Relaxed);
     let _ = app.emit_to("overlay", "overlay:status", StatusPayload { id, kind: "notice", message, copy });
     overlay::position(app, None, 126.0);
-    overlay::show(app, true);
+    overlay::show(app, keys);
+    // The notice closes with the panel's close key too, where that's a registered shortcut.
+    #[cfg(windows)]
+    crate::hotkeys::set_overlay_shortcuts(app, true);
 }
 
 /// Opens the panel for a selection. Returns why it didn't, for an automatic suggestion's log line.
@@ -371,8 +385,9 @@ fn is_proofread(preset_id: &str, steer: Option<&str>) -> bool {
     preset_id == "proofread" && steer.is_none_or(|s| s.trim().is_empty())
 }
 
-/// Writes the accepted text back into the source app.
-pub async fn apply(app: &AppHandle, id: u64, text: String) -> Result<String, String> {
+/// Writes the accepted text back into the source app. With `anyway`, the user chose to replace
+/// without their clipboard put aside, after a replacement that couldn't (Windows).
+pub async fn apply(app: &AppHandle, id: u64, text: String, anyway: bool) -> Result<String, String> {
     let state = state(app);
     let keep_formatting = state.config().keep_formatting;
     let (captured, proofread) = {
@@ -400,7 +415,7 @@ pub async fn apply(app: &AppHandle, id: u64, text: String) -> Result<String, Str
         let returned = platform::return_to_field(&captured);
         (captured.text != text).then(|| {
             if returned {
-                ReplaceOutcome::from(platform::replace(&captured, &text, proofread))
+                ReplaceOutcome::from(replace_text(&captured, &text, proofread, anyway))
             } else {
                 ReplaceOutcome::CopyOnly(PlatformError::FocusNotReturned)
             }
@@ -408,6 +423,11 @@ pub async fn apply(app: &AppHandle, id: u64, text: String) -> Result<String, Str
     })
     .await
     .map_err(|e| e.to_string())?;
+    if let Some(ReplaceOutcome::ClipboardKept(PlatformError::ClipboardUnrestorable(why))) = &result
+        && offer_replace_anyway(app, id)
+    {
+        return Err(why.clone());
+    }
     state.session.lock().unwrap().take();
     match result {
         None => Ok("No changes needed.".into()),
@@ -416,6 +436,44 @@ pub async fn apply(app: &AppHandle, id: u64, text: String) -> Result<String, Str
             Some(error) => Err(error),
         },
     }
+}
+
+/// The platform's replacement. `anyway` is asked for only where the panel offered it (Windows): the
+/// clipboard isn't put aside, and the fix stays on it.
+fn replace_text(
+    captured: &Capture,
+    text: &str,
+    proofread: bool,
+    anyway: bool,
+) -> Result<platform::ReplaceMethod, PlatformError> {
+    #[cfg(windows)]
+    if anyway {
+        return platform::replace_anyway(captured, text);
+    }
+    #[cfg(not(windows))]
+    let _ = anyway;
+    platform::replace(captured, text, proofread)
+}
+
+/// Nothing was pasted because the user's clipboard couldn't be put aside to give back afterwards.
+/// The panel comes back with the review and says so in one line; the apply key again replaces
+/// anyway, and Ctrl+C and Esc work as before. False when the review ended meanwhile.
+fn offer_replace_anyway(app: &AppHandle, id: u64) -> bool {
+    let state = state(app);
+    let captured = state.session.lock().unwrap().as_ref().filter(|s| s.id == id).map(|s| s.capture.clone());
+    let Some(captured) = captured else { return false };
+    // Before the session lock, as in `begin`: watching the window reads it through the platform.
+    let following = crate::follow::start(app, id, &captured);
+    {
+        let mut session = state.session.lock().unwrap();
+        let Some(current) = session.as_mut().filter(|s| s.id == id) else { return false };
+        current.following = following;
+        current.keyboard = true;
+    }
+    let _ = app.emit_to("overlay", "overlay:replace-anyway", id);
+    overlay::show(app, true);
+    crate::hotkeys::set_overlay_shortcuts(app, true);
+    true
 }
 
 /// Settings' "Try it now" box asked for a review (⌘E E, or its Review button), as if its text were
@@ -478,7 +536,7 @@ pub async fn quick_fix(app: &AppHandle) {
     let state = state(app);
     let captured = match capture(app, true, state.config().select_sentence).await {
         Ok(c) => c,
-        Err(error) => return show_error(app, error.to_string()),
+        Err(error) => return show_capture_error(app, error),
     };
     let config = state.config();
     if captured.pid == platform::own_pid() || config.is_excluded(&captured.bundle_id) {
@@ -535,7 +593,6 @@ pub async fn quick_fix(app: &AppHandle) {
 /// Another app came to the front (⌘Tab, the Dock): the panel belongs to the app whose text it
 /// reviews, so it closes. ⌘Tab never reaches the selection watcher, which only sees the user's
 /// typing and clicks.
-#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 pub fn on_app_switch(app: &AppHandle, pid: i32) {
     let state = state(app);
     if pid == platform::own_pid() {
@@ -547,11 +604,27 @@ pub fn on_app_switch(app: &AppHandle, pid: i32) {
     let reviewing = state.session.lock().unwrap().as_ref().map(|s| s.capture.pid);
     let notice = state.notice_visible.load(Ordering::Relaxed);
     // On Linux the panel has keyboard focus during a review, so any other window coming to the
-    // front, the reviewed app's included, means the user has moved on.
-    let moved_on = reviewing.is_some_and(|source| cfg!(target_os = "linux") || source != pid);
+    // front, the reviewed app's included, means the user has moved on. So on Windows while the panel
+    // has focus: the user clicked back into the app.
+    let focused = cfg!(target_os = "linux") || platform_panel_focused();
+    let moved_on = reviewing.is_some_and(|source| focused || source != pid);
     if moved_on || (reviewing.is_none() && notice) {
+        // A click on the reviewed window may be the start of dragging it by its title bar.
+        if reviewing == Some(pid) && crate::follow::hold_for_click(app) {
+            return;
+        }
         dismiss(app, None);
     }
+}
+
+#[cfg(windows)]
+fn platform_panel_focused() -> bool {
+    platform::overlay::had_focus()
+}
+
+#[cfg(not(windows))]
+fn platform_panel_focused() -> bool {
+    false
 }
 
 /// Reacts to activity in other apps: dismiss transient overlays, start automatic reviews.

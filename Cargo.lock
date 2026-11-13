@@ -6947,6 +6947,9 @@ dependencies = [
  "unicode-segmentation",
  "wayland-client",
  "wayland-protocols-wlr",
+ "webview2-com",
+ "windows 0.62.2",
+ "windows-registry",
  "wl-clipboard-rs",
  "zbus 5.19.0",
 ]

@@ -6,13 +6,17 @@ mod commands;
 mod double_press;
 mod follow;
 mod hotkeys;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod keys;
 mod last_review;
+mod login_item;
 mod overlay;
 mod permission_guide;
 mod platform;
 mod review;
 mod review_keys;
 mod secrets;
+#[cfg_attr(windows, allow(dead_code))]
 mod shortcut_check;
 mod state;
 #[cfg(target_os = "linux")]
@@ -115,11 +119,14 @@ pub fn show_ai_status(app: &AppHandle) {
 }
 
 /// The menu-bar glyph is black, and macOS tints it as a template. Linux trays draw it as it is, and
-/// Omarchy's bar is dark, so Linux gets a light one.
-#[cfg(not(target_os = "linux"))]
+/// Omarchy's bar is dark, so Linux gets a light one. Windows shows app icons in full colour in the
+/// notification area, on a light or dark taskbar, so it gets the app icon.
+#[cfg(not(any(target_os = "linux", windows)))]
 const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
 #[cfg(target_os = "linux")]
 const TRAY_ICON: &[u8] = include_bytes!("../icons/tray-light.png");
+#[cfg(windows)]
+const TRAY_ICON: &[u8] = include_bytes!("../icons/32x32.png");
 
 /// On Linux the tray is `tray_linux`'s, which answers a left click; its menu has no key equivalents
 /// and no "Pause", since automatic suggestions are macOS-only for now.
@@ -163,7 +170,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let pause_item = pause.clone();
     TrayIconBuilder::with_id("main")
         .icon(icon)
-        .icon_as_template(true)
+        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("SuperEditr")
         .menu(&menu)
         .show_menu_on_left_click(true)
@@ -195,7 +202,7 @@ fn lasting_app_path(exe: &str) -> bool {
 /// installed, not in a temporary folder (where an AppImage is mounted while it runs) or a build
 /// folder. The entry's `Exec=` line holds the path unquoted, and systemd skips an entry it can't
 /// parse without saying so, so a path with characters that need quoting doesn't count either.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 fn lasting_app_path(exe: &str) -> bool {
     let plain = exe.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+".contains(c));
     let temporary = ["/tmp/", "/var/tmp/", "/run/", "/dev/shm/"].iter().any(|dir| exe.starts_with(dir));
@@ -203,7 +210,24 @@ fn lasting_app_path(exe: &str) -> bool {
     exe.starts_with('/') && plain && !temporary && !build
 }
 
+/// Whether a Run key entry pointing at this executable keeps working after a restart: an installed
+/// copy on a local drive, such as the installer's `%LOCALAPPDATA%\SuperEditr`, not a build folder or
+/// a temporary folder (a downloaded copy run from an archive). A copy in `WindowsApps`, where
+/// Windows installs packaged apps, doesn't count either: a packaged app's Run key entries stay in its
+/// package's own registry, which Windows doesn't read at sign-in.
+#[cfg(windows)]
+fn lasting_app_path(exe: &str) -> bool {
+    let exe = exe.strip_prefix(r"\\?\").unwrap_or(exe).to_lowercase();
+    let on_drive = exe.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) && exe.get(1..3) == Some(r":\");
+    let temp = std::env::temp_dir().display().to_string().to_lowercase();
+    let temporary = [r"\appdata\local\temp\", r":\windows\temp\"].iter().any(|dir| exe.contains(dir))
+        || (temp.len() > 3 && exe.starts_with(temp.trim_end_matches('\\')));
+    let build = exe.contains(r"\target\debug\") || exe.contains(r"\target\release\");
+    on_drive && !temporary && !build && !exe.contains(r"\windowsapps\")
+}
+
 /// The file that opens SuperEditr at login, as the autostart plugin writes it.
+#[cfg(not(windows))]
 fn login_item(app: &AppHandle) -> Option<std::path::PathBuf> {
     #[cfg(target_os = "macos")]
     return app.path().home_dir().ok().map(|home| home.join("Library/LaunchAgents/SuperEditr.plist"));
@@ -211,8 +235,22 @@ fn login_item(app: &AppHandle) -> Option<std::path::PathBuf> {
     return app.path().config_dir().ok().map(|config| config.join(format!("autostart/{AUTOSTART_NAME}.desktop")));
 }
 
-/// The autostart entry's name on Linux: `~/.config/autostart/supereditr.desktop`.
-#[cfg(not(target_os = "macos"))]
+/// Whether the login item opens a copy of the app other than `exe`, so it needs rewriting.
+#[cfg(not(windows))]
+fn login_item_moved(app: &AppHandle, exe: &str) -> bool {
+    login_item(app).is_some_and(|item| std::fs::read_to_string(item).is_ok_and(|text| !text.contains(exe)))
+}
+
+/// On Windows the login item is a Run key value, and rewriting it is silent, so while it's on it's
+/// rewritten at every launch. Turned off, in Settings or Task Manager, it's left alone.
+#[cfg(windows)]
+fn login_item_moved(app: &AppHandle, _exe: &str) -> bool {
+    login_item::is_enabled(app).unwrap_or(false)
+}
+
+/// The autostart entry's name: `~/.config/autostart/supereditr.desktop` on Linux. Windows writes
+/// its Run value itself (`platform::login`).
+#[cfg(target_os = "linux")]
 const AUTOSTART_NAME: &str = "supereditr";
 
 /// The app's identifier, which names its settings folder.
@@ -269,29 +307,29 @@ fn settings_file(config_dir: &std::path::Path) -> (std::path::PathBuf, bool) {
 /// on, each launch points the login item (a Launch Agent on macOS, an XDG autostart entry on Linux)
 /// at the current copy, so moving the app doesn't break it.
 fn launch_at_login_by_default(app: &AppHandle) {
-    use tauri_plugin_autostart::ManagerExt;
     // The path the autostart plugin writes into the login item.
-    let Some(exe) =
-        std::env::current_exe().and_then(|exe| exe.canonicalize()).ok().map(|exe| exe.display().to_string())
+    let Some(exe) = std::env::current_exe()
+        .and_then(|exe| if cfg!(windows) { Ok(exe) } else { exe.canonicalize() })
+        .ok()
+        .map(|exe| exe.display().to_string())
     else {
         return;
     };
     if !lasting_app_path(&exe) {
         return;
     }
-    let launcher = app.autolaunch();
     let state = app.state::<AppState>();
     let mut config = state.config();
     if config.offered_launch_at_login {
         // Rewritten only when the app has moved: macOS announces every change to a login item.
-        let moved =
-            login_item(app).is_some_and(|item| std::fs::read_to_string(item).is_ok_and(|text| !text.contains(&exe)));
-        if moved && let Err(e) = launcher.enable() {
+        if login_item_moved(app, &exe)
+            && let Err(e) = login_item::enable(app)
+        {
             eprintln!("SuperEditr: couldn't update opening at login: {e}");
         }
         return;
     }
-    if let Err(e) = launcher.enable() {
+    if let Err(e) = login_item::enable(app) {
         eprintln!("SuperEditr: couldn't turn on opening at login: {e}");
         return;
     }
@@ -339,6 +377,103 @@ fn on_second_launch(app: &AppHandle, args: &[String]) {
     }
 }
 
+/// Sizes the Settings window for the screen, and keeps it when the user closes it.
+fn prepare_settings(app: &AppHandle, settings: &tauri::WebviewWindow) {
+    // A tiling desktop (Omarchy's Hyprland) sizes Settings itself, often to half the screen. Below
+    // the window's minimum width, GTK would draw the page wider than the window and cut off its
+    // right side.
+    #[cfg(target_os = "linux")]
+    let _ = settings.set_min_size(Some(tauri::LogicalSize::new(420.0, 400.0)));
+    #[cfg(windows)]
+    commands::fit_on_screen(settings, None);
+    let window = settings.clone();
+    let app = app.clone();
+    settings.on_window_event(move |event| {
+        // A review of the "Try it now" box follows the window, and closes with it.
+        follow::settings_event(&app, &window, event);
+        if let WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = window.hide();
+            set_in_dock(&app, false);
+        }
+    });
+}
+
+/// Starts a window's page again when its WebView2 processes stop (`platform::webview`): a page whose
+/// renderer stopped has been loaded again, and a window whose browser process stopped is made again.
+/// The panel's review ends either way, since its page starts empty.
+#[cfg(windows)]
+fn watch_webview(app: &AppHandle, window: &tauri::WebviewWindow) {
+    let (app, label) = (app.clone(), window.label().to_string());
+    platform::webview::on_stopped(window, move |stopped| {
+        platform::trace(format_args!("webview: the {label} window's {stopped:?} process stopped"));
+        if label == "overlay" {
+            review::dismiss(&app, None);
+        }
+        if stopped == platform::webview::Stopped::Browser {
+            remake_window(&app, &label);
+        }
+    });
+}
+
+/// Makes a window again from its configuration, on a thread of its own: the old one is destroyed
+/// first, and its label is free only once the main thread has done that. A window that keeps failing
+/// is made again at most a few times in ten minutes, so a broken WebView2 doesn't make SuperEditr
+/// loop.
+#[cfg(windows)]
+fn remake_window(app: &AppHandle, label: &str) {
+    use std::time::{Duration, Instant};
+    static REMADE: std::sync::Mutex<Vec<(String, Instant)>> = std::sync::Mutex::new(Vec::new());
+    {
+        let mut remade = REMADE.lock().unwrap_or_else(|p| p.into_inner());
+        remade.retain(|(_, at)| at.elapsed() < Duration::from_secs(600));
+        if remade.iter().filter(|(l, _)| l == label).count() >= 3 {
+            return platform::trace(format_args!("webview: not making the {label} window again: it keeps failing"));
+        }
+        remade.push((label.to_string(), Instant::now()));
+    }
+    let Some(config) = app.config().app.windows.iter().find(|w| w.label == label).cloned() else { return };
+    let (app, label) = (app.clone(), label.to_string());
+    std::thread::spawn(move || {
+        // One window at a time: making a webview waits on the main thread for WebView2, and after the
+        // browser process stopped, windows made side by side there never finished.
+        static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|p| p.into_inner());
+        let shown = app.get_webview_window(&label).is_some_and(|old| {
+            let shown = old.is_visible().unwrap_or(false);
+            let _ = old.destroy();
+            shown
+        });
+        let started = Instant::now();
+        while app.get_webview_window(&label).is_some() && started.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let window = match tauri::WebviewWindowBuilder::from_config(&app, &config).and_then(|b| b.build()) {
+            Ok(window) => window,
+            Err(error) => {
+                return platform::trace(format_args!("webview: couldn't make the {label} window again: {error}"));
+            }
+        };
+        watch_webview(&app, &window);
+        match label.as_str() {
+            // Its window procedure is subclassed, which only the window's own thread can do.
+            "overlay" => {
+                let handle = app.clone();
+                let _ = app.run_on_main_thread(move || overlay::init(&handle));
+            }
+            "settings" => {
+                prepare_settings(&app, &window);
+                if shown {
+                    show_settings(&app, None);
+                }
+            }
+            _ => {}
+        }
+        platform::trace(format_args!("webview: made the {label} window again in {:?}", started.elapsed()));
+    });
+}
+
+#[cfg(not(windows))]
 fn autostart() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     let builder = tauri_plugin_autostart::Builder::new();
     #[cfg(target_os = "macos")]
@@ -349,6 +484,15 @@ fn autostart() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 }
 
 pub fn run() {
+    // A replacement reads the clipboard through a short-lived copy of the program, which can be
+    // stopped if the app that owns the clipboard stalls (see `platform::windows::clipboard`).
+    #[cfg(windows)]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if args.get(1).map(String::as_str) == Some(platform::CLIPBOARD_SNAPSHOT_COMMAND) {
+            std::process::exit(platform::serve_clipboard_snapshot(&args[2..]));
+        }
+    }
     #[cfg(target_os = "linux")]
     {
         let args: Vec<String> = std::env::args().collect();
@@ -360,17 +504,19 @@ pub fn run() {
     if updater::available() {
         builder = builder.plugin(updater::plugin());
     }
-    // On Linux the compositor owns global keys (see `hotkeys`).
-    #[cfg(not(target_os = "linux"))]
+    // On Linux the compositor owns global keys, and Windows registers them itself (see `hotkeys`).
+    #[cfg(target_os = "macos")]
     {
         builder = builder.plugin(hotkeys::plugin());
     }
     let mut context = tauri::generate_context!();
     updater::use_test_feed(&mut context);
-    builder
+    let builder = builder
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| on_second_launch(app, &args)))
-        .plugin(tauri_plugin_opener::init())
-        .plugin(autostart())
+        .plugin(tauri_plugin_opener::init());
+    #[cfg(not(windows))]
+    let builder = builder.plugin(autostart());
+    builder
         .setup(|app| {
             #[cfg(target_os = "macos")]
             {
@@ -390,7 +536,9 @@ pub fn run() {
             // Tauri before `setup`: on Windows, making a webview runs a message loop that can deliver
             // a command from a page that has already loaded.
             for window in app.config().app.windows.clone() {
-                tauri::WebviewWindowBuilder::from_config(app.handle(), &window)?.build()?;
+                let _window = tauri::WebviewWindowBuilder::from_config(app.handle(), &window)?.build()?;
+                #[cfg(windows)]
+                watch_webview(app.handle(), &_window);
             }
             write_status_file(config_dir.join("status.json"));
 
@@ -415,6 +563,18 @@ pub fn run() {
                 platform::start_app_switch_watcher(move |pid| {
                     review::on_app_switch(&switch_app, pid);
                     app_toggle::on_app_switch(&switch_app, pid);
+                });
+            }
+            #[cfg(windows)]
+            {
+                // Before the shortcuts are registered: they go through the thread this starts.
+                let events = handle.clone();
+                platform::start(move |event| match event {
+                    platform::hotkey::Event::Hotkey(id) => hotkeys::on_windows_hotkey(&events, id),
+                    platform::hotkey::Event::Foreground(pid) => {
+                        review::on_app_switch(&events, pid as i32);
+                        app_toggle::on_app_switch(&events, pid as i32);
+                    }
                 });
             }
             let problems = hotkeys::register_from_config(&handle);
@@ -462,22 +622,7 @@ pub fn run() {
             }
 
             if let Some(settings) = handle.get_webview_window("settings") {
-                // A tiling desktop (Omarchy's Hyprland) sizes Settings itself, often to half the
-                // screen. Below the window's minimum width, GTK would draw the page wider than the
-                // window and cut off its right side.
-                #[cfg(target_os = "linux")]
-                let _ = settings.set_min_size(Some(tauri::LogicalSize::new(420.0, 400.0)));
-                let window = settings.clone();
-                let app = handle.clone();
-                settings.on_window_event(move |event| {
-                    // A review of the "Try it now" box follows the window, and closes with it.
-                    follow::settings_event(&app, &window, event);
-                    if let WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        let _ = window.hide();
-                        set_in_dock(&app, false);
-                    }
-                });
+                prepare_settings(&handle, &settings);
             }
             // Settings opens by itself on the first run, until Get Started is done or, on Linux,
             // the desktop is set up (SuperEditr then opens at login, so Settings would open at every
@@ -631,7 +776,25 @@ mod tests {
         assert!(!lasting_app_path("/Users/me/supereditr/target/debug/supereditr"));
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    #[test]
+    fn only_an_installed_copy_opens_at_login() {
+        assert!(lasting_app_path(r"C:\Users\rhyan\AppData\Local\SuperEditr\supereditr.exe"), "the installer's folder");
+        assert!(lasting_app_path(r"\\?\C:\Users\rhyan\AppData\Local\SuperEditr\supereditr.exe"));
+        assert!(lasting_app_path(r"D:\Apps\SuperEditr\supereditr.exe"));
+        assert!(lasting_app_path(r"C:\Users\Rhyan Brynlee\AppData\Local\SuperEditr\supereditr.exe"));
+        assert!(!lasting_app_path(r"C:\Users\rhyan\supereditr\target\release\supereditr.exe"));
+        assert!(!lasting_app_path(r"C:\Users\rhyan\supereditr\target\debug\supereditr.exe"));
+        assert!(!lasting_app_path(r"C:\Users\rhyan\AppData\Local\Temp\7zO1A2B\supereditr.exe"), "run from an archive");
+        assert!(!lasting_app_path(r"C:\Windows\Temp\supereditr.exe"));
+        assert!(!lasting_app_path(
+            r"C:\Program Files\WindowsApps\SuperEditr_0.1.5.0_x64__k7cd5y853dpye\supereditr.exe"
+        ));
+        assert!(!lasting_app_path(r"\\quillpoint\apps\supereditr.exe"), "a network share");
+        assert!(!lasting_app_path("supereditr.exe"));
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
     #[test]
     fn only_an_installed_copy_opens_at_login() {
         assert!(lasting_app_path("/usr/bin/supereditr"));

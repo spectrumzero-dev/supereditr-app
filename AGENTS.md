@@ -1,6 +1,6 @@
 # AGENTS.md
 
-SuperEditr: a Rust/Tauri proofreading app for macOS and Linux. `README.md` describes the layout and how to build.
+SuperEditr: a Rust/Tauri proofreading app for macOS, Windows and Linux. `README.md` describes the layout and how to build.
 
 ## Checks
 

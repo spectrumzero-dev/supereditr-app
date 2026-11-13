@@ -3,7 +3,7 @@
 //! Manual reviews start from the review hotkey and take the keyboard at once: the panel gets its
 //! keys from the keyboard tap while the app keeps focus (see `review_keys`). Automatic reviews
 //! start when the selection watcher sees a new selection in an editable field; their overlay
-//! leaves the keys alone and any typing or clicking elsewhere dismisses it.
+//! takes only plain esc, which closes it; any other typing, or clicking elsewhere, dismisses it too.
 
 use crate::app_toggle;
 use crate::last_review::Finished;

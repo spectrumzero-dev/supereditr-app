@@ -46,9 +46,9 @@ Users get the new version the next time they run `omarchy plugin update app.supe
 
 This is in place already; it is here for when something has to be recreated.
 
-- **The published repository** is public, with issues, wiki and projects off, so reports come here. Two rulesets, one for branches and one for tags, refuse creating, updating and deleting refs, and force pushes, from everyone except the workflow's credential, administrators included.
+- **The published repository** is public, with issues, wiki and projects off, so reports come here. Two rulesets, one for branches and one for tags, refuse creating, updating and deleting refs, and force pushes, from everyone except the SuperEditr Omarchy publisher app, administrators included.
 - **The `omarchy-plugin` environment** in this repository holds the secrets, and only `v*` tags can use it, so branches and pull requests never see them:
-  - `OMARCHY_PLUGIN_DEPLOY_KEY`: the private half of a deploy key with write access to the published repository alone.
+  - the variable `OMARCHY_PLUGIN_APP_CLIENT_ID` and the secret `OMARCHY_PLUGIN_APP_PRIVATE_KEY`: the client ID and a private key of the SuperEditr Omarchy publisher, a GitHub App owned by the organization with only Contents read and write, installed only on the published repository. The workflow turns them into a token that expires within the hour. (The organization turns deploy keys off, so a deploy key can't do this.)
   - `OMARCHY_MARKETPLACE_TOKEN`: a maintainer's classic token with only the `public_repo` scope, which files the verification requests in that maintainer's name. A fine-grained token can't open issues in another organization's repository. It expires; replace it before it does.
 
 ## Why it works this way

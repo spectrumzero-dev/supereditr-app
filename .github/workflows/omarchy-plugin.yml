@@ -6,8 +6,8 @@ name: Omarchy plugin
 # release's tag, so the widget users get is always one from a release and never main between
 # releases. git subtree split turns the folder's history into a branch of its own and gives the same
 # commits every time, so each run fast-forwards the plugin repository, and a release that doesn't
-# change the widget pushes nothing. That repository's rulesets refuse every push but this deploy
-# key's. The secrets live in the omarchy-plugin environment, which only v* tags can use, so pull
+# change the widget pushes nothing. That repository's rulesets refuse every push but the publisher
+# app's. The secrets live in the omarchy-plugin environment, which only v* tags can use, so pull
 # requests and branches never see them. To publish a release's widget again, run this workflow by
 # hand on its tag.
 
@@ -45,27 +45,33 @@ jobs:
         run: node --test tests/omarchy/model.test.mjs
       - name: Split the plugin's history
         run: git subtree split --prefix=packaging/omarchy -b plugin
+      # A token for the SuperEditr Omarchy publisher app, which is installed only on the plugin
+      # repository and may only write its contents. It expires within the hour.
+      - name: Get a token for the plugin repository
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.OMARCHY_PLUGIN_APP_CLIENT_ID }}
+          private-key: ${{ secrets.OMARCHY_PLUGIN_APP_PRIVATE_KEY }}
+          owner: spectrumzero-dev
+          repositories: supereditr-omarchy
+          permission-contents: write
       - name: Publish to the plugin repository
         id: publish
         env:
-          DEPLOY_KEY: ${{ secrets.OMARCHY_PLUGIN_DEPLOY_KEY }}
+          TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
-          key="$RUNNER_TEMP/plugin-deploy-key"
-          hosts="$RUNNER_TEMP/github-known-hosts"
-          trap 'rm -f "$key"' EXIT
-          install -m 600 /dev/null "$key"
-          printf '%s\n' "$DEPLOY_KEY" > "$key"
-          # GitHub's SSH host keys, from its API over HTTPS.
-          curl -fsSL https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' > "$hosts"
-          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$hosts -o StrictHostKeyChecking=yes"
-          url="git@github.com:$PLUGIN_REPO.git"
+          basic=$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)
+          echo "::add-mask::$basic"
+          auth="Authorization: basic $basic"
+          url="https://github.com/$PLUGIN_REPO.git"
           commit=$(git rev-parse plugin)
-          published=$(git ls-remote "$url" refs/heads/main | cut -f1)
+          published=$(git -c http.extraHeader="$auth" ls-remote "$url" refs/heads/main | cut -f1)
           if [ "$published" = "$commit" ]; then
             echo "$PLUGIN_REPO is already at $commit."
           else
-            git push "$url" plugin:refs/heads/main
+            git -c http.extraHeader="$auth" push "$url" plugin:refs/heads/main
           fi
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
       - name: Ask the marketplace to verify the new commit

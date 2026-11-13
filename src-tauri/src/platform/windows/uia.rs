@@ -629,15 +629,17 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let w = worker(calls.clone(), Duration::from_secs(5));
         let started = Instant::now();
-        let hung = w.call(Duration::from_millis(50), |fake, _| {
+        // Deadlines are long enough for a loaded CI machine to start the thread: a job that starts
+        // after its deadline is skipped, and then nothing hangs.
+        let hung = w.call(Duration::from_millis(200), |fake, _| {
             fake.calls.fetch_add(1, Ordering::SeqCst);
-            std::thread::sleep(Duration::from_millis(300));
+            std::thread::sleep(Duration::from_millis(800));
         });
         assert_eq!(hung, Err(CallError::Timeout));
-        assert!(started.elapsed() < Duration::from_millis(250), "the caller waits only until its deadline");
+        assert!(started.elapsed() < Duration::from_millis(600), "the caller waits only until its deadline");
         assert_eq!(w.call(Duration::from_millis(50), |_, _| ()), Err(CallError::Wedged));
-        std::thread::sleep(Duration::from_millis(350));
-        assert_eq!(w.call(Duration::from_millis(200), |_, _| 7), Ok(7), "usable again once the call returned");
+        std::thread::sleep(Duration::from_millis(800));
+        assert_eq!(w.call(Duration::from_secs(1), |_, _| 7), Ok(7), "usable again once the call returned");
     }
 
     #[test]
@@ -662,15 +664,14 @@ mod tests {
     #[test]
     fn a_worker_stuck_too_long_is_replaced_a_few_times_then_reported_unavailable() {
         let w = worker(Arc::default(), Duration::from_millis(60));
+        // Each hung call waits past `stuck_after`, and long enough for a fresh thread to start its job.
         for _ in 0..3 {
-            let _ = w.call(Duration::from_millis(10), |_, _| std::thread::sleep(Duration::from_millis(400)));
-            std::thread::sleep(Duration::from_millis(80));
-            // Replaced: a fresh thread answers at once.
-            assert_eq!(w.call(Duration::from_millis(100), |_, _| 1), Ok(1));
+            let _ = w.call(Duration::from_millis(200), |_, _| std::thread::sleep(Duration::from_millis(1000)));
+            // Replaced: a fresh thread answers.
+            assert_eq!(w.call(Duration::from_secs(1), |_, _| 1), Ok(1));
         }
-        let _ = w.call(Duration::from_millis(10), |_, _| std::thread::sleep(Duration::from_millis(400)));
-        std::thread::sleep(Duration::from_millis(80));
-        assert_eq!(w.call(Duration::from_millis(100), |_, _| 1), Err(CallError::Unavailable));
+        let _ = w.call(Duration::from_millis(200), |_, _| std::thread::sleep(Duration::from_millis(1000)));
+        assert_eq!(w.call(Duration::from_secs(1), |_, _| 1), Err(CallError::Unavailable));
     }
 
     #[test]

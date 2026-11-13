@@ -47,11 +47,14 @@ fn entries_to_delete(kind: ProviderKind, profile_id: &str) -> [(&'static str, St
     [(SERVICE, account(kind, profile_id)), (SERVICE, profile_id.to_string()), (OLD_SERVICE, profile_id.to_string())]
 }
 
-/// Whether a Credential Manager entry holds a key `set` saved. The keyring crate names it
-/// "<account>.app.supereditr" and puts the account name (see [`account`]) in its user name.
+/// Whether a Credential Manager entry holds a key SuperEditr saved. The keyring crate names it
+/// "<account>.app.supereditr" and puts the account name (see [`account`]) in its user name;
+/// versions before 0.1.2 saved under their own service ("<profile ID>.com.sghael.supereditr").
 #[cfg_attr(not(windows), allow(dead_code))]
 fn is_saved_key(target: &str, user: &str) -> bool {
-    target.strip_suffix(SERVICE).and_then(|rest| rest.strip_suffix('.')) == Some(user)
+    [SERVICE, OLD_SERVICE]
+        .iter()
+        .any(|service| target.strip_suffix(service).and_then(|rest| rest.strip_suffix('.')) == Some(user))
 }
 
 /// Deletes every key SuperEditr saved in Credential Manager, including any left by a provider
@@ -121,7 +124,8 @@ mod tests {
         assert!(is_saved_key("anthropic:anthropic.app.supereditr", "anthropic:anthropic"), "an account name");
         assert!(is_saved_key("a.b.app.supereditr", "a.b"), "a profile ID with a dot");
         assert!(!is_saved_key("openai-1.app.supereditr", "anthropic-2"), "a user name that doesn't match");
-        assert!(!is_saved_key("openai-1.com.sghael.supereditr", "openai-1"), "another service");
+        assert!(is_saved_key("openai-1.com.sghael.supereditr", "openai-1"), "the service before 0.1.2");
+        assert!(!is_saved_key("openai-1.com.example.notes", "openai-1"), "another service");
         assert!(!is_saved_key("openai-1.app.supereditr.backup", "openai-1"));
         assert!(!is_saved_key("openai-1app.supereditr", "openai-1"));
         assert!(!is_saved_key("app.supereditr", ""), "no profile ID at all");

@@ -2,16 +2,18 @@ name: Omarchy plugin
 
 # Publishes the Omarchy bar widget, packaging/omarchy, as the main branch of
 # spectrumzero-dev/supereditr-omarchy, the repository Omarchy installs it from, then asks the Omarchy
-# plugin marketplace to verify the new commit. git subtree split turns the folder's history into a
-# branch of its own and gives the same commits every time, so each run fast-forwards the plugin
-# repository, and a run with no widget change pushes nothing. That repository's rulesets refuse every
-# push but this deploy key's. The secrets live in the omarchy-plugin environment, which only main can
-# use, so pull requests never see them.
+# plugin marketplace to verify the new commit. It runs when a release is published, from the
+# release's tag, so the widget users get is always one from a release and never main between
+# releases. git subtree split turns the folder's history into a branch of its own and gives the same
+# commits every time, so each run fast-forwards the plugin repository, and a release that doesn't
+# change the widget pushes nothing. That repository's rulesets refuse every push but this deploy
+# key's. The secrets live in the omarchy-plugin environment, which only v* tags can use, so pull
+# requests and branches never see them. To publish a release's widget again, run this workflow by
+# hand on its tag.
 
 on:
-  push:
-    branches: [main]
-    paths: ['packaging/omarchy/**']
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions: {}
@@ -22,7 +24,10 @@ concurrency:
 
 jobs:
   publish:
-    if: github.repository == 'spectrumzero-dev/supereditr-app' && github.ref == 'refs/heads/main'
+    if: >-
+      github.repository == 'spectrumzero-dev/supereditr-app' &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      !github.event.release.prerelease
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: omarchy-plugin

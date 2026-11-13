@@ -150,7 +150,7 @@ SuperEditr's own icon stays in the system tray. To keep only the widget, right-c
 omarchy plugin remove app.supereditr
 ```
 
-The widget runs inside Omarchy's shell with your permissions. It reads `status.json` and `settings.json` in `~/.config/app.supereditr`, checks for a running `supereditr` process, and runs the `supereditr` command, which hands its action to the running app; it changes no settings and installs nothing else. Its source is `packaging/omarchy/`; every change to it that lands on `main` is published to [supereditr-omarchy](https://github.com/spectrumzero-dev/supereditr-omarchy), the repository Omarchy installs it from.
+The widget runs inside Omarchy's shell with your permissions. It reads `status.json` and `settings.json` in `~/.config/app.supereditr`, checks for a running `supereditr` process, and runs the `supereditr` command, which hands its action to the running app; it changes no settings and installs nothing else. Its source is `packaging/omarchy/`; each SuperEditr release publishes it to [supereditr-omarchy](https://github.com/spectrumzero-dev/supereditr-omarchy), the repository Omarchy installs it from.
 
 To build it from source instead, the requirements are Arch Linux on x86-64, Rust (via `rustup`), Node.js 22+, and the packages `base-devel webkit2gtk-4.1 gtk3 libayatana-appindicator at-spi2-core librsvg`.
 

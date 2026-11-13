@@ -70,6 +70,8 @@ shared:
           - '!src-tauri/windows/**'
           - '!src-tauri/icons/icon.ico'
           - '!**/*.md'
+          - '!manifest.json'
+          - '!packaging/omarchy/**'
           - '!tests/**'
           - '!**/tests/**'
           - '!**/tests.rs'

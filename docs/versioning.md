@@ -8,7 +8,7 @@ One pull request sets the version in the workspace `Cargo.toml`, `src-tauri/taur
 
 ## Which platforms a release ships
 
-Decide each platform on its own, by comparing the release's commit with the platform's **baseline**: the newest published, stable (not pre-release) release whose assets include that platform's build, `SuperEditr-<version>.dmg` for macOS or `supereditr-<version>-x86_64.tar.gz` for Linux. A pre-release never moves a baseline. A platform with no baseline yet ships its first build.
+Decide each platform on its own, by comparing the release's commit with the platform's **baseline**: the newest published, stable (not pre-release) release whose assets include that platform's build, `SuperEditr-<version>.dmg` for macOS, `supereditr-<version>-x86_64.tar.gz` for Linux or `SuperEditr_<version>_x64-setup.exe` for Windows. A pre-release never moves a baseline. A platform with no baseline yet ships its first build.
 
 ```bash
 gh release list --exclude-pre-releases --exclude-drafts
@@ -22,7 +22,7 @@ The platform ships when the diff touches a file in its row or the shared row. `-
 |---|---|
 | macOS | `src-tauri/src/platform/macos.rs`, `src-tauri/Info.plist`, `src-tauri/tauri.macos.conf.json`, `src-tauri/icons/icon.icns`, `src-tauri/icons/64x64.png`, `helpers/foundation-models/`, `scripts/build.sh` |
 | Linux | `src-tauri/src/platform/linux/`, `src-tauri/src/tray_linux.rs`, `src-tauri/icons/tray-light.png`, `packaging/arch/`, `packaging/linux/`, `scripts/linux-release.sh` |
-| Windows | `src-tauri/src/platform/windows/`, `src-tauri/icons/icon.ico` |
+| Windows | `src-tauri/src/platform/windows/`, `src-tauri/tauri.windows.conf.json`, `src-tauri/windows/`, `src-tauri/icons/icon.ico` |
 | Not shipped | Markdown files; the Omarchy bar widget (`manifest.json`, `packaging/omarchy/`), which Omarchy installs from the repository rather than a release; tests (`tests/`, `scripts/ui-smoke*.sh`, Rust `tests` modules and files, UI `*.test.ts`); CI (`.github/`); development tools (`scripts/check.sh`, `scripts/count-lines.sh`, formatter and linter configuration) |
 | Release bookkeeping | a change to the version alone, in the files above, and the version and SHA-256 lines of `packaging/arch/PKGBUILD` |
 | Shared | everything else |
@@ -34,4 +34,5 @@ The version pull request lists every platform with its baseline and whether it s
 ## Updates on each platform
 
 - **macOS** apps check `latest.json` on the repository's release marked Latest. That mark stays on the newest release that ships macOS: a release that leaves out macOS is published without it, so Mac apps keep finding the last macOS release and its download link keeps working. Older Mac installs can still update to that release.
+- **Windows** apps ask the update server for the newest stable release that includes a Windows installer, so a release that leaves out Windows doesn't change what they see, and one that ships only Windows reaches them without being marked Latest.
 - **Linux** has no in-app updater. `packaging/arch/PKGBUILD` names a release and the SHA-256 of its tarball, written after that release's tarball is built, as release bookkeeping.

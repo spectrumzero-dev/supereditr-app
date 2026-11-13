@@ -157,6 +157,7 @@ pub fn on_review_hotkey(app: &AppHandle) {
 }
 
 pub async fn start_manual(app: &AppHandle, preset_id: Option<String>) {
+    let _busy = crate::updater::busy();
     match check_target(app) {
         Target::Allowed => {}
         // In SuperEditr's own window, the shortcut reviews Settings' "Try it now" box, if focused.
@@ -526,6 +527,7 @@ pub fn resize(app: &AppHandle, height: f64) {
 
 /// Quick fix: proofread the selection and replace it directly, with no overlay.
 pub async fn quick_fix(app: &AppHandle) {
+    let _busy = crate::updater::busy();
     match check_target(app) {
         Target::Allowed => {}
         Target::Ignored => return,

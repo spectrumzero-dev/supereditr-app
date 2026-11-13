@@ -14,21 +14,28 @@
 //! Choosing Check for Updates… opens a small window at once, which shows how the check goes and what
 //! to do next. Automatic checks open nothing, so they never interrupt typing: an update they install
 //! waits in the menu-bar menu.
+//!
+//! On Windows, installing runs the downloaded installer and quits SuperEditr at once, and the
+//! installer starts it again when it's done. So an update is downloaded as soon as it's found and
+//! kept until the user chooses Restart to Update, or until SuperEditr is idle (`hold`), or until the
+//! user quits it.
 
 use semver::Version;
 use serde::Serialize;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tauri::menu::MenuItem;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_updater::UpdaterExt;
 
-/// Release builds update themselves on macOS only. Linux has no in-app updater: the package manager
-/// installs new versions.
-pub const ENABLED: bool = updates_itself(option_env!("SUPEREDITR_RELEASE_BUILD").is_some(), cfg!(target_os = "macos"));
+/// Release builds update themselves on macOS and Windows. Linux has no in-app updater: the package
+/// manager installs new versions.
+pub const ENABLED: bool =
+    updates_itself(option_env!("SUPEREDITR_RELEASE_BUILD").is_some(), cfg!(target_os = "macos"), cfg!(windows));
 
-const fn updates_itself(release_build: bool, macos: bool) -> bool {
-    release_build && macos
+const fn updates_itself(release_build: bool, macos: bool, windows: bool) -> bool {
+    release_build && (macos || windows)
 }
 
 /// How long after launch the first automatic check waits, and how often it repeats.
@@ -37,6 +44,13 @@ const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 /// Without limits a stalled request would never finish, and the check would never end.
 const FEED_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// How often a downloaded Windows update looks for a quiet moment to install, and how long the user
+/// must have left the keyboard and mouse alone first.
+#[cfg_attr(not(windows), allow(dead_code))]
+const IDLE_POLL: Duration = Duration::from_secs(10);
+#[cfg_attr(not(windows), allow(dead_code))]
+const USER_IDLE: Duration = Duration::from_secs(60);
 
 /// The update window's label, and the event that tells it what's happening.
 const WINDOW: &str = "update";
@@ -89,6 +103,9 @@ impl Status {
 pub struct UpdateItem {
     item: MenuItem<tauri::Wry>,
     status: Mutex<Status>,
+    /// On Windows, the downloaded update, kept until it's installed.
+    #[cfg(windows)]
+    pending: Mutex<Option<(tauri_plugin_updater::Update, Vec<u8>)>>,
 }
 
 impl UpdateItem {
@@ -118,7 +135,7 @@ impl UpdateItem {
 
 /// The feed and key the UI smoke tests give a test build. Official builds and Linux ignore them.
 fn test_feed() -> Option<(String, String)> {
-    if ENABLED || !cfg!(target_os = "macos") {
+    if ENABLED || !cfg!(any(target_os = "macos", windows)) {
         return None;
     }
     Some((std::env::var("SUPEREDITR_TEST_UPDATE_FEED").ok()?, std::env::var("SUPEREDITR_TEST_UPDATE_KEY").ok()?))
@@ -127,6 +144,73 @@ fn test_feed() -> Option<(String, String)> {
 /// Whether this copy of the app can update itself.
 pub fn available() -> bool {
     ENABLED || test_feed().is_some()
+}
+
+/// Whether this copy checks for updates by itself. A Windows test build given a feed does too, so a
+/// test can see an update arrive in the middle of a review.
+pub fn checks_automatically() -> bool {
+    ENABLED || (cfg!(windows) && test_feed().is_some())
+}
+
+/// How long after launch the first automatic check waits. A Windows test build can be given a
+/// shorter wait (`SUPEREDITR_TEST_UPDATE_DELAY`, in seconds).
+fn first_check() -> Duration {
+    #[cfg(windows)]
+    if let Some(seconds) =
+        test_feed().and(std::env::var("SUPEREDITR_TEST_UPDATE_DELAY").ok()).and_then(|seconds| seconds.parse().ok())
+    {
+        return Duration::from_secs(seconds);
+    }
+    FIRST_CHECK
+}
+
+/// Starting a review and a quick fix count as busy: an update doesn't install in the middle of
+/// one, while the clipboard may be put aside or a fix is about to be written.
+static BUSY: AtomicUsize = AtomicUsize::new(0);
+
+/// Keeps a Windows update from installing until it's dropped.
+pub struct Busy(());
+
+pub fn busy() -> Busy {
+    BUSY.fetch_add(1, Ordering::SeqCst);
+    Busy(())
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        BUSY.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// What keeps a downloaded update from installing now. Installing quits SuperEditr and shows the
+/// installer's progress window, so it waits until none of these holds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+enum Hold {
+    /// A review is starting or a quick fix is running.
+    Working,
+    /// The panel shows a review or a message.
+    Panel,
+    /// Settings or another SuperEditr window is open, and may hold an unsaved edit.
+    Window,
+    /// The user typed or moved the mouse in the last minute, so the installer's window could catch
+    /// them typing.
+    UserActive,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn hold(working: bool, panel: bool, window: bool, idle: Duration) -> Option<Hold> {
+    if working {
+        Some(Hold::Working)
+    } else if panel {
+        Some(Hold::Panel)
+    } else if window {
+        Some(Hold::Window)
+    } else if idle < USER_IDLE {
+        Some(Hold::UserActive)
+    } else {
+        None
+    }
 }
 
 /// Gives a test build the real updater, with only its feed and key changed, and plain HTTP allowed
@@ -149,7 +233,12 @@ pub fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry, tauri_plugin_updater::
 pub fn menu_item(app: &AppHandle) -> tauri::Result<MenuItem<tauri::Wry>> {
     let status = Status::Idle;
     let item = MenuItem::with_id(app, "update", status.menu_line(), true, None::<&str>)?;
-    app.manage(UpdateItem { item: item.clone(), status: Mutex::new(status) });
+    app.manage(UpdateItem {
+        item: item.clone(),
+        status: Mutex::new(status),
+        #[cfg(windows)]
+        pending: Mutex::new(None),
+    });
     Ok(item)
 }
 
@@ -157,7 +246,7 @@ pub fn menu_item(app: &AppHandle) -> tauri::Result<MenuItem<tauri::Wry>> {
 pub fn start(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(FIRST_CHECK).await;
+        tokio::time::sleep(first_check()).await;
         loop {
             if app.try_state::<UpdateItem>().is_some_and(|state| state.begin(&app)) {
                 check(&app).await;
@@ -173,7 +262,10 @@ pub fn start(app: &AppHandle) {
 pub fn on_menu(app: &AppHandle) {
     let Some(state) = app.try_state::<UpdateItem>() else { return };
     if matches!(status(app), Status::Ready { .. }) {
+        #[cfg(not(windows))]
         app.restart();
+        #[cfg(windows)]
+        return install(app, true);
     }
     let started = state.begin(app);
     show_window(app);
@@ -211,11 +303,18 @@ fn show_window(app: &AppHandle) {
 /// Runs the check `UpdateItem::begin` started.
 async fn check(app: &AppHandle) {
     let Some(state) = app.try_state::<UpdateItem>() else { return };
-    let updater = app
+    let builder = app
         .updater_builder()
         .timeout(FEED_TIMEOUT)
-        .version_comparator(|current, remote| should_install(&current, &remote.version))
-        .build();
+        .version_comparator(|current, remote| should_install(&current, &remote.version));
+    // The installer quits SuperEditr without its usual cleanup, which would leave the tray icon in the
+    // notification area until the pointer passes over it.
+    #[cfg(windows)]
+    let builder = {
+        let app = app.clone();
+        builder.on_before_exit(move || drop(app.remove_tray_by_id("main")))
+    };
+    let updater = builder.build();
     let found = match updater {
         Ok(updater) => updater.check().await,
         Err(error) => Err(error),
@@ -235,7 +334,15 @@ async fn check(app: &AppHandle) {
                     state.set(app, Status::Downloading { version: version.clone(), percent });
                 }
             };
-            match update.download_and_install(progress, || {}).await {
+            #[cfg(not(windows))]
+            let installed = update.download_and_install(progress, || {}).await;
+            // Installing quits SuperEditr, so the download waits for `install`.
+            #[cfg(windows)]
+            let installed = update.download(progress, || {}).await.map(|bytes| {
+                crate::platform::trace(format_args!("update: downloaded {version}"));
+                *state.pending.lock().unwrap() = Some((update.clone(), bytes));
+            });
+            match installed {
                 Ok(()) => Status::Ready { version },
                 Err(error) => {
                     eprintln!("SuperEditr: couldn't install update {version}: {error}");
@@ -249,7 +356,93 @@ async fn check(app: &AppHandle) {
             Status::CheckFailed
         }
     };
+    #[cfg(windows)]
+    let ready = matches!(result, Status::Ready { .. });
     state.set(app, result);
+    #[cfg(windows)]
+    if ready {
+        install_when_idle(app);
+    }
+}
+
+/// Waits for a quiet moment (`hold`), then installs the downloaded update. The installer starts
+/// SuperEditr again when it's done.
+#[cfg(windows)]
+fn install_when_idle(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut said = None;
+        let mut last = std::time::SystemTime::now();
+        let mut woke = None;
+        loop {
+            tokio::time::sleep(IDLE_POLL).await;
+            if !matches!(status(&app), Status::Ready { .. }) {
+                return;
+            }
+            let at = std::time::SystemTime::now();
+            if slept(at.duration_since(last).unwrap_or_default()) {
+                crate::platform::trace(format_args!("update: the computer was asleep"));
+                woke = Some(at);
+            }
+            last = at;
+            let awake = woke.map_or(Duration::MAX, |woke| at.duration_since(woke).unwrap_or_default());
+            let now = hold_now(&app, awake);
+            if now != said {
+                match now {
+                    Some(reason) => crate::platform::trace(format_args!("update: waiting ({reason:?})")),
+                    None => crate::platform::trace(format_args!("update: idle")),
+                }
+                said = now;
+            }
+            if now.is_none() {
+                return install(&app, true);
+            }
+        }
+    });
+}
+
+/// `awake` is how long since the computer last woke from sleep, if it slept while waiting. Windows may
+/// not count waking as input, so the time asleep would look like the user being away from the
+/// keyboard just as they come back to it.
+#[cfg(windows)]
+fn hold_now(app: &AppHandle, awake: Duration) -> Option<Hold> {
+    use crate::state::AppState;
+    let state = app.state::<AppState>();
+    let panel = state.session.lock().unwrap().is_some() || state.notice_visible.load(Ordering::Relaxed);
+    let window = app.webview_windows().values().any(|window| window.is_visible().unwrap_or(false));
+    let idle = crate::platform::input_idle().min(awake);
+    hold(BUSY.load(Ordering::SeqCst) > 0, panel, window, idle)
+}
+
+/// Whether the wall clock moved on much further than a poll's wait: the computer slept meanwhile.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn slept(between_polls: Duration) -> bool {
+    between_polls > IDLE_POLL * 3
+}
+
+/// Installs the downloaded update, if there is one, and starts SuperEditr again afterwards when
+/// `restart` is set. Runs the installer and quits; returns only if there was nothing to install or
+/// it couldn't start the installer.
+#[cfg(windows)]
+pub fn install(app: &AppHandle, restart: bool) {
+    let Some(state) = app.try_state::<UpdateItem>() else { return };
+    let Some((update, bytes)) = state.pending.lock().unwrap().take() else { return };
+    let version = update.version.clone();
+    crate::platform::trace(format_args!("update: installing {version}"));
+    let update = update.restart_after_install(restart);
+    // On the main thread, where the tray icon lives, so it can be taken away before the app quits.
+    let main = app.clone();
+    let started = app.run_on_main_thread(move || {
+        if let Err(error) = update.install(&bytes) {
+            eprintln!("SuperEditr: couldn't install update {version}: {error}");
+            if let Some(state) = main.try_state::<UpdateItem>() {
+                state.set(&main, Status::InstallFailed { version });
+            }
+        }
+    });
+    if let Err(error) = started {
+        eprintln!("SuperEditr: couldn't install the update: {error}");
+    }
 }
 
 /// Whether to install a release: only one newer than this build.
@@ -267,10 +460,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_macos_release_builds_update_themselves() {
-        assert!(updates_itself(true, true));
-        assert!(!updates_itself(true, false), "a Linux release build");
-        assert!(!updates_itself(false, true), "a source build");
+    fn only_macos_and_windows_release_builds_update_themselves() {
+        assert!(updates_itself(true, true, false), "a macOS release build");
+        assert!(updates_itself(true, false, true), "a Windows release build");
+        assert!(!updates_itself(true, false, false), "a Linux release build");
+        assert!(!updates_itself(false, true, false), "a macOS source build");
+        assert!(!updates_itself(false, false, true), "a Windows source build");
+    }
+
+    #[test]
+    fn a_windows_update_waits_until_nothing_is_going_on() {
+        let idle = USER_IDLE;
+        assert_eq!(hold(false, false, false, idle), None);
+        assert_eq!(hold(false, false, false, idle * 10), None);
+        assert_eq!(hold(true, false, false, idle), Some(Hold::Working), "a quick fix running");
+        assert_eq!(hold(false, true, false, idle), Some(Hold::Panel), "a review open");
+        assert_eq!(hold(false, false, true, idle), Some(Hold::Window), "Settings open");
+        assert_eq!(
+            hold(false, false, false, idle - Duration::from_secs(1)),
+            Some(Hold::UserActive),
+            "typing elsewhere"
+        );
+        assert_eq!(hold(true, true, true, Duration::ZERO), Some(Hold::Working), "the first reason found");
+    }
+
+    #[test]
+    fn a_poll_long_after_the_last_means_the_computer_slept() {
+        assert!(!slept(IDLE_POLL));
+        assert!(!slept(IDLE_POLL * 2), "a busy moment");
+        assert!(slept(Duration::from_secs(45 * 60)), "a night asleep");
+    }
+
+    #[test]
+    fn busy_holds_until_dropped() {
+        let before = BUSY.load(Ordering::SeqCst);
+        let first = busy();
+        let second = busy();
+        assert_eq!(BUSY.load(Ordering::SeqCst), before + 2);
+        drop(first);
+        drop(second);
+        assert_eq!(BUSY.load(Ordering::SeqCst), before);
     }
 
     fn v(text: &str) -> Version {

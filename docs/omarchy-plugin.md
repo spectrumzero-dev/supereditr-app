@@ -6,6 +6,16 @@ SuperEditr's Omarchy bar widget lives in three places:
 - **Published plugin**: [spectrumzero-dev/supereditr-omarchy](https://github.com/spectrumzero-dev/supereditr-omarchy). Its `main` branch is `packaging/omarchy/` as of the newest release that changed it, and it is what `omarchy plugin add` and `omarchy plugin update` install. Nobody commits to it directly.
 - **Listing**: the [Omarchy plugin marketplace](https://plugins.omarchy.org), as plugin `app.supereditr`. The marketplace verifies exact commits of the published repository.
 
+## Publishing a new version: the checklist
+
+1. Change the widget in a pull request to this repository, like any other change.
+2. In the same pull request, bump `version` in `packaging/omarchy/manifest.json` (SemVer: a fix bumps the patch number, a new button or status the minor number).
+3. Merge it. Nothing reaches users yet: merges to `main` are never published.
+4. Release as usual. The widget change makes the release ship Linux, and publishing the release publishes the widget and asks the marketplace to verify it.
+5. Check the release's run of the Omarchy plugin workflow (`gh run list --workflow omarchy-plugin.yml --limit 1`). It ends green, having pushed the new commit to the published repository and filed the marketplace request, or says in its log why it skipped one.
+
+There is nothing to do in the published repository or on the marketplace's site. The rest of this page explains each step and what to do when one goes wrong.
+
 ## Changing the widget
 
 Change it in a pull request here like any other code; `scripts/check.sh` runs its tests.

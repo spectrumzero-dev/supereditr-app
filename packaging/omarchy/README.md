@@ -2,7 +2,7 @@
 
 A bar widget for [Omarchy](https://omarchy.org) that shows whether [SuperEditr](https://supereditr.app) is running and which shortcuts it uses. Click it to review or quick-fix the selection, start SuperEditr or open its Settings, or right-click it to open Settings.
 
-Each SuperEditr release publishes this repository from the `packaging/omarchy` folder of [spectrumzero-dev/supereditr-app](https://github.com/spectrumzero-dev/supereditr-app). Send issues and pull requests there; this repository accepts no direct changes.
+This repository is published from the `packaging/omarchy` folder of [spectrumzero-dev/supereditr-app](https://github.com/spectrumzero-dev/supereditr-app) by each SuperEditr release that changes the widget. Send issues and pull requests there; this repository accepts no direct changes. [How the widget is changed and published](https://github.com/spectrumzero-dev/supereditr-app/blob/main/docs/omarchy-plugin.md) explains the rest.
 
 ## Install
 

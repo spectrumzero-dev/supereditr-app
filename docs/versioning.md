@@ -21,9 +21,9 @@ The platform ships when the diff touches a file in its row or the shared row. `-
 | Class | Files |
 |---|---|
 | macOS | `src-tauri/src/platform/macos.rs`, `src-tauri/Info.plist`, `src-tauri/tauri.macos.conf.json`, `src-tauri/icons/icon.icns`, `src-tauri/icons/64x64.png`, `helpers/foundation-models/`, `scripts/build.sh` |
-| Linux | `src-tauri/src/platform/linux/`, `src-tauri/src/tray_linux.rs`, `src-tauri/icons/tray-light.png`, `packaging/arch/`, `packaging/linux/`, `scripts/linux-release.sh` |
+| Linux | `src-tauri/src/platform/linux/`, `src-tauri/src/tray_linux.rs`, `src-tauri/icons/tray-light.png`, `packaging/arch/`, `packaging/linux/`, `packaging/omarchy/` (the Omarchy bar widget), `scripts/linux-release.sh` |
 | Windows | `src-tauri/src/platform/windows/`, `src-tauri/tauri.windows.conf.json`, `src-tauri/windows/`, `src-tauri/icons/icon.ico` |
-| Not shipped | Markdown files; the Omarchy bar widget (`packaging/omarchy/`), which is published to its own repository rather than in a release; tests (`tests/`, `scripts/ui-smoke*.sh`, Rust `tests` modules and files, UI `*.test.ts`); CI (`.github/`); development tools (`scripts/check.sh`, `scripts/count-lines.sh`, formatter and linter configuration) |
+| Not shipped | Markdown files; tests (`tests/`, `scripts/ui-smoke*.sh`, Rust `tests` modules and files, UI `*.test.ts`); CI (`.github/`); development tools (`scripts/check.sh`, `scripts/count-lines.sh`, formatter and linter configuration) |
 | Release bookkeeping | a change to the version alone, in the files above, and the version and SHA-256 lines of `packaging/arch/PKGBUILD` |
 | Shared | everything else |
 
@@ -35,4 +35,4 @@ The version pull request lists every platform with its baseline and whether it s
 
 - **macOS** apps check `latest.json` on the repository's release marked Latest. That mark stays on the newest release that ships macOS: a release that leaves out macOS is published without it, so Mac apps keep finding the last macOS release and its download link keeps working. Older Mac installs can still update to that release.
 - **Windows** apps ask the update server for the newest stable release that includes a Windows installer, so a release that leaves out Windows doesn't change what they see, and one that ships only Windows reaches them without being marked Latest.
-- **Linux** has no in-app updater. `packaging/arch/PKGBUILD` names a release and the SHA-256 of its tarball, written after that release's tarball is built, as release bookkeeping.
+- **Linux** has no in-app updater. A release that ships Linux also publishes the Omarchy bar widget to its own repository when the widget changed; `docs/omarchy-plugin.md` explains how. `packaging/arch/PKGBUILD` names a release and the SHA-256 of its tarball, written after that release's tarball is built, as release bookkeeping.

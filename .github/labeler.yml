@@ -20,6 +20,7 @@ linux:
           - src-tauri/icons/tray-light.png
           - packaging/arch/**
           - packaging/linux/**
+          - packaging/omarchy/**
           - scripts/linux-release.sh
 
 windows:
@@ -34,7 +35,6 @@ development:
   - changed-files:
       - any-glob-to-any-file:
           - '**/*.md'
-          - packaging/omarchy/**
           - tests/**
           - '**/tests/**'
           - '**/tests.rs'

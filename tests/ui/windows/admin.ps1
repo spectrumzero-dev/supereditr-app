@@ -14,6 +14,7 @@
 #                                         the console again, which skips the password (test machines only)
 #   admin.ps1 scale ROOT USER PERCENT     sets USER's display scale and restarts the machine; it takes
 #                                         effect at the next sign-in (autologon)
+#   admin.ps1 scale-is ROOT USER          USER's display scale, in percent
 #   admin.ps1 helpers ROOT                compiles the helper programs from ROOT into the folder where
 #                                         every run finds them (helpers.ps1), for a snapshot prepared
 #                                         for the tests
@@ -35,6 +36,11 @@ switch ($Action) {
     # Only the current sources' programs: a folder for an older source is never used again.
     Remove-Item -Recurse -Force $HelperStore -ErrorAction SilentlyContinue
     foreach ($source in $HelperKinds.Keys | Sort-Object) { Helper-Build $Root $source $HelperStore }
+  }
+  'scale-is' {
+    # The display scale USER's sessions use, in percent.
+    $sid = (New-Object System.Security.Principal.NTAccount($User)).Translate([System.Security.Principal.SecurityIdentifier]).Value
+    [int][math]::Round((Get-ItemProperty "Registry::HKEY_USERS\$sid\Control Panel\Desktop").LogPixels * 100 / 96)
   }
   'clock' {
     Set-Date ([DateTimeOffset]::FromUnixTimeSeconds($Seconds).LocalDateTime) | Out-Null

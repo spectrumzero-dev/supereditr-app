@@ -198,12 +198,23 @@ if [[ "$PREPARE" == 1 ]]; then
 else
   copy_to "$INSTALLER" "$VM:C:/SmokeWin/setup.exe" || { say "Couldn't copy the installer"; exit 1; }
 fi
+# admin_ok ACTION...: runs a step that needs an administrator and says what it printed. If the step
+# failed, the run ends there, so no test runs on a machine left half prepared.
+admin_ok() {
+  local out
+  out="$(admin "$@")" || { say "The test machine's $1 step failed: $out"; exit 1; }
+  say "$out"
+}
 # A snapshot comes back with the clock it had when it was taken.
-[[ -n "$FROM" ]] && say "$(admin clock -Seconds "$(date +%s)")"
-[[ "$SAC_OFF" == 1 ]] && say "$(admin smart-app-control-off)"
-[[ "$PREPARE" == 1 ]] && say "Compiled: $(admin helpers "$REMOTE" | tr '\n' ' ')"
+[[ -n "$FROM" ]] && admin_ok clock -Seconds "$(date +%s)"
+[[ "$SAC_OFF" == 1 ]] && admin_ok smart-app-control-off
+[[ "$PREPARE" == 1 ]] && admin_ok helpers "$REMOTE"
 if [[ -n "$SCALE" ]]; then
-  say "$(admin scale "$REMOTE" "$USER_NAME" "$SCALE")"
+  # The machine restarts as this step ends, which can cut the connection, so its own words say
+  # whether it worked, and the scale is read back once the desktop user is signed in again.
+  scaled="$(admin scale "$REMOTE" "$USER_NAME" "$SCALE")"
+  [[ "$scaled" == *"scale $SCALE% for"* ]] || { say "Couldn't set the display scale: $scaled"; exit 1; }
+  say "$scaled"
   sleep 30
   # Back once SSH answers and the desktop user is signed in again.
   for _ in $(seq 60); do
@@ -211,6 +222,8 @@ if [[ -n "$SCALE" ]]; then
     sleep 5
   done
   sleep 20
+  now="$(admin scale-is "$REMOTE" "$USER_NAME")"
+  [[ "$now" == "$SCALE" ]] || { say "The display scale is ${now:-unknown}%, not $SCALE%"; exit 1; }
 fi
 session="$(admin session "$REMOTE" "$USER_NAME")"
 [[ "$session" == yes ]] || { say "$USER_NAME isn't signed in at the test machine's desktop: $session"; exit 1; }

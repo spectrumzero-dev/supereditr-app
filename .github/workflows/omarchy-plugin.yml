@@ -1,0 +1,118 @@
+name: Omarchy plugin
+
+# Publishes the Omarchy bar widget, packaging/omarchy, as the main branch of
+# spectrumzero-dev/supereditr-omarchy, the repository Omarchy installs it from, then asks the Omarchy
+# plugin marketplace to verify the new commit. git subtree split turns the folder's history into a
+# branch of its own and gives the same commits every time, so each run fast-forwards the plugin
+# repository, and a run with no widget change pushes nothing. That repository's rulesets refuse every
+# push but this deploy key's. The secrets live in the omarchy-plugin environment, which only main can
+# use, so pull requests never see them.
+
+on:
+  push:
+    branches: [main]
+    paths: ['packaging/omarchy/**']
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: omarchy-plugin
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'spectrumzero-dev/supereditr-app' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: omarchy-plugin
+    permissions:
+      contents: read
+    env:
+      PLUGIN_REPO: spectrumzero-dev/supereditr-omarchy
+      PLUGIN_ID: app.supereditr
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test the widget
+        run: node --test tests/omarchy/model.test.mjs
+      - name: Split the plugin's history
+        run: git subtree split --prefix=packaging/omarchy -b plugin
+      - name: Publish to the plugin repository
+        id: publish
+        env:
+          DEPLOY_KEY: ${{ secrets.OMARCHY_PLUGIN_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/plugin-deploy-key"
+          hosts="$RUNNER_TEMP/github-known-hosts"
+          trap 'rm -f "$key"' EXIT
+          install -m 600 /dev/null "$key"
+          printf '%s\n' "$DEPLOY_KEY" > "$key"
+          # GitHub's SSH host keys, from its API over HTTPS.
+          curl -fsSL https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' > "$hosts"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$hosts -o StrictHostKeyChecking=yes"
+          url="git@github.com:$PLUGIN_REPO.git"
+          commit=$(git rev-parse plugin)
+          published=$(git ls-remote "$url" refs/heads/main | cut -f1)
+          if [ "$published" = "$commit" ]; then
+            echo "$PLUGIN_REPO is already at $commit."
+          else
+            git push "$url" plugin:refs/heads/main
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      - name: Ask the marketplace to verify the new commit
+        env:
+          GH_TOKEN: ${{ secrets.OMARCHY_MARKETPLACE_TOKEN }}
+          COMMIT: ${{ steps.publish.outputs.commit }}
+          MARKETPLACE: omacom/omarchy-plugin-marketplace
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::No OMARCHY_MARKETPLACE_TOKEN, so the marketplace isn't asked to verify $COMMIT."
+            exit 0
+          fi
+          verified=$(curl -fsSL "https://raw.githubusercontent.com/$MARKETPLACE/main/registry.json" |
+            jq -r --arg repo "https://github.com/$PLUGIN_REPO" '.sources[] | select(.repo == $repo) | .listingValidatedCommit // ""')
+          if [ -z "$verified" ]; then
+            echo "::notice::$PLUGIN_REPO isn't listed on the marketplace yet."
+            exit 0
+          fi
+          if [ "$verified" = "$COMMIT" ]; then
+            echo "The marketplace already lists $COMMIT."
+            exit 0
+          fi
+          if gh issue list -R "$MARKETPLACE" --author @me --state open --json body --jq '.[].body' | grep -qF "$COMMIT"; then
+            echo "A verification request for $COMMIT is already open."
+            exit 0
+          fi
+          # The body is what the marketplace's "Verify or update a listed plugin" issue form produces.
+          body="$RUNNER_TEMP/verify.md"
+          cat > "$body" <<EOF
+          ### Verification action
+
+          Verify and publish a newer upstream commit
+
+          ### Plugin ID
+
+          $PLUGIN_ID
+
+          ### Repository URL
+
+          https://github.com/$PLUGIN_REPO
+
+          ### Target commit
+
+          $COMMIT
+
+          ### Verification acknowledgment
+
+          - [x] I understand that only the exact target commit can become a verified marketplace snapshot and that verification is not a security audit.
+
+          ### Standard installation acknowledgment
+
+          - [ ] I confirm that this listed root plugin supports the standard Omarchy installation path and does not require manual setup.
+          EOF
+          gh issue create -R "$MARKETPLACE" --title "[Verify]: SuperEditr, newer upstream commit" --body-file "$body"

@@ -141,7 +141,7 @@ Run the same commands again to install a new version. Then open SuperEditr and r
 The SuperEditr bar widget shows whether SuperEditr is running and which shortcuts it uses. Click it to review or quick-fix the selection, start SuperEditr or open Settings, or right-click it to open Settings. Install SuperEditr first, then add the widget:
 
 ```bash
-omarchy plugin add https://github.com/spectrumzero-dev/supereditr-app --enable
+omarchy plugin add https://github.com/spectrumzero-dev/supereditr-omarchy --enable
 ```
 
 SuperEditr's own icon stays in the system tray. To keep only the widget, right-click the tray's arrow and choose Hide beside SuperEditr. To remove the widget:
@@ -150,7 +150,7 @@ SuperEditr's own icon stays in the system tray. To keep only the widget, right-c
 omarchy plugin remove app.supereditr
 ```
 
-The widget runs inside Omarchy's shell with your permissions. It reads `status.json` and `settings.json` in `~/.config/app.supereditr`, checks for a running `supereditr` process, and runs the `supereditr` command, which hands its action to the running app; it changes no settings and installs nothing else. Its files are `manifest.json` and `packaging/omarchy/`.
+The widget runs inside Omarchy's shell with your permissions. It reads `status.json` and `settings.json` in `~/.config/app.supereditr`, checks for a running `supereditr` process, and runs the `supereditr` command, which hands its action to the running app; it changes no settings and installs nothing else. Its source is `packaging/omarchy/`; each release that ships Linux publishes it to [supereditr-omarchy](https://github.com/spectrumzero-dev/supereditr-omarchy), the repository Omarchy installs it from.
 
 To build it from source instead, the requirements are Arch Linux on x86-64, Rust (via `rustup`), Node.js 22+, and the packages `base-devel webkit2gtk-4.1 gtk3 libayatana-appindicator at-spi2-core librsvg`.
 

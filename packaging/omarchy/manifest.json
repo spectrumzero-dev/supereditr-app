@@ -10,7 +10,7 @@
     "bar-widget"
   ],
   "entryPoints": {
-    "barWidget": "packaging/omarchy/BarWidget.qml"
+    "barWidget": "BarWidget.qml"
   },
   "barWidget": {
     "displayName": "SuperEditr",

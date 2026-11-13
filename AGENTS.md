@@ -10,6 +10,10 @@ Run `./scripts/check.sh` before every commit.
 
 Before bumping the version or preparing a release, read `docs/versioning.md`: one version line for every platform, and each release ships only the platforms whose code changed since that platform's last stable release.
 
+## The Omarchy bar widget
+
+`packaging/omarchy/` is published, as it is, to its own repository by each release that ships Linux. Before changing it or how it's published, read `docs/omarchy-plugin.md`.
+
 ## Markdown
 
 Write each paragraph and list item on one line, and let the editor wrap it. A hard-wrapped paragraph turns a two-word edit into a diff of the whole paragraph.

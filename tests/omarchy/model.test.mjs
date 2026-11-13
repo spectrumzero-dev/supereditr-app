@@ -1,5 +1,5 @@
 // Tests the Omarchy bar widget's Model.js, and the manifest checks Omarchy applies before installing
-// a plugin (bin/omarchy-plugin-validate). Run with: node --test packaging/omarchy/tests/model.test.mjs
+// a plugin (bin/omarchy-plugin-validate). Run with: node --test tests/omarchy/model.test.mjs
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -8,9 +8,11 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const root = join(here, "../../..");
+const repo = join(here, "../..");
+// packaging/omarchy is published on its own as the plugin's repository, so it is the plugin's root.
+const root = join(repo, "packaging/omarchy");
 const Model = vm.createContext({});
-vm.runInContext(readFileSync(join(here, "../Model.js"), "utf8"), Model);
+vm.runInContext(readFileSync(join(root, "Model.js"), "utf8"), Model);
 
 test("the probe's output decides the app's state, running first", () => {
   assert.equal(Model.appState("installed\nrunning\n"), "running");
@@ -65,4 +67,10 @@ test("the manifest passes Omarchy's checks", () => {
   assert.ok(["left", "centerBegin", "center", "centerEnd", "tray", "right"].includes(manifest.barWidget.defaultSection));
   // The widget registers under the plugin's id.
   assert.match(readFileSync(join(root, entry), "utf8"), new RegExp(`moduleName: "${manifest.id.replaceAll(".", "\\.")}"`));
+});
+
+test("the plugin folder carries everything its own repository needs", () => {
+  for (const file of ["manifest.json", "README.md", "LICENSE"]) assert.ok(existsSync(join(root, file)), `${file} exists`);
+  assert.equal(readFileSync(join(root, "LICENSE"), "utf8"), readFileSync(join(repo, "LICENSE"), "utf8"), "LICENSE matches the app's");
+  assert.ok(!existsSync(join(repo, "manifest.json")), "the app repository is not a plugin itself");
 });

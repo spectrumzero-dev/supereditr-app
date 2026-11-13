@@ -20,6 +20,7 @@ linux:
           - src-tauri/icons/tray-light.png
           - packaging/arch/**
           - packaging/linux/**
+          - packaging/omarchy/**
           - scripts/linux-release.sh
 
 windows:
@@ -34,8 +35,6 @@ development:
   - changed-files:
       - any-glob-to-any-file:
           - '**/*.md'
-          - manifest.json
-          - packaging/omarchy/**
           - tests/**
           - '**/tests/**'
           - '**/tests.rs'
@@ -70,7 +69,6 @@ shared:
           - '!src-tauri/windows/**'
           - '!src-tauri/icons/icon.ico'
           - '!**/*.md'
-          - '!manifest.json'
           - '!packaging/omarchy/**'
           - '!tests/**'
           - '!**/tests/**'

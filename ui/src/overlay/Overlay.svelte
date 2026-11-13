@@ -5,7 +5,7 @@
   import { applyView, changeLabel, changes, sourceLabel, summarize } from "../lib/diff";
   import type { EngineEvent, SessionPayload, StatusPayload } from "../lib/types";
   import { ipc } from "./ipc";
-  import { canUse, emptyReview, keptWording, notReplacing, offerAnyway, offerToKeep, reduce, runRequest, startReplacing, type Replacing, type Review } from "./review";
+  import { canUse, emptyReview, footerAction, keptWording, notReplacing, offerAnyway, offerToKeep, reduce, runRequest, startReplacing, type Replacing, type Review } from "./review";
   import { words } from "../lib/platform";
 
   let session = $state<SessionPayload | null>(null);
@@ -46,6 +46,7 @@
   const unchanged = $derived(phase === "done" && list.length === 0);
   const busy = $derived(phase === "local" || phase === "streaming" || phase === "idle");
   const keepOffer = $derived(offerToKeep(review, rejected, focusedId, added));
+  const action = $derived(footerAction(review, session?.canApply ?? false));
 
   /** Key tips for the first few reviews, until the keys are familiar. */
   const TIP_REVIEWS = 3;
@@ -434,16 +435,22 @@
           {#if phase === "done" && remembered}<span class="muted time">· from earlier</span>{/if}
         </div>
         <!-- ⌥↩ works in every panel, so it is the one replace key shown; ↩ also works in a review
-             the user opened. Nothing to replace, nothing to show. Text that can't be replaced shows
-             the key that does something with the fix. -->
+             the user opened. A spinner holds its place until the answer is in, so the key is named
+             only when pressing it uses the finished answer; clicking it does the same as the key.
+             Nothing to replace, nothing to show. Text that can't be replaced shows the key that
+             does something with the fix. -->
         <div class="keys">
           {#if keyboard}
             {#if list.length > 1}<span><kbd>{words().tabKey}</kbd> next</span>{/if}
             {#if focusedId != null}<span><kbd>␣</kbd> {rejected.has(focusedId) ? "restore" : "keep original"}</span>{/if}
             <span><kbd>/</kbd> instruct</span>
           {/if}
-          {#if !unchanged}
-            {#if session.canApply}<span><kbd>{words().applyKey}</kbd> replace</span>{:else}<span><kbd>{words().copyKey}</kbd> copy</span>{/if}
+          {#if action === "working"}
+            <span class="spinner" role="img" aria-label="Working"></span>
+          {:else if action === "replace"}
+            <button class="key" onclick={apply}><kbd>{words().applyKey}</kbd> replace</button>
+          {:else if action === "copy"}
+            <button class="key" onclick={copy}><kbd>{words().copyKey}</kbd> copy</button>
           {/if}
           {#if keyboard}
             <span><kbd>{words().escKey}</kbd></span>
@@ -667,6 +674,31 @@
     gap: 10px;
     white-space: nowrap;
     flex: none;
+  }
+  .key {
+    all: unset;
+    cursor: pointer;
+  }
+  .key:hover {
+    color: var(--text);
+  }
+  .key:hover kbd {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .spinner {
+    align-self: center;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    border: 1.5px solid var(--border-strong);
+    border-top-color: var(--accent);
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
   .link {
     all: unset;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DiffView, EngineEvent } from "../lib/types";
-import { canUse, emptyReview, keptWording, notReplacing, offerAnyway, offerToKeep, reduce, runRequest, startReplacing } from "./review";
+import { canUse, emptyReview, footerAction, keptWording, notReplacing, offerAnyway, offerToKeep, reduce, runRequest, startReplacing } from "./review";
 
 const view = (text: string): DiffView => ({ segments: [{ type: "equal", text }], pending: "", changeCount: 0 });
 const local: EngineEvent = { type: "local", view: view("local"), ms: 3 };
@@ -22,6 +22,41 @@ const done: EngineEvent = {
   learnable: [],
 };
 const run = (...events: EngineEvent[]) => events.reduce((r, e) => reduce(r, e), emptyReview());
+
+const fix: DiffView = {
+  segments: [{ type: "change", id: 0, old: "tommorow", new: "tomorrow", kind: "spelling", oldStart: 0 }],
+  pending: "",
+  changeCount: 1,
+};
+const fixed: EngineEvent = { ...done, view: fix };
+
+describe("the footer's replace key", () => {
+  it("shows the AI is working until its answer is in", () => {
+    expect(footerAction(emptyReview(), true)).toBe("working");
+    expect(footerAction(run({ ...local, view: fix }), true)).toBe("working");
+    expect(footerAction(run({ ...partial, view: fix }), true)).toBe("working");
+  });
+
+  it("names the replace key once the answer is in", () => {
+    expect(footerAction(run(partial, fixed), true)).toBe("replace");
+  });
+
+  it("names the copy key where text can't be replaced", () => {
+    expect(footerAction(run(partial, fixed), false)).toBe("copy");
+  });
+
+  it("shows no key when there is nothing to change", () => {
+    expect(footerAction(run(partial, done), true)).toBe("none");
+  });
+
+  it("shows no key for a review that failed with nothing to fall back to", () => {
+    expect(footerAction(run({ ...partial, view: fix }, { ...failed, localOnly: false }), true)).toBe("none");
+  });
+
+  it("names the replace key for the instant result a failed AI falls back to", () => {
+    expect(footerAction(run({ ...local, view: fix }, partial, failed), true)).toBe("replace");
+  });
+});
 
 describe("review state", () => {
   it("can use the instant result before the model answers", () => {

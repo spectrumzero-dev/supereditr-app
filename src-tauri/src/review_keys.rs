@@ -4,6 +4,10 @@
 //! as `overlay:key` events. ↩ applies the fix and never reaches the app, so a chat app can't send
 //! the message underneath.
 //!
+//! A suggestion that opened by itself leaves the keys with the app, all but one: plain esc closes the
+//! panel and never reaches the app. The user may have selected the text for something else, and esc
+//! in the app can drop the selection or cancel what they were doing.
+//!
 //! This module is the platform-neutral part: which keys the panel takes. The macOS tap lives in
 //! `platform::macos`.
 
@@ -41,6 +45,13 @@ impl Key {
             !self.key.is_empty()
         }
     }
+
+    /// Whether this is the one key the panel takes from the app while a suggestion that opened by
+    /// itself shows: esc alone. With a modifier it is some other shortcut, and the app's.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn closes_panel(&self) -> bool {
+        self.key == "Escape" && !(self.meta_key || self.ctrl_key || self.alt_key || self.shift_key)
+    }
 }
 
 #[cfg(test)]
@@ -57,6 +68,18 @@ mod tests {
             assert!(key(name, false, false).for_panel(), "{name}");
         }
         assert!(Key { alt_key: true, ..key("Enter", false, false) }.for_panel(), "⌥↩ applies too");
+    }
+
+    #[test]
+    fn a_suggestion_that_opened_by_itself_takes_only_plain_esc() {
+        assert!(key("Escape", false, false).closes_panel());
+        for name in ["Enter", "Tab", " ", "Backspace", "a", "/"] {
+            assert!(!key(name, false, false).closes_panel(), "{name} reaches the app");
+        }
+        assert!(!key("Escape", true, false).closes_panel(), "⌘esc is the app's");
+        assert!(!key("Escape", false, true).closes_panel(), "⌃esc is the app's");
+        assert!(!Key { shift_key: true, ..key("Escape", false, false) }.closes_panel(), "⇧esc is the app's");
+        assert!(!Key { alt_key: true, ..key("Escape", false, false) }.closes_panel(), "⌥esc has its own shortcut");
     }
 
     #[test]

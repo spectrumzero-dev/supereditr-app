@@ -260,8 +260,14 @@ fn on_main(app: &AppHandle, f: impl FnOnce(&AppHandle) + Send + 'static) {
 
 /// Shows the panel without taking keyboard focus. With `keys`, the panel gets the review keys
 /// (↩, esc, tab…) instead of the app. Where the keyboard tap can't run, it takes focus instead.
+/// Without `keys`, on macOS, the panel still gets esc alone, so closing it leaves the app and its
+/// selection as they were.
 pub fn show(app: &AppHandle, keys: bool) {
     let take_focus = keys && !platform::take_review_keys(true);
+    #[cfg(target_os = "macos")]
+    if !keys {
+        platform::take_escape_key();
+    }
     on_main(app, move |app| {
         #[cfg(target_os = "macos")]
         {

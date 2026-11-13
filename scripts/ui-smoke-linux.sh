@@ -472,7 +472,7 @@ editor_cases() {
 
 placement_case() {
   begin_case placement "the panel opens by the selection (or the pointer), on screen and over the app"
-  local e corner x y panel win where rect
+  local e corner x y panel win where rect selected after
   e="$(vm "d_addr '^org.gnome.TextEditor'")"
   [[ "$e" != null ]] || e="$(start_editor "" smoke-sample.txt | tail -1)"
   vm "d_focus $e; sleep 0.3; d_keys $e CTRL Z; sleep 0.3; select_all $e"
@@ -485,6 +485,7 @@ placement_case() {
     fi
     vm "d_cursor_move $x $y"
     rect="$(vm "field $(jq -r .pid <<< "$win") | jq -c '.selection_rect // null'")"
+    selected="$(vm "field $(jq -r .pid <<< "$win") | jq -c '.selection // null'")"
     key meta_l-alt-e
     vm 'wait_panel 6' > /dev/null || true
     sleep 0.5
@@ -496,6 +497,9 @@ placement_case() {
     vm "shot 45-placement-$corner"
     key esc
     vm 'wait_closed 3' || true
+    # The text may have been selected for something else: closing the panel leaves it selected.
+    after="$(vm "sleep 0.5; field $(jq -r .pid <<< "$win") | jq -c '.selection // null'")"
+    check "pointer at the $corner: Esc closes the panel and leaves the text selected" "$(ok both isnt "$selected" null is "$after" "$selected")" "selection $selected before, $after after"
   done
   # A notice has no selection to go by. It stays at the pointer after the panel takes focus, which
   # can move the pointer. Nothing is selected in a new terminal, so it gets one.

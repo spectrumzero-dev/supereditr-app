@@ -4,7 +4,7 @@ SuperEditr: a Rust/Tauri proofreading app for macOS, Windows and Linux. `README.
 
 ## Checks
 
-Run `./scripts/check.sh` before every commit.
+Run `./scripts/check.sh` before every commit. A commit that changes only Markdown files can skip it: the script checks no Markdown, and CI still runs it on every pull request.
 
 ## Versions
 

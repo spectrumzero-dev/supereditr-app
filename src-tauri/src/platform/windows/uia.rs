@@ -95,7 +95,7 @@ impl<C: 'static> Worker<C> {
         let _one = self.calls.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let deadline = Instant::now() + limit;
-        let jobs = {
+        let (jobs, busy) = {
             let mut thread = self.thread.lock().unwrap();
             if let Some(current) = thread.as_ref() {
                 let since = *current.busy.lock().unwrap();
@@ -113,7 +113,8 @@ impl<C: 'static> Worker<C> {
                     None => {}
                 }
             }
-            thread.get_or_insert_with(|| self.spawn()).jobs.clone()
+            let current = thread.get_or_insert_with(|| self.spawn());
+            (current.jobs.clone(), current.busy.clone())
         };
         let (answer, answers) = channel();
         let queued = jobs.send(Box::new(move |state: &mut C| {
@@ -121,7 +122,10 @@ impl<C: 'static> Worker<C> {
             if Instant::now() >= deadline {
                 return;
             }
-            let _ = answer.send(job(state, generation));
+            let result = job(state, generation);
+            // Idle before answering, so a call made as soon as this one returns isn't refused as Wedged.
+            *busy.lock().unwrap() = None;
+            let _ = answer.send(result);
         }));
         if queued.is_err() {
             *self.thread.lock().unwrap() = None;

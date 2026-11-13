@@ -211,7 +211,9 @@ admin_ok() {
 [[ "$PREPARE" == 1 ]] && admin_ok helpers "$REMOTE"
 if [[ -n "$SCALE" ]]; then
   # The machine restarts as this step ends, which can cut the connection, so its own words say
-  # whether it worked, and the scale is read back once the desktop user is signed in again.
+  # whether it worked; the restart is confirmed by the boot time, and the scale is read back once
+  # the desktop user is signed in again, which is when Windows applies it.
+  booted="$(admin boot-time)"
   scaled="$(admin scale "$REMOTE" "$USER_NAME" "$SCALE")"
   [[ "$scaled" == *"scale $SCALE% for"* ]] || { say "Couldn't set the display scale: $scaled"; exit 1; }
   say "$scaled"
@@ -222,6 +224,7 @@ if [[ -n "$SCALE" ]]; then
     sleep 5
   done
   sleep 20
+  [[ -n "$booted" && "$(admin boot-time)" != "$booted" ]] || { say "The test machine didn't restart after the scale change"; exit 1; }
   now="$(admin scale-is "$REMOTE" "$USER_NAME")"
   [[ "$now" == "$SCALE" ]] || { say "The display scale is ${now:-unknown}%, not $SCALE%"; exit 1; }
 fi

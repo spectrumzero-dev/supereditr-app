@@ -15,6 +15,7 @@
 #   admin.ps1 scale ROOT USER PERCENT     sets USER's display scale and restarts the machine; it takes
 #                                         effect at the next sign-in (autologon)
 #   admin.ps1 scale-is ROOT USER          USER's display scale, in percent
+#   admin.ps1 boot-time                   when Windows last started
 #   admin.ps1 helpers ROOT                compiles the helper programs from ROOT into the folder where
 #                                         every run finds them (helpers.ps1), for a snapshot prepared
 #                                         for the tests
@@ -29,13 +30,21 @@ switch ($Action) {
     # Only on a machine rolled back afterwards: there's no turning it back on without a reinstall.
     Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy' -Name VerifiedAndReputablePolicyState -Value 0 -Type DWord
     CiTool.exe --refresh --json | Out-Null
-    "Smart App Control: $((Get-MpComputerStatus).SmartAppControlState), policy state $((Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy').VerifiedAndReputablePolicyState)"
+    # A native program's failure doesn't stop the script by itself.
+    if ($LASTEXITCODE) { throw "CiTool --refresh failed ($LASTEXITCODE)" }
+    $state = (Get-MpComputerStatus).SmartAppControlState
+    if ($state -ne 'Off') { throw "Smart App Control is $state, not Off" }
+    "Smart App Control: $state, policy state $((Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy').VerifiedAndReputablePolicyState)"
   }
   'helpers' {
     . "$Root\helpers.ps1"
     # Only the current sources' programs: a folder for an older source is never used again.
     Remove-Item -Recurse -Force $HelperStore -ErrorAction SilentlyContinue
     foreach ($source in $HelperKinds.Keys | Sort-Object) { Helper-Build $Root $source $HelperStore }
+  }
+  'boot-time' {
+    # When Windows last started, to tell that a restart happened.
+    (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToString('o')
   }
   'scale-is' {
     # The display scale USER's sessions use, in percent.

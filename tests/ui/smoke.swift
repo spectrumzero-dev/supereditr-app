@@ -1301,7 +1301,10 @@ if let slowPort = slowModel.start() {
         func inPanel(_ match: (AXUIElement) -> Bool) -> AXUIElement? {
             guard let app = running(superEditr).first,
                   let list = attribute(AXUIElementCreateApplication(app.processIdentifier), kAXWindowsAttribute) as? [AXUIElement] else { return nil }
-            return list.lazy.compactMap { findElement($0, match) }.first
+            for window in list {
+                if let found = findElement(window, match) { return found }
+            }
+            return nil
         }
         /// How far above the panel's bottom edge the middle of `element` is.
         func aboveBottom(_ element: AXUIElement) -> CGFloat? {

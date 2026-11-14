@@ -907,11 +907,17 @@ func keyboardApp() -> pid_t? {
     var pid: pid_t = 0
     return AXUIElementGetPid(app as! AXUIElement, &pid) == .success ? pid : nil
 }
+/// Opens the review again. TextEdit can take a moment to have the keyboard back after a launcher
+/// closes, and a shortcut pressed before then goes nowhere, so this tries twice.
 func reopenReview() -> Bool {
-    press(keyE, .maskCommand)
-    pump(0.1)
-    press(keyE, .maskCommand)
-    return waitFor(5) { overlay() } != nil
+    for _ in 0..<2 {
+        pump(1)
+        press(keyE, .maskCommand)
+        pump(0.1)
+        press(keyE, .maskCommand)
+        if waitFor(5, { overlay() }) != nil { return true }
+    }
+    return false
 }
 if overlay() != nil {
     KeyLog.seen.removeAll()

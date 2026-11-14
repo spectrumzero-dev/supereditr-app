@@ -26,7 +26,7 @@ pub struct Key {
     pub shift_key: bool,
 }
 
-/// Shortcuts with ⌘ or ⌃ that the panel uses: switching style (1–9), copying (C), trying again (R)
+/// Shortcuts with ⌘ or ⌃ alone that the panel uses: switching style (1–9), copying (C), trying again (R)
 /// and Settings (,).
 const PANEL_SHORTCUTS: [&str; 12] = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "c", "r", ","];
 
@@ -34,13 +34,16 @@ impl Key {
     /// Whether the panel takes this key from the app. Every key that types or edits text does, as
     /// when the panel had keyboard focus, so nothing lands in the selection under review. So do ↩
     /// and esc with any modifier: ⌘↩ sends the message in many chat apps. Other shortcuts with ⌘
-    /// or ⌃ still reach the app.
+    /// or ⌃ still reach the app, and whatever else answers to them.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn for_panel(&self) -> bool {
         if self.key == "Enter" || self.key == "Escape" {
             true
         } else if self.meta_key || self.ctrl_key {
-            PANEL_SHORTCUTS.contains(&self.key.to_lowercase().as_str())
+            // ⌘ or ⌃ alone. With another modifier it is some other shortcut, such as a screenshot
+            // tool's ⌘⇧4, and not the panel's ⌘4.
+            let alone = self.meta_key != self.ctrl_key && !self.shift_key && !self.alt_key;
+            alone && PANEL_SHORTCUTS.contains(&self.key.to_lowercase().as_str())
         } else {
             !self.key.is_empty()
         }
@@ -92,6 +95,16 @@ mod tests {
         assert!(key("Enter", false, true).for_panel(), "⌃↩");
         for name in ["v", "z", "q", "w", "Tab"] {
             assert!(!key(name, true, false).for_panel(), "⌘{name} reaches the app");
+        }
+    }
+
+    #[test]
+    fn a_panel_shortcut_with_another_modifier_is_some_other_shortcut() {
+        for name in ["4", "c", "r", ","] {
+            assert!(!Key { shift_key: true, ..key(name, true, false) }.for_panel(), "⌘⇧{name} reaches the app");
+            assert!(!Key { alt_key: true, ..key(name, true, false) }.for_panel(), "⌘⌥{name} reaches the app");
+            assert!(!Key { shift_key: true, ..key(name, false, true) }.for_panel(), "⌃⇧{name} reaches the app");
+            assert!(!key(name, true, true).for_panel(), "⌘⌃{name} reaches the app");
         }
     }
 

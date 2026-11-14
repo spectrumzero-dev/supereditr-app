@@ -895,6 +895,57 @@ if overlay() != nil {
     check(waitFor(5) { overlay() } != nil, "⌘E E opens the review again", "no overlay within 5 s")
 }
 
+// 3d. During a review, a key that isn't the panel's goes where it was headed. ⌘⇧2 is not the
+// panel's ⌘2 (switch style): it reaches TextEdit, as another app's own shortcut would reach that app.
+// And once a launcher's search box has the keyboard, typing goes to the launcher. Spotlight stands
+// in for any launcher: it takes the keyboard without coming to the front, so TextEdit stays the app
+// in front. Either way the user has moved on, so the review closes.
+let key2: CGKeyCode = 19, keyX: CGKeyCode = 7
+/// The app that has the keyboard, as Accessibility reports it.
+func keyboardApp() -> pid_t? {
+    guard let app = attribute(AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute) else { return nil }
+    var pid: pid_t = 0
+    return AXUIElementGetPid(app as! AXUIElement, &pid) == .success ? pid : nil
+}
+func reopenReview() -> Bool {
+    press(keyE, .maskCommand)
+    pump(0.1)
+    press(keyE, .maskCommand)
+    return waitFor(5) { overlay() } != nil
+}
+if overlay() != nil {
+    KeyLog.seen.removeAll()
+    press(key2, [.maskCommand, .maskShift])
+    check(waitFor(2) { KeyLog.seen.contains { $0.code == Int64(key2) } ? true : nil } != nil,
+          "⌘⇧2 reaches TextEdit during a review", "⌘⇧2 never reached TextEdit")
+    check(waitFor(3) { overlay() == nil ? true : nil } != nil, "a shortcut meant for the app closes the review", "overlay still showing")
+    check(reopenReview(), "⌘E E opens the review after ⌘⇧2", "no overlay within 5 s")
+    let textEdit = running("com.apple.TextEdit").first?.processIdentifier
+    press(keySpace, .maskCommand)
+    let launcher = waitFor(3) { () -> pid_t? in
+        guard let pid = keyboardApp(), pid != textEdit else { return nil }
+        return pid
+    }
+    if launcher == nil {
+        log("NOTE ⌘Space gave the keyboard to nothing else (\(keyboardApp().map(String.init) ?? "nothing") has it), so the launcher check didn't run")
+    } else {
+        screenshot(window: nil, rect: NSScreen.screens.first?.frame, to: outDir + "/review-under-launcher.png")
+        KeyLog.seen.removeAll()
+        press(keyX)
+        check(waitFor(2) { KeyLog.seen.contains { $0.code == Int64(keyX) } ? true : nil } != nil,
+              "typing reaches a launcher opened over a review", "the key never left SuperEditr")
+        check(waitFor(3) { overlay() == nil ? true : nil } != nil, "typing in the launcher closes the review", "overlay still showing")
+        // Esc clears the launcher's box, then closes it.
+        for _ in 0..<3 where keyboardApp() != textEdit {
+            press(keyEscape)
+            pump(0.5)
+        }
+        check(keyboardApp() == textEdit, "the launcher closes and TextEdit has the keyboard again",
+              "keyboard with \(keyboardApp().map(String.init) ?? "nothing")")
+        check(reopenReview(), "⌘E E opens the review after the launcher", "no overlay within 5 s")
+    }
+}
+
 // 4. Switching to another app closes the panel: it belongs to the app it reviews. Then selecting
 // terminal output, read-only text, shows nothing.
 check(openFront("Terminal", bundleID: "com.apple.Terminal"), "Terminal opens")

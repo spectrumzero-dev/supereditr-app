@@ -442,6 +442,10 @@ function Keys-Case {
   Check 'Esc again closes the panel' (Wait-Closed 3)
   $t = Notepad-Text $w
   Check 'nothing reached Notepad' ($t -eq $Sample) $t
+  # The text may have been selected for something else: closing the panel leaves it selected.
+  Start-Sleep -Milliseconds 500
+  $still = try { (Notepad-Pattern $w).GetSelection()[0].GetText(-1).TrimEnd("`r", "`n") } catch { "(unreadable: $_)" }
+  Check 'Esc leaves the text selected in Notepad' ($still -eq $Sample) "selected: '$still'"
   Shot 'keys-closed'
   Close-App notepad
   End-Case

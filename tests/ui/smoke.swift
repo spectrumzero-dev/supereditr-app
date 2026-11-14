@@ -635,8 +635,24 @@ if let automatic {
         check(near, "the panel opens at the selection", "panel \(automatic.frame), TextEdit window \(editor)")
     }
 }
-press(keyEscape)  // any key in the app dismisses an automatic suggestion
+// Esc closes a suggestion that opened by itself and goes no further: the text may have been
+// selected for something else, so TextEdit never sees the key and the selection stays.
+let selectedText = { focusedElement().flatMap { attribute($0, kAXSelectedTextAttribute) as? String } ?? "" }
+let selectedBefore = selectedText()
+KeyLog.seen.removeAll()
+press(keyEscape)
+check(waitFor(3) { overlay() == nil ? true : nil } != nil, "Escape closes an automatic suggestion", "overlay still showing")
+check(!KeyLog.seen.contains { $0.code == Int64(keyEscape) }, "that Escape never reaches TextEdit", "Escape reached TextEdit")
+pump(0.5)
+check(!selectedBefore.isEmpty && selectedText() == selectedBefore, "the text is still selected after Escape",
+      "selected before: \(selectedBefore.count) characters, after: \(selectedText().count)")
+// Any other key belongs to the app, and typing there closes the suggestion.
+check(selectAll(), "the draft's text is selected again")
+check(waitFor(6) { overlay() } != nil, "selecting the text again brings the suggestion back", "no overlay within 6 s")
+KeyLog.seen.removeAll()
+press(keyRight)
 check(waitFor(3) { overlay() == nil ? true : nil } != nil, "typing elsewhere dismisses it", "overlay still showing")
+check(KeyLog.seen.contains { $0.code == Int64(keyRight) }, "that key reaches TextEdit", "the arrow key never reached TextEdit")
 
 // 1b. Extending a selection with Shift held shows nothing until Shift comes up, then one panel.
 press(keyUp, .maskCommand)  // to the start of the text, nothing selected

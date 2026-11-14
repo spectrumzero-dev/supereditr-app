@@ -2660,8 +2660,12 @@ const REPLAY_MARK: i64 = 0x5345_4454; // "SEDT"
 static DOUBLE_CHORDS: Mutex<Vec<Chord>> = Mutex::new(Vec::new());
 static TAP_PORT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static TAP_PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// A review is open: the tap takes the panel's keys from the app (see `crate::review_keys`).
-static REVIEW_KEYS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Which keys the tap takes from the app for the panel (see `crate::review_keys`): none, esc alone
+/// for a suggestion that opened by itself, or all the panel's keys for a review the user opened.
+static REVIEW_KEYS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(TAKE_NONE);
+const TAKE_NONE: u8 = 0;
+const TAKE_ESCAPE: u8 = 1;
+const TAKE_ALL: u8 = 2;
 
 unsafe extern "C" {
     fn CGEventTapEnable(tap: *const c_void, enable: bool);
@@ -2722,12 +2726,19 @@ pub fn pause_double_presses(paused: bool) {
 /// Starts or stops passing the review panel's keys to it instead of the app. Returns false when
 /// the tap isn't running (it waits for Accessibility access), so the keys can't be taken.
 pub fn take_review_keys(take: bool) -> bool {
-    REVIEW_KEYS.store(take, Ordering::Relaxed);
+    REVIEW_KEYS.store(if take { TAKE_ALL } else { TAKE_NONE }, Ordering::Relaxed);
     TAP_PORT.load(Ordering::Relaxed) != 0
 }
 
-/// Names a key press for the review panel, or `None` for a key it has no name for (F-keys, Home).
-fn review_key(event: &CGEvent, code: u16) -> Option<crate::review_keys::Key> {
+/// A suggestion that opened by itself shows: the tap takes esc alone from the app, to close the
+/// panel, and every other key still reaches the app. Without the tap, esc reaches the app too.
+pub fn take_escape_key() {
+    REVIEW_KEYS.store(TAKE_ESCAPE, Ordering::Relaxed);
+}
+
+/// Names a key press the panel takes while it takes all its keys (`all`) or esc alone, or `None`
+/// for a key it leaves to the app or has no name for (F-keys, Home).
+fn review_key(event: &CGEvent, code: u16, all: bool) -> Option<crate::review_keys::Key> {
     use foreign_types::ForeignType;
     let named = match code {
         36 | 76 => Some("Enter"),
@@ -2773,7 +2784,7 @@ fn review_key(event: &CGEvent, code: u16) -> Option<crate::review_keys::Key> {
         alt_key: flags.contains(CGEventFlags::CGEventFlagAlternate),
         shift_key: flags.contains(CGEventFlags::CGEventFlagShift),
     })
-    .filter(|key| key.for_panel())
+    .filter(|key| if all { key.for_panel() } else { key.closes_panel() })
 }
 
 fn modifiers(flags: CGEventFlags) -> u8 {
@@ -2868,10 +2879,11 @@ pub fn start_double_press_tap(
                         let matched =
                             key.and_then(|key| chords.iter().position(|c| c.key == key && c.modifiers == mods));
                         // A double-press shortcut still works during a review (⌘E E starts a new one).
-                        if matched.is_none() && REVIEW_KEYS.load(Ordering::Relaxed) {
-                            let key = review_key(event, code);
+                        let taking = REVIEW_KEYS.load(Ordering::Relaxed);
+                        if matched.is_none() && taking != TAKE_NONE {
+                            let key = review_key(event, code, taking == TAKE_ALL);
                             // Shortcuts are what can reach the wrong place. A key code, so never text.
-                            if mods & (double_press::COMMAND | double_press::CONTROL) != 0 {
+                            if taking == TAKE_ALL && mods & (double_press::COMMAND | double_press::CONTROL) != 0 {
                                 let to = if key.is_some() { "the panel" } else { "the app" };
                                 trace(format_args!("review: ⌘ or ⌃ with key code {code} goes to {to}"));
                             }

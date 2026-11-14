@@ -680,12 +680,9 @@
     white-space: nowrap;
     flex: none;
   }
+  /* The key alone gives the slot its size; the spinner sits over it, out of the layout. */
   .slot {
-    display: inline-grid;
-    align-items: center;
-  }
-  .slot > * {
-    grid-area: 1 / 1;
+    position: relative;
   }
   .key {
     all: unset;
@@ -703,8 +700,10 @@
     color: var(--accent);
   }
   .spinner {
-    justify-self: start;
-    margin-left: 6px;
+    position: absolute;
+    left: 6px;
+    top: 50%;
+    margin-top: -5.5px;
     width: 11px;
     height: 11px;
     border-radius: 50%;

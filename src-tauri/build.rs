@@ -73,19 +73,29 @@ fn build_foundation_models_helper() {
     std::fs::create_dir_all(&binaries).unwrap();
 
     let arch = if target.starts_with("aarch64") { "arm64" } else { "x86_64" };
+    // Tauri watches the bundled helper. Rewriting it on every build makes Cargo run this
+    // script and relink the desktop crate again, even when no inputs have changed.
+    let compiled_helper = PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join(format!("supereditr-fm-{target}"));
     let compiled = Command::new("xcrun")
         .args(["swiftc", "-O", "-swift-version", "5", "-target", &format!("{arch}-apple-macos13.0")])
         .args(["-Xlinker", "-weak_framework", "-Xlinker", "FoundationModels"])
         .arg(&source)
         .arg("-o")
-        .arg(&output)
+        .arg(&compiled_helper)
         .status()
         .is_ok_and(|status| status.success());
     if !compiled {
         // Without a Swift toolchain or SDK that has FoundationModels, ship a stand-in that tells
         // the app the on-device model is unavailable, so everything else still builds and runs.
         println!("cargo:warning=Couldn't compile the Apple Intelligence helper; bundling a stub.");
-        write_stub(&output);
+        write_stub(&compiled_helper);
+    }
+    let bytes = std::fs::read(&compiled_helper).unwrap();
+    let permissions = std::fs::metadata(&compiled_helper).unwrap().permissions();
+    if std::fs::read(&output).as_deref().ok() != Some(bytes.as_slice())
+        || !std::fs::metadata(&output).is_ok_and(|m| m.permissions() == permissions)
+    {
+        std::fs::copy(&compiled_helper, &output).unwrap();
     }
     join_universal(&binaries);
 }

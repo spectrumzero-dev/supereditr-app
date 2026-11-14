@@ -24,6 +24,11 @@ tracing = "0.1"
 [profile.dev]
 debug = "line-tables-only"
 
+# Harper builds its proofreading dictionary at runtime. Optimizing this dependency speeds up
+# repeated tests, while workspace crates still compile with the usual dev settings.
+[profile.dev.package.harper-core]
+opt-level = 1
+
 [profile.release]
 codegen-units = 1
 lto = true

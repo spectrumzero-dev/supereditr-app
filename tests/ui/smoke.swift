@@ -1205,6 +1205,134 @@ if clickPanel != nil {
 }
 quitOpened("com.apple.TextEdit")
 
+// 6a-3. While the AI is answering, the footer shows a spinner where the replace key goes, and names
+// the key only once the answer is in; the footer is the same height either way. Every other check
+// here gets its answer at once from the rule-based checker, so a local server stands in for a slow
+// AI: it speaks Ollama's chat API and answers after a pause.
+final class SlowModel {
+    private let queue = DispatchQueue(label: "slow-model")
+    private var listener: NWListener?
+    let pause: Double
+    let answer: String
+
+    init(answer: String, pause: Double) {
+        self.answer = answer
+        self.pause = pause
+    }
+
+    /// Starts listening and returns the port, or nil if it can't.
+    func start() -> UInt16? {
+        let parameters = NWParameters.tcp
+        parameters.requiredInterfaceType = .loopback
+        guard let listener = try? NWListener(using: parameters, on: .any) else { return nil }
+        self.listener = listener
+        listener.newConnectionHandler = { [weak self] connection in
+            guard let self else { return }
+            connection.start(queue: self.queue)
+            self.read(connection, Data())
+        }
+        listener.start(queue: queue)
+        return waitFor(5) { listener.port.flatMap { $0.rawValue == 0 ? nil : $0.rawValue } }
+    }
+
+    func stop() { listener?.cancel() }
+
+    /// Reads the whole request, body included, before answering: closing with part of it unread
+    /// resets the connection.
+    private func read(_ connection: NWConnection, _ soFar: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, done, error in
+            let request = soFar + (data ?? Data())
+            let text = String(decoding: request, as: UTF8.self)
+            if let head = text.range(of: "\r\n\r\n") {
+                let length = text[..<head.lowerBound].split(separator: "\r\n")
+                    .first { $0.lowercased().hasPrefix("content-length:") }
+                    .flatMap { Int($0.split(separator: ":")[1].trimmingCharacters(in: .whitespaces)) } ?? 0
+                if text[head.upperBound...].utf8.count >= length {
+                    return self.respond(on: connection, to: text)
+                }
+            }
+            if done || error != nil { return connection.cancel() }
+            self.read(connection, request)
+        }
+    }
+
+    private func respond(on connection: NWConnection, to request: String) {
+        func send(_ status: String, _ body: String, after delay: Double) {
+            let reply = Data("HTTP/1.1 \(status)\r\nContent-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)".utf8)
+            queue.asyncAfter(deadline: .now() + delay) {
+                connection.send(content: reply, completion: .contentProcessed { _ in connection.cancel() })
+            }
+        }
+        if request.hasPrefix("POST /api/chat") {
+            let words = try! JSONSerialization.data(withJSONObject: ["message": ["content": answer], "done": false])
+            send("200 OK", String(decoding: words, as: UTF8.self) + "\n{\"done\":true}\n", after: pause)
+        } else if request.hasPrefix("GET /api/tags") {
+            send("200 OK", #"{"models":[{"name":"slow"}]}"#, after: 0)
+        } else {
+            send("404 Not Found", "{}", after: 0)
+        }
+    }
+}
+let slowModel = SlowModel(answer: "We meet tomorrow at noon.", pause: 4)
+if let slowPort = slowModel.start() {
+    stop(app)
+    try! #"{"onboarded": true, "excluded_apps": ["com.1password.1password"], "auto_popup": false, "diagnostic_log": true, "providers": [{"id": "ollama", "kind": "ollama", "label": "Ollama", "base_url": "http://127.0.0.1:PORT", "model": "slow"}], "active_provider": "ollama"}"#
+        .replacingOccurrences(of: "PORT", with: String(slowPort))
+        .write(toFile: support + "/settings.json", atomically: true, encoding: .utf8)
+    app = launch(appPath, home: home, environment: ["SUPEREDITR_FM_HELPER": work + "/no-helper"])
+    pump(3)
+    let slowDraft = work + "/slow.txt"
+    try! "We meet tommorow at noon.".write(toFile: slowDraft, atomically: true, encoding: .utf8)
+    check(openFront("TextEdit", bundleID: "com.apple.TextEdit", file: slowDraft), "TextEdit opens the draft for the slow AI")
+    check(selectAll(), "the draft for the slow AI is selected")
+    press(keyE, .maskCommand)
+    pump(0.1)
+    press(keyE, .maskCommand)
+    let slowPanel = waitFor(5) { overlay() }
+    check(slowPanel != nil, "⌘E E reviews the draft with a slow AI", "no overlay within 5 s")
+    if slowPanel != nil {
+        /// An element of SuperEditr's windows that `match` accepts.
+        func inPanel(_ match: (AXUIElement) -> Bool) -> AXUIElement? {
+            guard let app = running(superEditr).first,
+                  let list = attribute(AXUIElementCreateApplication(app.processIdentifier), kAXWindowsAttribute) as? [AXUIElement] else { return nil }
+            return list.lazy.compactMap { findElement($0, match) }.first
+        }
+        /// How far above the panel's bottom edge the middle of `element` is.
+        func aboveBottom(_ element: AXUIElement) -> CGFloat? {
+            overlay().map { $0.frame.maxY - frame(of: element).midY }
+        }
+        let spinner = waitFor(2) { inPanel { (attribute($0, kAXDescriptionAttribute) as? String) == "Working" } }
+        check(spinner != nil, "the footer shows a spinner while the AI is answering", "panel text: \(panelText())")
+        let waiting = panelText()
+        check(!waiting.contains("⌥↩") && waiting.range(of: #"\breplace\b"#, options: .regularExpression) == nil,
+              "the footer doesn't name the replace key while the AI is answering", "panel text: \(waiting)")
+        let spinnerAt = spinner.flatMap(aboveBottom)
+        screenshot(window: overlay(), to: outDir + "/slow-ai-waiting.png")
+        let key = waitFor(10) { inPanel { (attribute($0, kAXRoleAttribute) as? String) == kAXButtonRole && allText($0).contains("⌥↩") } }
+        check(key != nil, "the footer names ⌥↩ replace once the answer is in", "panel text: \(panelText())")
+        check(inPanel { (attribute($0, kAXDescriptionAttribute) as? String) == "Working" } == nil, "the spinner is gone once the answer is in")
+        pump(0.5)  // the panel's window settles at its new height
+        screenshot(window: overlay(), to: outDir + "/slow-ai-answered.png")
+        if let spinnerAt, let keyAt = key.flatMap(aboveBottom) {
+            check(abs(spinnerAt - keyAt) < 1.5, "the key sits where the spinner was, so the footer keeps its height",
+                  "the spinner's middle was \(spinnerAt) above the panel's bottom edge, the key's is \(keyAt)")
+        }
+        check(panelText().contains("slow"), "the answer came from the slow AI", "panel text: \(panelText())")
+        press(keyEscape)
+        _ = waitFor(3) { overlay() == nil ? true : nil }
+    }
+    quitOpened("com.apple.TextEdit")
+    // Back to the rule-based checker alone for the checks that follow.
+    stop(app)
+    slowModel.stop()
+    try! #"{"onboarded": true, "excluded_apps": ["com.1password.1password"], "auto_popup": false, "diagnostic_log": true}"#
+        .write(toFile: support + "/settings.json", atomically: true, encoding: .utf8)
+    app = launch(appPath, home: home, environment: ["SUPEREDITR_FM_HELPER": work + "/no-helper"])
+    pump(3)
+} else {
+    check(false, "the test's slow AI starts")
+}
+
 // 6b. A selection holding a secret isn't reviewed: ⌘E E says why instead of opening a review. The
 // token is assembled from pieces so the source holds no secret-shaped string.
 let secretDraft = work + "/secret.txt"

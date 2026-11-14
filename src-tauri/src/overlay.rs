@@ -7,7 +7,9 @@
 //!
 //! On Linux (Wayland) an app can't place its own windows or keep keys from another app's window.
 //! The desktop places the panel through a window rule, and for a review started with the shortcut
-//! the panel takes keyboard focus, then hands it back to the app when it closes.
+//! the panel takes keyboard focus, then hands it back to the app when it closes. The desktop sizes
+//! the panel too, and can lose a resize or move made while it is putting the panel on screen, so
+//! each placement is checked afterwards (`keep_placed`).
 //!
 //! On Windows the panel is a window that never activates on a click (`WS_EX_NOACTIVATE`), shown,
 //! placed and hidden with Win32 calls in physical pixels (`platform::overlay`). A review started
@@ -131,9 +133,76 @@ fn place(app: &AppHandle, anchor: Rect, height: f64) {
     *PLACED.lock().unwrap() = Some(Rect { x, y, width: WIDTH, height });
     let _ = window.set_size(LogicalSize::new(WIDTH, height));
     #[cfg(target_os = "linux")]
-    platform::place_overlay(Rect { x, y, width: WIDTH, height }, window.is_visible().unwrap_or(false));
+    {
+        let wanted = Rect { x, y, width: WIDTH, height };
+        platform::place_overlay(wanted, window.is_visible().unwrap_or(false));
+        keep_placed(wanted);
+    }
     #[cfg(target_os = "macos")]
     let _ = window.set_position(LogicalPosition::new(x, y));
+}
+
+/// Counts the panel's placements and each time it is hidden, so a check of an earlier placement
+/// stops.
+#[cfg(target_os = "linux")]
+static PLACEMENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Whether the panel's window isn't where it was put, or is smaller than it was asked to be, which
+/// cuts the card off. A larger window is left alone: a window has a smallest size of its own, and
+/// the room past the card is transparent.
+#[cfg(any(target_os = "linux", test))]
+fn drifted(wanted: Rect, actual: Rect) -> bool {
+    let short = actual.width + 1.0 < wanted.width || actual.height + 1.0 < wanted.height;
+    let moved = (actual.x - wanted.x).abs() > 1.0 || (actual.y - wanted.y).abs() > 1.0;
+    short || moved
+}
+
+/// Checks a few times that the panel is where it was just put, at the size it was given, and puts
+/// it there again when it isn't.
+///
+/// On Hyprland the panel's size and place are the compositor's to give: a rule gives them when the
+/// panel opens, and a resize and a move change them while it shows. The answer often arrives while
+/// Hyprland is still putting the panel on screen. A resize or move sent before the panel is mapped
+/// is lost, and a rule replaced in those moments may or may not be the one the panel opens by.
+/// Hyprland also resizes a window around its centre whenever the window's own limits on its size
+/// change, which moves it. Nothing corrects any of that later.
+#[cfg(target_os = "linux")]
+fn keep_placed(wanted: Rect) {
+    use std::time::Duration;
+    /// Milliseconds between checks. They start again after a correction.
+    const WAITS: [u64; 6] = [40, 80, 150, 300, 600, 1200];
+    const MOST_CORRECTIONS: u32 = 6;
+    let placement = PLACEMENT.fetch_add(1, Ordering::Relaxed) + 1;
+    tauri::async_runtime::spawn(async move {
+        let (mut corrections, mut next) = (0, 0);
+        while let Some(wait) = WAITS.get(next) {
+            next += 1;
+            tokio::time::sleep(Duration::from_millis(*wait)).await;
+            if PLACEMENT.load(Ordering::Relaxed) != placement {
+                return;
+            }
+            // Not on screen yet, or on a desktop that can't say where its windows are.
+            let Some(actual) = platform::overlay_rect() else { continue };
+            if !drifted(wanted, actual) {
+                continue;
+            }
+            let again = corrections < MOST_CORRECTIONS;
+            platform::trace(format_args!(
+                "panel is at {:.0},{:.0}, {:.0}×{:.0}, not where it was put: {}",
+                actual.x,
+                actual.y,
+                actual.width,
+                actual.height,
+                if again { "placing it again" } else { "leaving it there" }
+            ));
+            if !again {
+                return;
+            }
+            corrections += 1;
+            platform::place_overlay(wanted, true);
+            next = 0;
+        }
+    });
 }
 
 /// Where the overlay window goes for a selection at `anchor`: the top-left corner, in points.
@@ -374,6 +443,8 @@ pub fn hide(app: &AppHandle) {
     let had_focus = platform::overlay::hiding();
     #[cfg(target_os = "linux")]
     let had_focus = platform::overlay_focused();
+    #[cfg(target_os = "linux")]
+    PLACEMENT.fetch_add(1, Ordering::Relaxed);
     give_focus_back(app);
     on_main(app, move |app| {
         #[cfg(target_os = "macos")]
@@ -398,4 +469,31 @@ pub fn hide(app: &AppHandle) {
             platform::overlay_closed();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panel_cut_short_or_moved_has_drifted() {
+        // A tall panel for a long text, put at 590,297: Hyprland was seen leaving it 240 high, and
+        // once 146 lower as well, with its foot off an 800-high screen.
+        let wanted = Rect { x: 590.0, y: 297.0, width: WIDTH, height: 531.0 };
+        assert!(drifted(wanted, Rect { height: 240.0, ..wanted }));
+        assert!(drifted(wanted, Rect { y: 443.0, height: 240.0, ..wanted }));
+        // Resized around its centre after the move reached the desktop: 160 higher, at its full size.
+        assert!(drifted(wanted, Rect { y: 137.0, ..wanted }));
+        assert!(drifted(wanted, Rect { x: 600.0, ..wanted }));
+    }
+
+    #[test]
+    fn a_panel_where_it_was_put_has_not() {
+        let wanted = Rect { x: 590.0, y: 297.0, width: WIDTH, height: 531.0 };
+        assert!(!drifted(wanted, wanted));
+        assert!(!drifted(wanted, Rect { y: 298.0, height: 530.0, ..wanted }), "half a pixel rounds either way");
+        // A window keeps to a smallest size of its own.
+        let short = Rect { x: 3.0, y: 484.0, width: WIDTH, height: 90.0 };
+        assert!(!drifted(short, Rect { height: 120.0, ..short }));
+    }
 }

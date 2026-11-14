@@ -89,6 +89,11 @@ pub fn send_shortcut(shortcut: &Shortcut, selector: &str) -> String {
     )
 }
 
+/// Resizes the panel. Hyprland keeps a window's centre where it was, so a move follows.
+pub fn resize_overlay(width: i32, height: i32) -> String {
+    format!("hl.dsp.window.resize({{ x = {width}, y = {height}, window = {} }})", quote(&overlay_selector()))
+}
+
 pub fn move_overlay(x: i32, y: i32) -> String {
     format!("hl.dsp.window.move({{ x = {x}, y = {y}, window = {} }})", quote(&overlay_selector()))
 }
@@ -178,6 +183,10 @@ mod tests {
     fn focus_and_move_select_the_window() {
         assert_eq!(focus(&window(&target())), r#"hl.dsp.focus({ window = "address:0x562229d30760" })"#);
         assert_eq!(focus_overlay(), r#"hl.dsp.focus({ window = "title:^SuperEditr suggestions$" })"#);
+        assert_eq!(
+            resize_overlay(548, 531),
+            r#"hl.dsp.window.resize({ x = 548, y = 531, window = "title:^SuperEditr suggestions$" })"#
+        );
         assert_eq!(
             move_overlay(300, 150),
             r#"hl.dsp.window.move({ x = 300, y = 150, window = "title:^SuperEditr suggestions$" })"#

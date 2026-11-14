@@ -432,6 +432,12 @@ pub fn place_overlay(at: Rect, shown: bool) {
     }
 }
 
+/// Where the desktop has the panel's window now. `None` while it isn't on screen, and on a desktop
+/// that can't say where its windows are.
+pub fn overlay_rect() -> Option<Rect> {
+    hyprland()?.overlay_rect()
+}
+
 /// Gives the panel keyboard focus once it's on screen.
 pub fn focus_overlay() {
     let desktop = desktop();

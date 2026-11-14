@@ -187,6 +187,18 @@ impl HyprlandDesktop {
     pub fn overlay_focused(&self) -> bool {
         self.front_window().is_ok_and(|window| window.pid == std::process::id() as i32 && window.title == OVERLAY_TITLE)
     }
+
+    /// Where Hyprland has SuperEditr's panel, once it is on screen.
+    pub fn overlay_rect(&self) -> Option<Rect> {
+        panel_rect(&self.json("clients").ok()?, std::process::id() as i32)
+    }
+}
+
+/// The panel's window among `clients`: the one `pid` owns, once Hyprland has mapped it.
+fn panel_rect(clients: &Value, pid: i32) -> Option<Rect> {
+    let mapped = |window: &&Value| window["mapped"].as_bool() == Some(true);
+    let panel = clients.as_array()?.iter().filter(mapped).filter_map(parse_window);
+    panel.filter(|window| window.pid == pid && window.title == OVERLAY_TITLE).find_map(|window| window.rect)
 }
 
 /// Hyprland answers "ok", or an error or warning ("warning: … window not found").
@@ -290,9 +302,12 @@ impl Desktop for HyprlandDesktop {
         let rule = lua::overlay_rule(Rect { x: at.x - x, y: at.y - y, ..at });
         self.eval(&rule)?;
         self.runtime.lock().unwrap().overlay = Some(rule);
-        // GTK calls the panel shown before Hyprland maps it. A move sent in between is lost, and the
-        // rule above places the panel instead, so the rule is kept up to date as well.
+        // GTK calls the panel shown before Hyprland maps it. A resize or move sent in between is
+        // lost, and the rule above sizes and places the panel instead, so the rule is kept up to
+        // date as well. The size is Hyprland's to give: it doesn't follow a window that resizes
+        // itself. The resize keeps the panel's centre where it was, so the move comes after it.
         if shown {
+            self.dispatch(&lua::resize_overlay(at.width.round() as i32, at.height.round() as i32))?;
             self.dispatch(&lua::move_overlay(at.x.round() as i32, at.y.round() as i32))?;
         }
         Ok(())
@@ -378,6 +393,23 @@ pub(crate) mod tests {
         assert_eq!(foot.app_id, "foot");
         assert_eq!(foot.tags, ["terminal*", "default-opacity*"]);
         assert!(crate::platform::linux::apps::profile(&foot.app_id, &foot.tags).terminal);
+    }
+
+    #[test]
+    fn the_panel_is_found_among_the_windows_once_it_is_mapped() {
+        let clients = |mapped: bool| {
+            let panel = ACTIVE_0_56
+                .replace("SuperEditr Settings", OVERLAY_TITLE)
+                .replace("[12, 38]", "[590, 443]")
+                .replace("[1256, 750]", "[548, 240]")
+                .replace(r#""mapped": true"#, &format!(r#""mapped": {mapped}"#));
+            serde_json::from_str::<Value>(&format!("[{ACTIVE_0_57}, {ACTIVE_0_56}, {panel}]")).unwrap()
+        };
+        let at = Rect { x: 590.0, y: 443.0, width: 548.0, height: 240.0 };
+        assert_eq!(panel_rect(&clients(true), 11592), Some(at));
+        assert_eq!(panel_rect(&clients(false), 11592), None, "not on screen yet");
+        assert_eq!(panel_rect(&clients(true), 2817), None, "another app's window");
+        assert_eq!(panel_rect(&serde_json::from_str("[]").unwrap(), 11592), None);
     }
 
     #[test]
@@ -473,7 +505,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_shown_panel_moves_and_its_rule_follows() {
+    fn a_shown_panel_is_resized_then_moved_and_its_rule_follows() {
         // GTK calls the panel shown before Hyprland maps it, and the rule places it at the map.
         let (desktop, commands) = fake_hyprland(answer_with_monitors);
         let at = Rect { x: 1290.0, y: 297.0, width: 548.0, height: 531.0 };
@@ -483,6 +515,7 @@ pub(crate) mod tests {
             [
                 "j/monitors".to_string(),
                 format!("eval {}", lua::overlay_rule(Rect { x: 10.0, ..at })),
+                format!("dispatch {}", lua::resize_overlay(548, 531)),
                 format!("dispatch {}", lua::move_overlay(1290, 297)),
             ]
         );

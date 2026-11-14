@@ -54,6 +54,16 @@ panel_placed() {
   d_panel | jq -c --arg height "$height" 'if $height != "" and .size then .size[1] = ($height | tonumber) else . end'
 }
 
+# panel_whole prints "ok …" when the compositor's window for the panel is at least as tall as
+# SuperEditr last asked for, so none of the card is cut off, and "bad …" otherwise.
+panel_whole() {
+  local asked
+  asked="$(grep -E ' panel (opens|moves) at ' "$LOG" | tail -1 | sed -E 's/.*×([0-9]+).*/\1/')"
+  d_panel | jq -r --argjson asked "${asked:-0}" '
+    (if .size == null then 0 else .size[1] end) as $high
+    | (if $high > 0 and $high + 1 >= $asked then "ok" else "bad" end) + " window \($high) high, asked for \($asked)"'
+}
+
 panel_text() { timeout 10 python3 "$SMOKE/probe.py" panel | jq -r .text; }
 
 # wait_panel SECONDS: milliseconds until the panel is shown with keyboard focus, or "none".

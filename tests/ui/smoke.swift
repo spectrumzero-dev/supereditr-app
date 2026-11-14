@@ -1767,8 +1767,8 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
 // 6c-3. A web view inside another app can hold an editable box that doesn't say it is editable: one
 // with a button's role reports no settable value and no editable ancestor. The app's Cut menu item
 // says the selection can be edited, so a review there replaces the text, and read-only text in the
-// same web view stays copy-only. The app is built here: a window with a web view and an Edit menu,
-// whose title follows the box's text.
+// same web view stays copy-only. The app is built here: a window with a web view and File and Edit
+// menus, whose title follows the box's text.
 let webBox = work + "/WebBox.app", webBoxID = "test.supereditr.webbox"
 let webBoxBuilt: Bool = {
     let source = work + "/webbox.swift"
@@ -1805,6 +1805,10 @@ let webBoxBuilt: Bool = {
             appItem.submenu = NSMenu()
             appItem.submenu!.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
             bar.addItem(appItem)
+            let fileItem = NSMenuItem()
+            fileItem.submenu = NSMenu(title: "File")
+            fileItem.submenu!.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+            bar.addItem(fileItem)
             let editItem = NSMenuItem()
             let edit = NSMenu(title: "Edit")
             edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
@@ -1882,7 +1886,8 @@ if webBoxBuilt {
         check(waitFor(10) { boxText().contains("tommorow") ? true : nil } != nil, "the web view's page loads", "window title: \(boxText())")
         pump(1)
         // What this check stands on: the box must hide that it is editable, as such an app's does.
-        if let box = focusedElement() {
+        // A web view builds its Accessibility tree once asked, so the first answers can be empty.
+        if let box = waitFor(5, { focusedElement() }) {
             var settable = DarwinBoolean(false)
             AXUIElementIsAttributeSettable(box, kAXValueAttribute as CFString, &settable)
             let hidden = !settable.boolValue && attribute(box, "AXEditableAncestor") == nil

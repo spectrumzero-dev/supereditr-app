@@ -1777,10 +1777,22 @@ let webBoxBuilt: Bool = {
     import WebKit
 
     let readOnly = CommandLine.arguments.contains("read-only")
+    // Ways a page can make a box the user types in without it saying so to Accessibility.
+    let variant = CommandLine.arguments.first { $0.hasPrefix("variant=") }.map { String($0.dropFirst(8)) } ?? "wrapped"
+    let text = "We meet tommorow at noon."
+    let style = "border:1px solid; padding:6px"
+    let boxes = [
+        "wrapped": "<div role=\"button\" style=\"\(style)\"><div id=\"box\" contenteditable=\"true\">\(text)</div></div>",
+        "plaintext": "<div id=\"box\" contenteditable=\"plaintext-only\" role=\"button\" style=\"\(style)\">\(text)</div>",
+        "wrapped-plaintext": "<div role=\"button\" style=\"\(style)\"><div id=\"box\" contenteditable=\"plaintext-only\">\(text)</div></div>",
+        "user-modify": "<div id=\"box\" role=\"button\" tabindex=\"0\" style=\"\(style); -webkit-user-modify: read-write\">\(text)</div>",
+        "read-only-label": "<div id=\"box\" contenteditable=\"true\" role=\"button\" aria-readonly=\"true\" style=\"\(style)\">\(text)</div>",
+        "button": "<div id=\"box\" contenteditable=\"true\" role=\"button\" style=\"\(style)\">\(text)</div>",
+    ]
     let page = """
     <!doctype html><meta charset="utf-8"><title>loading</title>
     <p id="fixed">Their going to the store tommorow.</p>
-    <div id="box" contenteditable="true" role="button" style="border:1px solid; padding:6px">We meet tommorow at noon.</div>
+    \(boxes[variant] ?? boxes["wrapped"]!)
     <script>
     const box = document.getElementById("box");
     const show = () => { document.title = "box: " + box.textContent; };
@@ -1879,23 +1891,48 @@ if webBoxBuilt {
         return panel != nil
     }
 
-    // The box, selected by the page.
-    let boxOpened = openFront(webBox, bundleID: webBoxID, newInstance: true)
-    check(boxOpened, "the web view app opens with its box selected")
-    if boxOpened {
-        check(waitFor(10) { boxText().contains("tommorow") ? true : nil } != nil, "the web view's page loads", "window title: \(boxText())")
-        pump(1)
-        // What this check stands on: the box must hide that it is editable, as such an app's does.
-        // A web view builds its Accessibility tree once asked, so the first answers can be empty.
-        if let box = waitFor(5, { focusedElement() }) {
-            var settable = DarwinBoolean(false)
-            AXUIElementIsAttributeSettable(box, kAXValueAttribute as CFString, &settable)
-            let hidden = !settable.boolValue && attribute(box, "AXEditableAncestor") == nil
-            check(hidden, "the box doesn't say it is editable",
-                  "role \(attribute(box, kAXRoleAttribute) as? String ?? "none"), value settable \(settable.boolValue), editable ancestor \(attribute(box, "AXEditableAncestor") != nil)")
-        } else {
-            check(false, "the web view app has a focused element")
+    /// How the element holding the web view's selection describes itself: the focused element or
+    /// the nearest one above it with selected text, as SuperEditr reads it.
+    func selectionOwner() -> (hidden: Bool, says: String)? {
+        guard var element = focusedElement() else { return nil }
+        for level in 0..<8 {
+            if let selected = attribute(element, kAXSelectedTextAttribute) as? String, !selected.isEmpty {
+                var settable = DarwinBoolean(false)
+                AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
+                let ancestor = attribute(element, "AXEditableAncestor") != nil
+                let role = attribute(element, kAXRoleAttribute) as? String ?? "no role"
+                return (!settable.boolValue && !ancestor,
+                        "\(role), \(level) above the focus, value settable \(settable.boolValue), editable ancestor \(ancestor)")
+            }
+            guard let parent = attribute(element, kAXParentAttribute) else { return nil }
+            element = parent as! AXUIElement
         }
+        return nil
+    }
+
+    // The box, selected by the page. What the check stands on: the box must hide that it is
+    // editable, as such an app's does. The page has several ways to build one; the first that a web
+    // view reports that way is used.
+    var boxVariant: String?
+    for variant in ["wrapped", "plaintext", "wrapped-plaintext", "user-modify", "read-only-label", "button"] {
+        guard openFront(webBox, bundleID: webBoxID, newInstance: true, launchArguments: ["variant=\(variant)"]),
+              waitFor(10, { boxText().contains("tommorow") ? true : nil }) != nil else {
+            log("NOTE web view box \"\(variant)\": the app or its page didn't open; window title: \(boxText())")
+            quitOpened(webBoxID)
+            continue
+        }
+        pump(1)
+        // A web view builds its Accessibility tree once asked, so the first answers can be empty.
+        let owner = waitFor(5) { selectionOwner() }
+        log("NOTE web view box \"\(variant)\": \(owner?.says ?? "no element with the selection")")
+        if owner?.hidden == true {
+            boxVariant = variant
+            break
+        }
+        quitOpened(webBoxID)
+    }
+    check(boxVariant != nil, "a web view box hides that it is editable", "every way of building one says it is editable; see the notes above")
+    if boxVariant != nil {
         if reviewWebBox("the box that doesn't say it is editable") {
             let offered = waitFor(3) { () -> String? in
                 let text = panelText()
@@ -1917,7 +1954,7 @@ if webBoxBuilt {
     quitOpened(webBoxID)
 
     // Read-only text in the same page, selected by the page.
-    let fixedOpened = openFront(webBox, bundleID: webBoxID, newInstance: true, launchArguments: ["read-only"])
+    let fixedOpened = openFront(webBox, bundleID: webBoxID, newInstance: true, launchArguments: ["read-only", "variant=\(boxVariant ?? "wrapped")"])
     check(fixedOpened, "the web view app opens with its read-only text selected")
     if fixedOpened {
         check(waitFor(10) { boxText().contains("tommorow") ? true : nil } != nil, "the web view's page loads again", "window title: \(boxText())")
@@ -1995,8 +2032,9 @@ if twoPanel != nil {
         return value == fixed ? value : nil
     }
     check(value != nil, "both fixes land in TextEdit", "TextEdit reads \(String(reflecting: focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""))")
-    let path = appliedPath("com.apple.TextEdit")
-    check(path.contains("applied in place: 2 edits"), "TextEdit applies the proofread in place", "the log says: \(path)")
+    // The log line is written after the text changes; until then the last one is an earlier review's.
+    let path = waitFor(3) { appliedPath("com.apple.TextEdit").contains("applied in place: 2 edits") ? true : nil }
+    check(path != nil, "TextEdit applies the proofread in place", "the log says: \(appliedPath("com.apple.TextEdit"))")
 }
 quitOpened("com.apple.TextEdit")
 

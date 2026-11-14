@@ -881,6 +881,38 @@ pub fn return_to_field(_capture: &Capture) -> bool {
     true
 }
 
+/// Why a capture can't be replaced, for capture.log: what kind of element the selection was read
+/// from and what kind has the keyboard, so an app SuperEditr can't write to can be told from a field
+/// it misreads. Roles and yes/no answers only, never text.
+fn why_copy_only(app: &Element, capture: &Capture, pid: i32) -> String {
+    let Some(element) = &capture.element else {
+        return "copy-only: copied text has no field to write back to".into();
+    };
+    let kind = |e: &Element| {
+        let role = e.string("AXRole").unwrap_or_else(|| "no role".into());
+        match e.string("AXSubrole") {
+            Some(subrole) => format!("{role} ({subrole})"),
+            None => role,
+        }
+    };
+    let focused = app.element("AXFocusedUIElement");
+    let mut above = 0;
+    let mut current = focused.clone();
+    while let Some(e) = current.filter(|e| !e.same_as(element) && above < 8) {
+        above += 1;
+        current = e.element("AXParent");
+    }
+    let yes = |b: bool| if b { "yes" } else { "no" };
+    format!(
+        "copy-only: the selection is in {}, {above} above the focused {}; focused value settable: {}; web area: {}; Chromium: {}",
+        kind(element),
+        focused.as_ref().map(kind).unwrap_or_else(|| "nothing".into()),
+        yes(focused.as_ref().is_some_and(|f| f.settable("AXValue"))),
+        yes(in_web_area(element)),
+        yes(is_chromium_based(&capture.bundle_id, pid)),
+    )
+}
+
 /// Reads the current selection. With `allow_clipboard`, falls back to a guarded ⌘C when the
 /// app doesn't expose its selection through Accessibility. Only a shortcut allows the clipboard;
 /// an automatic suggestion never copies, so the log calls the read "shortcut" or "automatic".
@@ -921,11 +953,12 @@ pub fn capture(allow_clipboard: bool, select_sentence: bool) -> Result<Capture, 
             // The field's whole length shows a stale read: a selection made with ⌘A should match it.
             let field = capture.element.as_ref().and_then(|e| e.number("AXNumberOfCharacters"));
             trace(format_args!(
-                "{source} {bundle_id}: read {} characters{} via {} in {:?}",
+                "{source} {bundle_id}: read {} characters{} via {} in {:?}; {}",
                 capture.text.chars().count(),
                 field.map(|n| format!(" of {n} in the field")).unwrap_or_default(),
                 if capture.element.is_some() { "Accessibility" } else { "⌘C" },
-                started.elapsed()
+                started.elapsed(),
+                if capture.editable { "replacing allowed".to_string() } else { why_copy_only(&app, capture, pid) }
             ))
         }
         Err(error) => trace(format_args!("{source} {bundle_id}: {error} ({:?})", started.elapsed())),

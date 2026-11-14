@@ -117,9 +117,9 @@ large_case() {
   page="$(vm "d_addr '^chromium(-browser)? \\| SuperEditr smoke fields'")"
   vm "d_focus $page; sleep 0.3; cdp_select large" > /dev/null
   length="$(vm "cdp \"document.getElementById('large').value.length\"")"
-  # A tall panel, opened three times and left a moment each time. Its window grows while the
-  # compositor is still mapping it, and a resize lost then once left the panel cut short and hanging
-  # off the bottom of the screen for good.
+  # A tall panel, opened three times and left a moment each time. It grows while the compositor is
+  # still mapping it. The compositor once kept every panel's window to the height it was made with,
+  # which cut a tall one short, and at times left it hanging off the bottom of the screen as well.
   local round win where whole mark again
   mark="$(vm log_mark)"
   for round in 1 2 3; do

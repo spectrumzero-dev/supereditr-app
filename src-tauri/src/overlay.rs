@@ -7,9 +7,9 @@
 //!
 //! On Linux (Wayland) an app can't place its own windows or keep keys from another app's window.
 //! The desktop places the panel through a window rule, and for a review started with the shortcut
-//! the panel takes keyboard focus, then hands it back to the app when it closes. The desktop can
-//! also undo a resize made while it is putting the panel on screen, so each placement is checked
-//! afterwards (`keep_placed`).
+//! the panel takes keyboard focus, then hands it back to the app when it closes. The desktop sizes
+//! the panel too, and can lose a resize or move made while it is putting the panel on screen, so
+//! each placement is checked afterwards (`keep_placed`).
 //!
 //! On Windows the panel is a window that never activates on a click (`WS_EX_NOACTIVATE`), shown,
 //! placed and hidden with Win32 calls in physical pixels (`platform::overlay`). A review started
@@ -136,7 +136,7 @@ fn place(app: &AppHandle, anchor: Rect, height: f64) {
     {
         let wanted = Rect { x, y, width: WIDTH, height };
         platform::place_overlay(wanted, window.is_visible().unwrap_or(false));
-        keep_placed(window, wanted);
+        keep_placed(wanted);
     }
     #[cfg(target_os = "macos")]
     let _ = window.set_position(LogicalPosition::new(x, y));
@@ -147,38 +147,29 @@ fn place(app: &AppHandle, anchor: Rect, height: f64) {
 #[cfg(target_os = "linux")]
 static PLACEMENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// How the panel's window differs from where it was put.
+/// Whether the panel's window isn't where it was put, or is smaller than it was asked to be, which
+/// cuts the card off. A larger window is left alone: a window has a smallest size of its own, and
+/// the room past the card is transparent.
 #[cfg(any(target_os = "linux", test))]
-#[derive(Debug, PartialEq)]
-struct Drift {
-    /// The window is smaller than it was asked to be, so part of the card is cut off.
-    short: bool,
-}
-
-/// Compares where the desktop has the panel's window with where it was put. A window larger than
-/// asked is fine: GTK keeps a window that can't be resized at least as tall as it was made, and the
-/// room past the card is transparent.
-#[cfg(any(target_os = "linux", test))]
-fn drift(wanted: Rect, actual: Rect) -> Option<Drift> {
+fn drifted(wanted: Rect, actual: Rect) -> bool {
     let short = actual.width + 1.0 < wanted.width || actual.height + 1.0 < wanted.height;
     let moved = (actual.x - wanted.x).abs() > 1.0 || (actual.y - wanted.y).abs() > 1.0;
-    (short || moved).then_some(Drift { short })
+    short || moved
 }
 
-/// Checks a few times that the panel is where it was just put, and puts it back when it isn't.
+/// Checks a few times that the panel is where it was just put, at the size it was given, and puts
+/// it there again when it isn't.
 ///
-/// On Hyprland the panel's size is the GTK window's own: Hyprland takes it from the size the window
-/// says it must have and, each time that changes, keeps the window's centre where it was and tells
-/// the window its new size. A resize made while one of those messages is on its way can lose: GTK
-/// takes the older size in the message as its size and forgets the one it was asked for. A tall
-/// panel then falls back to the height the window was made with, and Hyprland shrinks it around its
-/// centre: cut short, and hanging off the bottom of the screen. Nothing corrects that later. It
-/// happens when the answer arrives while the desktop is still putting the panel on screen.
+/// On Hyprland the panel's size and place are the compositor's to give: a rule gives them when the
+/// panel opens, and a resize and a move change them while it shows. The answer often arrives while
+/// Hyprland is still putting the panel on screen. A resize or move sent before the panel is mapped
+/// is lost, and a rule replaced in those moments may or may not be the one the panel opens by.
+/// Hyprland also resizes a window around its centre whenever the window's own limits on its size
+/// change, which moves it. Nothing corrects any of that later.
 #[cfg(target_os = "linux")]
-fn keep_placed(window: WebviewWindow, wanted: Rect) {
+fn keep_placed(wanted: Rect) {
     use std::time::Duration;
-    /// Milliseconds between checks. They start again after a correction, which moves the window
-    /// once more when it resizes it.
+    /// Milliseconds between checks. They start again after a correction.
     const WAITS: [u64; 6] = [40, 80, 150, 300, 600, 1200];
     const MOST_CORRECTIONS: u32 = 6;
     let placement = PLACEMENT.fetch_add(1, Ordering::Relaxed) + 1;
@@ -192,7 +183,9 @@ fn keep_placed(window: WebviewWindow, wanted: Rect) {
             }
             // Not on screen yet, or on a desktop that can't say where its windows are.
             let Some(actual) = platform::overlay_rect() else { continue };
-            let Some(drift) = drift(wanted, actual) else { continue };
+            if !drifted(wanted, actual) {
+                continue;
+            }
             let again = corrections < MOST_CORRECTIONS;
             platform::trace(format_args!(
                 "panel is at {:.0},{:.0}, {:.0}×{:.0}, not where it was put: {}",
@@ -206,9 +199,6 @@ fn keep_placed(window: WebviewWindow, wanted: Rect) {
                 return;
             }
             corrections += 1;
-            if drift.short {
-                let _ = window.set_size(LogicalSize::new(wanted.width, wanted.height));
-            }
             platform::place_overlay(wanted, true);
             next = 0;
         }
@@ -486,28 +476,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_panel_shrunk_around_its_centre_is_resized_and_moved() {
-        // A tall panel for a long text, put at 590,297: the desktop was seen leaving it 240 high,
-        // 146 lower, with its foot off an 800-high screen.
+    fn a_panel_cut_short_or_moved_has_drifted() {
+        // A tall panel for a long text, put at 590,297: Hyprland was seen leaving it 240 high, and
+        // once 146 lower as well, with its foot off an 800-high screen.
         let wanted = Rect { x: 590.0, y: 297.0, width: WIDTH, height: 531.0 };
-        let shrunk = Rect { x: 590.0, y: 443.0, width: WIDTH, height: 240.0 };
-        assert_eq!(drift(wanted, shrunk), Some(Drift { short: true }));
-        // Once it's tall again it only has to be right where it was put.
-        assert_eq!(drift(wanted, Rect { y: 297.0, ..wanted }), None);
-        assert_eq!(drift(wanted, Rect { y: 298.0, ..wanted }), None, "half a pixel rounds either way");
+        assert!(drifted(wanted, Rect { height: 240.0, ..wanted }));
+        assert!(drifted(wanted, Rect { y: 443.0, height: 240.0, ..wanted }));
+        // Resized around its centre after the move reached the desktop: 160 higher, at its full size.
+        assert!(drifted(wanted, Rect { y: 137.0, ..wanted }));
+        assert!(drifted(wanted, Rect { x: 600.0, ..wanted }));
     }
 
     #[test]
-    fn a_panel_moved_by_its_own_resize_is_only_moved() {
-        // Growing from 210 to 531 after the move reached the desktop: 160 higher, at its full size.
+    fn a_panel_where_it_was_put_has_not() {
         let wanted = Rect { x: 590.0, y: 297.0, width: WIDTH, height: 531.0 };
-        assert_eq!(drift(wanted, Rect { y: 137.0, ..wanted }), Some(Drift { short: false }));
-        assert_eq!(drift(wanted, Rect { x: 600.0, ..wanted }), Some(Drift { short: false }));
-    }
-
-    #[test]
-    fn a_window_taller_than_a_short_panel_is_left_alone() {
-        let wanted = Rect { x: 3.0, y: 484.0, width: WIDTH, height: 201.0 };
-        assert_eq!(drift(wanted, Rect { height: 240.0, ..wanted }), None);
+        assert!(!drifted(wanted, wanted));
+        assert!(!drifted(wanted, Rect { y: 298.0, height: 530.0, ..wanted }), "half a pixel rounds either way");
+        // A window keeps to a smallest size of its own.
+        let short = Rect { x: 3.0, y: 484.0, width: WIDTH, height: 90.0 };
+        assert!(!drifted(short, Rect { height: 120.0, ..short }));
     }
 }

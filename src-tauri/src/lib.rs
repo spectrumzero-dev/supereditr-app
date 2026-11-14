@@ -552,7 +552,13 @@ pub fn run() {
             // Tauri before `setup`: on Windows, making a webview runs a message loop that can deliver
             // a command from a page that has already loaded.
             for window in app.config().app.windows.clone() {
-                let _window = tauri::WebviewWindowBuilder::from_config(app.handle(), &window)?.build()?;
+                let builder = tauri::WebviewWindowBuilder::from_config(app.handle(), &window)?;
+                // On Linux the desktop sizes the panel (`platform::place_overlay`). A GTK window
+                // that can't be resized tells the desktop the size it was made with is its largest,
+                // and Hyprland keeps it to that: a taller panel was cut off at that height.
+                #[cfg(target_os = "linux")]
+                let builder = if window.label == "overlay" { builder.resizable(true) } else { builder };
+                let _window = builder.build()?;
                 #[cfg(windows)]
                 watch_webview(app.handle(), &_window);
             }

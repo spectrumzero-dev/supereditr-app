@@ -302,9 +302,12 @@ impl Desktop for HyprlandDesktop {
         let rule = lua::overlay_rule(Rect { x: at.x - x, y: at.y - y, ..at });
         self.eval(&rule)?;
         self.runtime.lock().unwrap().overlay = Some(rule);
-        // GTK calls the panel shown before Hyprland maps it. A move sent in between is lost, and the
-        // rule above places the panel instead, so the rule is kept up to date as well.
+        // GTK calls the panel shown before Hyprland maps it. A resize or move sent in between is
+        // lost, and the rule above sizes and places the panel instead, so the rule is kept up to
+        // date as well. The size is Hyprland's to give: it doesn't follow a window that resizes
+        // itself. The resize keeps the panel's centre where it was, so the move comes after it.
         if shown {
+            self.dispatch(&lua::resize_overlay(at.width.round() as i32, at.height.round() as i32))?;
             self.dispatch(&lua::move_overlay(at.x.round() as i32, at.y.round() as i32))?;
         }
         Ok(())
@@ -502,7 +505,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_shown_panel_moves_and_its_rule_follows() {
+    fn a_shown_panel_is_resized_then_moved_and_its_rule_follows() {
         // GTK calls the panel shown before Hyprland maps it, and the rule places it at the map.
         let (desktop, commands) = fake_hyprland(answer_with_monitors);
         let at = Rect { x: 1290.0, y: 297.0, width: 548.0, height: 531.0 };
@@ -512,6 +515,7 @@ pub(crate) mod tests {
             [
                 "j/monitors".to_string(),
                 format!("eval {}", lua::overlay_rule(Rect { x: 10.0, ..at })),
+                format!("dispatch {}", lua::resize_overlay(548, 531)),
                 format!("dispatch {}", lua::move_overlay(1290, 297)),
             ]
         );

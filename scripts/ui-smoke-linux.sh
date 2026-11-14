@@ -264,8 +264,8 @@ review_and_apply() {
   if [[ "$panel_ms" == none ]]; then REVIEW_RESULT=""; return; fi
   text="$(vm "wait_panel_text '[0-9]+ changes?' 15")"
   check "$label: the panel shows a fix" "$(ok has "$text" "[0-9]+ changes?")" "${text:0:120}"
-  # The compositor can undo a resize made while it maps the panel, and SuperEditr puts the panel
-  # back within moments (overlay.rs, keep_placed): it gets two seconds to be whole and in place.
+  # The compositor can lose a resize or move made while it maps the panel, and SuperEditr puts it
+  # back within moments (overlay.rs, keep_placed): the panel gets two seconds to be whole and in place.
   local whole try
   for try in 1 2 3 4 5 6 7 8; do
     REVIEW_PANEL="$(vm panel_placed)"

@@ -1764,6 +1764,172 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
     }
     quitOpened(chrome)
 }
+// 6c-3. A web view inside another app can hold an editable box that doesn't say it is editable: one
+// with a button's role reports no settable value and no editable ancestor. The app's Cut menu item
+// says the selection can be edited, so a review there replaces the text, and read-only text in the
+// same web view stays copy-only. The app is built here: a window with a web view and an Edit menu,
+// whose title follows the box's text.
+let webBox = work + "/WebBox.app", webBoxID = "test.supereditr.webbox"
+let webBoxBuilt: Bool = {
+    let source = work + "/webbox.swift"
+    try! #"""
+    import AppKit
+    import WebKit
+
+    let readOnly = CommandLine.arguments.contains("read-only")
+    let page = """
+    <!doctype html><meta charset="utf-8"><title>loading</title>
+    <p id="fixed">Their going to the store tommorow.</p>
+    <div id="box" contenteditable="true" role="button" style="border:1px solid; padding:6px">We meet tommorow at noon.</div>
+    <script>
+    const box = document.getElementById("box");
+    const show = () => { document.title = "box: " + box.textContent; };
+    box.addEventListener("input", show);
+    const target = \(readOnly ? "document.getElementById(\"fixed\")" : "box");
+    if (target === box) box.focus();
+    const range = document.createRange();
+    range.selectNodeContents(target);
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+    show();
+    </script>
+    """
+
+    final class Delegate: NSObject, NSApplicationDelegate {
+        var window: NSWindow!
+        var web: WKWebView!
+        var timer: Timer?
+        func applicationDidFinishLaunching(_ note: Notification) {
+            let bar = NSMenu()
+            let appItem = NSMenuItem()
+            appItem.submenu = NSMenu()
+            appItem.submenu!.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+            bar.addItem(appItem)
+            let editItem = NSMenuItem()
+            let edit = NSMenu(title: "Edit")
+            edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+            edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+            edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+            edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+            editItem.submenu = edit
+            bar.addItem(editItem)
+            NSApp.mainMenu = bar
+            window = NSWindow(contentRect: NSRect(x: 200, y: 300, width: 560, height: 220),
+                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            web = WKWebView(frame: window.contentView!.bounds)
+            web.autoresizingMask = [.width, .height]
+            window.contentView!.addSubview(web)
+            window.title = "loading"
+            window.makeKeyAndOrderFront(nil)
+            window.makeFirstResponder(web)
+            NSApp.activate(ignoringOtherApps: true)
+            web.loadHTMLString(page, baseURL: nil)
+            timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+                self?.web.evaluateJavaScript("document.title") { title, _ in
+                    if let title = title as? String { self?.window.title = title }
+                }
+            }
+        }
+    }
+
+    let app = NSApplication.shared
+    let delegate = Delegate()
+    app.delegate = delegate
+    app.setActivationPolicy(.regular)
+    app.run()
+    """#.write(toFile: source, atomically: true, encoding: .utf8)
+    try! FileManager.default.createDirectory(atPath: webBox + "/Contents/MacOS", withIntermediateDirectories: true)
+    try! """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0"><dict>
+    <key>CFBundleIdentifier</key><string>\(webBoxID)</string>
+    <key>CFBundleName</key><string>WebBox</string>
+    <key>CFBundleExecutable</key><string>WebBox</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    </dict></plist>
+    """.write(toFile: webBox + "/Contents/Info.plist", atomically: true, encoding: .utf8)
+    let build = Process()
+    build.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+    build.arguments = ["swiftc", "-O", source, "-o", webBox + "/Contents/MacOS/WebBox"]
+    try? build.run()
+    build.waitUntilExit()
+    return build.terminationStatus == 0
+}()
+check(webBoxBuilt, "the test builds an app with a web view")
+if webBoxBuilt {
+    /// The web view app's window title: "box: " and the box's text, once the page has loaded.
+    func boxText() -> String { mainWindow(webBoxID).flatMap { attribute($0, kAXTitleAttribute) as? String } ?? "" }
+    func lastWebBoxRead() -> String {
+        let log = home + "/Library/Logs/SuperEditr/capture.log"
+        let lines = (try? String(contentsOfFile: log, encoding: .utf8))?.split(separator: "\n") ?? []
+        return lines.last { $0.contains("\(webBoxID): read") }.map(String.init) ?? "none"
+    }
+    func reviewWebBox(_ what: String) -> Bool {
+        press(keyE, .maskCommand)
+        pump(0.1)
+        press(keyE, .maskCommand)
+        let panel = waitFor(10) { overlay() }
+        check(panel != nil, "⌘E E reviews \(what)", "no overlay within 10 s; last read: \(lastWebBoxRead())")
+        if panel != nil { pump(1.5) }  // the rule-based checker's result
+        return panel != nil
+    }
+
+    // The box, selected by the page.
+    let boxOpened = openFront(webBox, bundleID: webBoxID, newInstance: true)
+    check(boxOpened, "the web view app opens with its box selected")
+    if boxOpened {
+        check(waitFor(10) { boxText().contains("tommorow") ? true : nil } != nil, "the web view's page loads", "window title: \(boxText())")
+        pump(1)
+        // What this check stands on: the box must hide that it is editable, as such an app's does.
+        if let box = focusedElement() {
+            var settable = DarwinBoolean(false)
+            AXUIElementIsAttributeSettable(box, kAXValueAttribute as CFString, &settable)
+            let hidden = !settable.boolValue && attribute(box, "AXEditableAncestor") == nil
+            check(hidden, "the box doesn't say it is editable",
+                  "role \(attribute(box, kAXRoleAttribute) as? String ?? "none"), value settable \(settable.boolValue), editable ancestor \(attribute(box, "AXEditableAncestor") != nil)")
+        } else {
+            check(false, "the web view app has a focused element")
+        }
+        if reviewWebBox("the box that doesn't say it is editable") {
+            let offered = waitFor(3) { () -> String? in
+                let text = panelText()
+                return text.contains("⌥↩") && !text.contains("replace text here") ? text : nil
+            }
+            check(offered != nil, "the review offers ⌥↩ replace there", "panel text: \(panelText()); last read: \(lastWebBoxRead())")
+            screenshot(window: overlay(), to: outDir + "/web-view-box-review.png")
+            press(keyReturn, .maskAlternate)
+            let fixed = waitFor(5) { boxText().contains("tomorrow") ? boxText() : nil }
+            check(fixed != nil, "⌥↩ replaces the text in the box", "the box holds: \(boxText())")
+            log("NOTE the web view's box: \(lastWebBoxRead())")
+            if overlay() != nil {
+                log("NOTE after replacing in the web view's box the panel says: \(panelText())")
+                press(keyEscape)
+                _ = waitFor(3) { overlay() == nil ? true : nil }
+            }
+        }
+    }
+    quitOpened(webBoxID)
+
+    // Read-only text in the same page, selected by the page.
+    let fixedOpened = openFront(webBox, bundleID: webBoxID, newInstance: true, launchArguments: ["read-only"])
+    check(fixedOpened, "the web view app opens with its read-only text selected")
+    if fixedOpened {
+        check(waitFor(10) { boxText().contains("tommorow") ? true : nil } != nil, "the web view's page loads again", "window title: \(boxText())")
+        pump(1)
+        if reviewWebBox("read-only text in the web view") {
+            let saysWhy = waitFor(3) { () -> String? in
+                let text = panelText()
+                return text.contains("replace text here") ? text : nil
+            }
+            check(saysWhy != nil, "read-only text in the web view stays copy-only", "panel text: \(panelText()); last read: \(lastWebBoxRead())")
+            press(keyEscape)
+            _ = waitFor(3) { overlay() == nil ? true : nil }
+        }
+    }
+    quitOpened(webBoxID)
+}
+
 // 6d. ↩ in a review applies the fix and never reaches the app: the panel doesn't take keyboard
 // focus, and SuperEditr's keyboard tap takes ↩ from the app instead. In a chat app, ↩ reaching the
 // app would send the message. The second time, the instruction box (/) takes focus first and esc

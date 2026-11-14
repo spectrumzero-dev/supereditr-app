@@ -438,7 +438,7 @@ start_editor() {
 
 editor_cases() {
   begin_case editor "gnome-text-editor: applied, verified, one undo; quick fix"
-  local e pid before after value mark
+  local e pid before after value mark result
   e="$(start_editor "" smoke-sample.txt | tail -1)"
   pid="$(vm "d_pid $e")"
   check "gnome-text-editor opens" "$(ok both isnt "$e" null isnt "$pid" "")" "$(vm d_active)"
@@ -457,11 +457,27 @@ editor_cases() {
   check "gnome-text-editor: one undo puts the original back" "$(ok is "$value" "$SAMPLE")" "${value:0:100}"
   vm 'shot 41-editor-undone'
 
+  # The footer's replace key is a button: pressing it does what Alt+Enter does.
+  vm "d_focus $e; sleep 0.3; select_all $e; sleep 0.3"
+  mark="$(vm log_mark)"
+  key meta_l-alt-e
+  vm 'wait_panel 6' > /dev/null || true
+  vm "wait_panel_text '[0-9]+ changes?' 15" > /dev/null || true
+  local pressed
+  pressed="$(vm 'python3 $SMOKE/probe.py press "SuperEditr suggestions" "~replace"')"
+  check "the footer's replace key is a button" "$(ok has "$pressed" '"pressed": true')" "$pressed; panel: $(vm panel_text | head -c 160)"
+  result="$(vm "wait_log $mark 'replace org.gnome.TextEditor: ' 6")"
+  check "pressing the replace key applies the fix" "$(ok has "$result" ": applied")" "${result#* }"
+  value="$(vm "field $pid | jq -r .text")"
+  check "pressing the replace key: the document holds the fix" "$(ok both has "$value" "They're going" has "$value" tomorrow)" "${value:0:100}"
+  vm 'wait_closed 3' || true
+  vm "d_keys $e CTRL Z; sleep 0.5"
+  vm 'shot 41b-editor-replace-key'
+
   # Quick fix: no panel, the fix goes straight in.
   vm "d_focus $e; sleep 0.3; select_all $e; sleep 0.3"
   mark="$(vm log_mark)"
   key meta_l-ctrl-alt-e
-  local result
   result="$(vm "wait_log $mark 'replace org.gnome.TextEditor: ' 10")"
   check "quick fix: applies without a review" "$(ok has "$result" ": applied")" "${result#* }"
   value="$(vm "field $pid | jq -r .text")"

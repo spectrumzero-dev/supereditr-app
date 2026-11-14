@@ -24,7 +24,7 @@ while IFS= read -r line; do
     *'"type":"request"'*)
       case "$line" in
         *TOO_LONG*) printf '{{"type":"error","id":%s,"code":"contextWindow","message":"x"}}\n' "$id" ;;
-        *SLOW*) ;;
+        *SLOW*) printf '{{"type":"delta","id":%s,"text":"started"}}\n' "$id" ;;
         *CRASH*) exit 1 ;;
         *) printf '{{"type":"delta","id":%s,"text":"This is "}}\n' "$id"
            printf '{{"type":"delta","id":%s,"text":"teh draft."}}\n' "$id"
@@ -113,11 +113,21 @@ async fn abandoning_a_request_cancels_it_in_the_helper() {
     let (helper, log) = mock_helper("cancel", AVAILABLE);
     let providers = Providers::new();
     let p = profile(&helper);
-    let attempt =
-        tokio::time::timeout(Duration::from_millis(300), providers.stream(&p, &request("SLOW"), &mut |_: &str| {}))
-            .await;
-    assert!(attempt.is_err(), "the slow request is still running when abandoned");
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (started, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let slow = request("SLOW");
+    let mut on_delta = |_: &str| {
+        started.send(()).unwrap();
+    };
+    tokio::select! {
+        result = providers.stream(&p, &slow, &mut on_delta) => {
+            panic!("the request finished before it was abandoned: {result:?}");
+        }
+        result = tokio::time::timeout(Duration::from_secs(5), received.recv()) => {
+            assert_eq!(result.expect("the helper never sent a delta"), Some(()));
+        }
+    }
+    // The helper reads lines in order. Its next answer means it has processed the cancellation.
+    providers.stream(&p, &request("again"), &mut |_: &str| {}).await.unwrap();
     let sent = std::fs::read_to_string(log).unwrap();
     assert!(sent.contains(r#""type":"cancel""#), "{sent}");
 }
@@ -129,7 +139,6 @@ async fn restarts_the_helper_after_it_exits() {
     let p = profile(&helper);
     let error = providers.stream(&p, &request("CRASH"), &mut |_: &str| {}).await.unwrap_err();
     assert!(error.to_string().contains("stopped unexpectedly"), "{error}");
-    tokio::time::sleep(Duration::from_millis(100)).await;
     let text = providers.stream(&p, &request("again"), &mut |_: &str| {}).await.unwrap();
     assert_eq!(text, "This is the draft.");
 }

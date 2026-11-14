@@ -1,6 +1,6 @@
 //! Apple Intelligence as the built-in AI: it reviews when nothing else is chosen and takes over when
-//! the chosen AI can't answer. Uses a mock helper through `SUPEREDITR_FM_HELPER`, so this file holds
-//! a single test (the variable is process-wide). The mock is a shell script, so this runs on Unix only.
+//! the chosen AI can't answer. Uses a mock helper through `SUPEREDITR_FM_HELPER`, which is set only in a child process.
+//! The mock is a shell script, so this runs on Unix only.
 #![cfg(unix)]
 
 use supereditr_core::engine::{Engine, Event, Job};
@@ -56,8 +56,20 @@ fn done_source(events: &[Event]) -> String {
 
 #[tokio::test]
 async fn apple_intelligence_is_the_default_and_the_backup() {
-    // SAFETY: the only test in this binary, so nothing reads the environment concurrently.
-    unsafe { std::env::set_var("SUPEREDITR_FM_HELPER", mock_helper()) };
+    // Start this test in its own process so the helper override cannot affect other providers.
+    const CHILD: &str = "SUPEREDITR_BUILTIN_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let thread = std::thread::current();
+        let test_name = thread.name().expect("libtest names the test thread");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test_name])
+            .env(CHILD, "1")
+            .env("SUPEREDITR_FM_HELPER", mock_helper())
+            .status()
+            .unwrap();
+        assert!(status.success(), "built-in provider test failed: {status}");
+        return;
+    }
     let engine = Engine::new("American English");
 
     let events = review(&engine, None).await;

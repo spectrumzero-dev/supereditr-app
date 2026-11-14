@@ -2730,6 +2730,30 @@ pub fn take_review_keys(take: bool) -> bool {
     TAP_PORT.load(Ordering::Relaxed) != 0
 }
 
+/// The app under review, or 0 for none: the tap takes the panel's keys only while this app has the
+/// keyboard.
+static REVIEW_APP: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// Names the app whose review the panel shows, or 0 for a notice, which belongs to no app.
+pub fn set_review_app(pid: i32) {
+    REVIEW_APP.store(pid, Ordering::Relaxed);
+}
+
+/// Whether something other than the app under review has the keyboard: a launcher's search box, or
+/// another panel that takes keys without coming to the front. The app in front doesn't change then,
+/// so the review stays open, but the keys are for that box and not for the panel. False when
+/// Accessibility can't say who has the keyboard.
+fn keyboard_is_elsewhere() -> bool {
+    let reviewed = REVIEW_APP.load(Ordering::Relaxed);
+    if reviewed == 0 {
+        return false;
+    }
+    Element::from_create(unsafe { AXUIElementCreateSystemWide() })
+        .and_then(|system| system.element("AXFocusedApplication"))
+        .and_then(|app| app.pid())
+        .is_some_and(|pid| pid != reviewed)
+}
+
 /// A suggestion that opened by itself shows: the tap takes esc alone from the app, to close the
 /// panel, and every other key still reaches the app. Without the tap, esc reaches the app too.
 pub fn take_escape_key() {
@@ -2881,7 +2905,8 @@ pub fn start_double_press_tap(
                         // A double-press shortcut still works during a review (⌘E E starts a new one).
                         let taking = REVIEW_KEYS.load(Ordering::Relaxed);
                         if matched.is_none() && taking != TAKE_NONE {
-                            let key = review_key(event, code, taking == TAKE_ALL);
+                            // Asked only for a key the panel would take, since it asks Accessibility.
+                            let key = review_key(event, code, taking == TAKE_ALL).filter(|_| !keyboard_is_elsewhere());
                             // Shortcuts are what can reach the wrong place. A key code, so never text.
                             if taking == TAKE_ALL && mods & (double_press::COMMAND | double_press::CONTROL) != 0 {
                                 let to = if key.is_some() { "the panel" } else { "the app" };

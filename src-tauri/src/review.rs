@@ -229,6 +229,8 @@ fn show_notice_with(app: &AppHandle, message: String, copy: Option<String>, keys
     state.notice_visible.store(true, Ordering::Relaxed);
     let _ = app.emit_to("overlay", "overlay:status", StatusPayload { id, kind: "notice", message, copy });
     overlay::position(app, None, 126.0);
+    #[cfg(target_os = "macos")]
+    platform::set_review_app(0);
     overlay::show(app, keys);
     // The notice closes with the panel's close key too, where that's a registered shortcut.
     #[cfg(windows)]
@@ -270,6 +272,9 @@ fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<Strin
         .unwrap_or_else(|| config.default_preset().id.clone());
     let id = state.next_session_id();
     let anchor = captured.bounds;
+    // The panel's keys are taken from this app only, not from a launcher opened over it.
+    #[cfg(target_os = "macos")]
+    platform::set_review_app(captured.pid);
     // Before the session lock: watching the window reads it through the platform, which may wait on
     // the app.
     let following = crate::follow::start(app, id, &captured);

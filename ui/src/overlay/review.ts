@@ -112,6 +112,20 @@ export function canUse(review: Review): boolean {
   return review.complete && review.view !== null;
 }
 
+/** What the footer shows where the replace key goes. */
+export type FooterAction = "working" | "replace" | "copy" | "none";
+
+/**
+ * The footer names the replace key only once the answer is in, and until then shows that the AI is
+ * still working. Text that can't be replaced gets the copy key instead; with nothing to change, or
+ * no result to use, there is no key to show.
+ */
+export function footerAction(review: Review, canApply: boolean): FooterAction {
+  if (review.phase === "idle" || review.phase === "local" || review.phase === "streaming") return "working";
+  if (!canUse(review) || changes(review.view).length === 0) return "none";
+  return canApply ? "replace" : "copy";
+}
+
 /**
  * A replacement in flight, and what the apply key does next. When the backend couldn't put the
  * user's clipboard aside (Windows), it brings the review back and the next apply replaces anyway,

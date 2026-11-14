@@ -1124,6 +1124,36 @@ if cleanPanel != nil {
 }
 quitOpened("com.apple.TextEdit")
 
+// 6a-2. Clicking the footer's ⌥↩ replace does what the key does: the fix goes into the document.
+let clickDraft = work + "/click.txt"
+try! "We meet tommorow at noon.".write(toFile: clickDraft, atomically: true, encoding: .utf8)
+check(openFront("TextEdit", bundleID: "com.apple.TextEdit", file: clickDraft), "TextEdit opens the draft to fix with a click")
+check(selectAll(), "the draft's text is selected")
+press(keyE, .maskCommand)
+pump(0.1)
+press(keyE, .maskCommand)
+let clickPanel = waitFor(5) { overlay() }
+check(clickPanel != nil, "⌘E E reviews the draft to fix with a click", "no overlay within 5 s")
+if clickPanel != nil {
+    let replaceButton = waitFor(5) { () -> AXUIElement? in
+        guard let app = running(superEditr).first,
+              let list = attribute(AXUIElementCreateApplication(app.processIdentifier), kAXWindowsAttribute) as? [AXUIElement] else { return nil }
+        return list.lazy.compactMap { button(in: $0, containing: "⌥↩") }.first
+    }
+    check(replaceButton != nil, "the footer's ⌥↩ replace is a button", "panel text: \(panelText())")
+    if let replaceButton {
+        click(replaceButton)
+        let fixed = waitFor(5) { () -> String? in
+            let value = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
+            return value.contains("tomorrow") ? value : nil
+        }
+        check(fixed != nil, "clicking ⌥↩ replace puts the fix in the document", "the document still holds the typo")
+        check(waitFor(3) { overlay() == nil ? true : nil } != nil, "clicking ⌥↩ replace closes the panel", "panel still showing")
+    }
+    if overlay() != nil { press(keyEscape) }
+}
+quitOpened("com.apple.TextEdit")
+
 // 6b. A selection holding a secret isn't reviewed: ⌘E E says why instead of opening a review. The
 // token is assembled from pieces so the source holds no secret-shaped string.
 let secretDraft = work + "/secret.txt"

@@ -949,7 +949,8 @@ pub fn capture(allow_clipboard: bool, select_sentence: bool) -> Result<Capture, 
         }
     };
     match &result {
-        Ok(capture) => {
+        // Only with the diagnostic log on: describing the read asks the app more questions.
+        Ok(capture) if TRACE_ON.load(Ordering::Relaxed) => {
             // The field's whole length shows a stale read: a selection made with ⌘A should match it.
             let field = capture.element.as_ref().and_then(|e| e.number("AXNumberOfCharacters"));
             trace(format_args!(
@@ -961,6 +962,7 @@ pub fn capture(allow_clipboard: bool, select_sentence: bool) -> Result<Capture, 
                 if capture.editable { "replacing allowed".to_string() } else { why_copy_only(&app, capture, pid) }
             ))
         }
+        Ok(_) => {}
         Err(error) => trace(format_args!("{source} {bundle_id}: {error} ({:?})", started.elapsed())),
     }
     result

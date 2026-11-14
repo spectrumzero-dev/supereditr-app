@@ -445,12 +445,17 @@
             {#if focusedId != null}<span><kbd>␣</kbd> {rejected.has(focusedId) ? "restore" : "keep original"}</span>{/if}
             <span><kbd>/</kbd> instruct</span>
           {/if}
-          {#if action === "working"}
-            <span class="spinner" role="img" aria-label="Working"></span>
-          {:else if action === "replace"}
-            <button class="key" onclick={apply}><kbd>{words().applyKey}</kbd> replace</button>
-          {:else if action === "copy"}
-            <button class="key" onclick={copy}><kbd>{words().copyKey}</kbd> copy</button>
+          {#if action !== "none"}
+            <!-- The key is laid out from the start, hidden under the spinner, so the footer keeps its
+                 size and nothing moves when the answer comes in. -->
+            <span class="slot">
+              {#if action === "working"}<span class="spinner" role="img" aria-label="Working"></span>{/if}
+              {#if session.canApply}
+                <button class="key" class:waiting={action === "working"} onclick={apply}><kbd>{words().applyKey}</kbd> replace</button>
+              {:else}
+                <button class="key" class:waiting={action === "working"} onclick={copy}><kbd>{words().copyKey}</kbd> copy</button>
+              {/if}
+            </span>
           {/if}
           {#if keyboard}
             <span><kbd>{words().escKey}</kbd></span>
@@ -675,9 +680,20 @@
     white-space: nowrap;
     flex: none;
   }
+  .slot {
+    display: inline-grid;
+    align-items: center;
+  }
+  .slot > * {
+    grid-area: 1 / 1;
+  }
   .key {
     all: unset;
     cursor: pointer;
+  }
+  /* Takes its room, but can't be seen, clicked or read out until the answer is in. */
+  .key.waiting {
+    visibility: hidden;
   }
   .key:hover {
     color: var(--text);
@@ -687,7 +703,8 @@
     color: var(--accent);
   }
   .spinner {
-    align-self: center;
+    justify-self: start;
+    margin-left: 6px;
     width: 11px;
     height: 11px;
     border-radius: 50%;

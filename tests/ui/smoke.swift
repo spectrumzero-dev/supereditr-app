@@ -907,11 +907,17 @@ func keyboardApp() -> pid_t? {
     var pid: pid_t = 0
     return AXUIElementGetPid(app as! AXUIElement, &pid) == .success ? pid : nil
 }
+/// Opens the review again. TextEdit can take a moment to have the keyboard back after a launcher
+/// closes, and a shortcut pressed before then goes nowhere, so this tries twice.
 func reopenReview() -> Bool {
-    press(keyE, .maskCommand)
-    pump(0.1)
-    press(keyE, .maskCommand)
-    return waitFor(5) { overlay() } != nil
+    for _ in 0..<2 {
+        pump(1)
+        press(keyE, .maskCommand)
+        pump(0.1)
+        press(keyE, .maskCommand)
+        if waitFor(5, { overlay() }) != nil { return true }
+    }
+    return false
 }
 if overlay() != nil {
     KeyLog.seen.removeAll()
@@ -1204,6 +1210,137 @@ if clickPanel != nil {
     if overlay() != nil { press(keyEscape) }
 }
 quitOpened("com.apple.TextEdit")
+
+// 6a-3. While the AI is answering, the footer shows a spinner where the replace key goes, and names
+// the key only once the answer is in; the footer is the same height either way. Every other check
+// here gets its answer at once from the rule-based checker, so a local server stands in for a slow
+// AI: it speaks Ollama's chat API and answers after a pause.
+final class SlowModel {
+    private let queue = DispatchQueue(label: "slow-model")
+    private var listener: NWListener?
+    let pause: Double
+    let answer: String
+
+    init(answer: String, pause: Double) {
+        self.answer = answer
+        self.pause = pause
+    }
+
+    /// Starts listening and returns the port, or nil if it can't.
+    func start() -> UInt16? {
+        let parameters = NWParameters.tcp
+        parameters.requiredInterfaceType = .loopback
+        guard let listener = try? NWListener(using: parameters, on: .any) else { return nil }
+        self.listener = listener
+        listener.newConnectionHandler = { [weak self] connection in
+            guard let self else { return }
+            connection.start(queue: self.queue)
+            self.read(connection, Data())
+        }
+        listener.start(queue: queue)
+        return waitFor(5) { listener.port.flatMap { $0.rawValue == 0 ? nil : $0.rawValue } }
+    }
+
+    func stop() { listener?.cancel() }
+
+    /// Reads the whole request, body included, before answering: closing with part of it unread
+    /// resets the connection.
+    private func read(_ connection: NWConnection, _ soFar: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, done, error in
+            let request = soFar + (data ?? Data())
+            let text = String(decoding: request, as: UTF8.self)
+            if let head = text.range(of: "\r\n\r\n") {
+                let length = text[..<head.lowerBound].split(separator: "\r\n")
+                    .first { $0.lowercased().hasPrefix("content-length:") }
+                    .flatMap { Int($0.split(separator: ":")[1].trimmingCharacters(in: .whitespaces)) } ?? 0
+                if text[head.upperBound...].utf8.count >= length {
+                    return self.respond(on: connection, to: text)
+                }
+            }
+            if done || error != nil { return connection.cancel() }
+            self.read(connection, request)
+        }
+    }
+
+    private func respond(on connection: NWConnection, to request: String) {
+        func send(_ status: String, _ body: String, after delay: Double) {
+            let reply = Data("HTTP/1.1 \(status)\r\nContent-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)".utf8)
+            queue.asyncAfter(deadline: .now() + delay) {
+                connection.send(content: reply, completion: .contentProcessed { _ in connection.cancel() })
+            }
+        }
+        if request.hasPrefix("POST /api/chat") {
+            let words = try! JSONSerialization.data(withJSONObject: ["message": ["content": answer], "done": false])
+            send("200 OK", String(decoding: words, as: UTF8.self) + "\n{\"done\":true}\n", after: pause)
+        } else if request.hasPrefix("GET /api/tags") {
+            send("200 OK", #"{"models":[{"name":"slow"}]}"#, after: 0)
+        } else {
+            send("404 Not Found", "{}", after: 0)
+        }
+    }
+}
+let slowModel = SlowModel(answer: "We meet tomorrow at noon.", pause: 4)
+if let slowPort = slowModel.start() {
+    stop(app)
+    try! #"{"onboarded": true, "excluded_apps": ["com.1password.1password"], "auto_popup": false, "diagnostic_log": true, "providers": [{"id": "ollama", "kind": "ollama", "label": "Ollama", "base_url": "http://127.0.0.1:PORT", "model": "slow"}], "active_provider": "ollama"}"#
+        .replacingOccurrences(of: "PORT", with: String(slowPort))
+        .write(toFile: support + "/settings.json", atomically: true, encoding: .utf8)
+    app = launch(appPath, home: home, environment: ["SUPEREDITR_FM_HELPER": work + "/no-helper"])
+    pump(3)
+    let slowDraft = work + "/slow.txt"
+    try! "We meet tommorow at noon.".write(toFile: slowDraft, atomically: true, encoding: .utf8)
+    check(openFront("TextEdit", bundleID: "com.apple.TextEdit", file: slowDraft), "TextEdit opens the draft for the slow AI")
+    check(selectAll(), "the draft for the slow AI is selected")
+    press(keyE, .maskCommand)
+    pump(0.1)
+    press(keyE, .maskCommand)
+    let slowPanel = waitFor(5) { overlay() }
+    check(slowPanel != nil, "⌘E E reviews the draft with a slow AI", "no overlay within 5 s")
+    if slowPanel != nil {
+        /// An element of SuperEditr's windows that `match` accepts.
+        func inPanel(_ match: (AXUIElement) -> Bool) -> AXUIElement? {
+            guard let app = running(superEditr).first,
+                  let list = attribute(AXUIElementCreateApplication(app.processIdentifier), kAXWindowsAttribute) as? [AXUIElement] else { return nil }
+            for window in list {
+                if let found = findElement(window, match) { return found }
+            }
+            return nil
+        }
+        /// How far above the panel's bottom edge the middle of `element` is.
+        func aboveBottom(_ element: AXUIElement) -> CGFloat? {
+            overlay().map { $0.frame.maxY - frame(of: element).midY }
+        }
+        let spinner = waitFor(2) { inPanel { (attribute($0, kAXDescriptionAttribute) as? String) == "Working" } }
+        check(spinner != nil, "the footer shows a spinner while the AI is answering", "panel text: \(panelText())")
+        let waiting = panelText()
+        check(!waiting.contains("⌥↩") && waiting.range(of: #"\breplace\b"#, options: .regularExpression) == nil,
+              "the footer doesn't name the replace key while the AI is answering", "panel text: \(waiting)")
+        let spinnerAt = spinner.flatMap(aboveBottom)
+        screenshot(window: overlay(), to: outDir + "/slow-ai-waiting.png")
+        let key = waitFor(10) { inPanel { (attribute($0, kAXRoleAttribute) as? String) == kAXButtonRole && allText($0).contains("⌥↩") } }
+        check(key != nil, "the footer names ⌥↩ replace once the answer is in", "panel text: \(panelText())")
+        check(inPanel { (attribute($0, kAXDescriptionAttribute) as? String) == "Working" } == nil, "the spinner is gone once the answer is in")
+        pump(0.5)  // the panel's window settles at its new height
+        screenshot(window: overlay(), to: outDir + "/slow-ai-answered.png")
+        if let spinnerAt, let keyAt = key.flatMap(aboveBottom) {
+            check(abs(spinnerAt - keyAt) < 1.5, "the key sits where the spinner was, so the footer keeps its height",
+                  "the spinner's middle was \(spinnerAt) above the panel's bottom edge, the key's is \(keyAt)")
+        }
+        check(panelText().contains("slow"), "the answer came from the slow AI", "panel text: \(panelText())")
+        press(keyEscape)
+        _ = waitFor(3) { overlay() == nil ? true : nil }
+    }
+    quitOpened("com.apple.TextEdit")
+    // Back to the rule-based checker alone for the checks that follow.
+    stop(app)
+    slowModel.stop()
+    try! #"{"onboarded": true, "excluded_apps": ["com.1password.1password"], "auto_popup": false, "diagnostic_log": true}"#
+        .write(toFile: support + "/settings.json", atomically: true, encoding: .utf8)
+    app = launch(appPath, home: home, environment: ["SUPEREDITR_FM_HELPER": work + "/no-helper"])
+    pump(3)
+} else {
+    check(false, "the test's slow AI starts")
+}
 
 // 6b. A selection holding a secret isn't reviewed: ⌘E E says why instead of opening a review. The
 // token is assembled from pieces so the source holds no secret-shaped string.
@@ -1764,6 +1901,215 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
     }
     quitOpened(chrome)
 }
+// 6c-3. A web view inside another app can hold an editable box that doesn't say it is editable: one
+// with a button's role reports no settable value and no editable ancestor. The app's Cut menu item
+// says the selection can be edited, so a review there replaces the text, and read-only text in the
+// same web view stays copy-only. The app is built here: a window with a web view and File and Edit
+// menus, whose title follows the box's text.
+let webBox = work + "/WebBox.app", webBoxID = "test.supereditr.webbox"
+let webBoxBuilt: Bool = {
+    let source = work + "/webbox.swift"
+    try! #"""
+    import AppKit
+    import WebKit
+
+    let readOnly = CommandLine.arguments.contains("read-only")
+    // Ways a page can make a box the user types in without it saying so to Accessibility.
+    let variant = CommandLine.arguments.first { $0.hasPrefix("variant=") }.map { String($0.dropFirst(8)) } ?? "wrapped"
+    let text = "We meet tommorow at noon."
+    let style = "border:1px solid; padding:6px"
+    let boxes = [
+        "wrapped": "<div role=\"button\" style=\"\(style)\"><div id=\"box\" contenteditable=\"true\">\(text)</div></div>",
+        "plaintext": "<div id=\"box\" contenteditable=\"plaintext-only\" role=\"button\" style=\"\(style)\">\(text)</div>",
+        "wrapped-plaintext": "<div role=\"button\" style=\"\(style)\"><div id=\"box\" contenteditable=\"plaintext-only\">\(text)</div></div>",
+        "user-modify": "<div id=\"box\" role=\"button\" tabindex=\"0\" style=\"\(style); -webkit-user-modify: read-write\">\(text)</div>",
+        "read-only-label": "<div id=\"box\" contenteditable=\"true\" role=\"button\" aria-readonly=\"true\" style=\"\(style)\">\(text)</div>",
+        "button": "<div id=\"box\" contenteditable=\"true\" role=\"button\" style=\"\(style)\">\(text)</div>",
+    ]
+    let page = """
+    <!doctype html><meta charset="utf-8"><title>loading</title>
+    <p id="fixed">Their going to the store tommorow.</p>
+    \(boxes[variant] ?? boxes["wrapped"]!)
+    <script>
+    const box = document.getElementById("box");
+    const show = () => { document.title = "box: " + box.textContent; };
+    box.addEventListener("input", show);
+    const target = \(readOnly ? "document.getElementById(\"fixed\")" : "box");
+    if (target === box) box.focus();
+    const range = document.createRange();
+    range.selectNodeContents(target);
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+    show();
+    </script>
+    """
+
+    final class Delegate: NSObject, NSApplicationDelegate {
+        var window: NSWindow!
+        var web: WKWebView!
+        var timer: Timer?
+        func applicationDidFinishLaunching(_ note: Notification) {
+            let bar = NSMenu()
+            let appItem = NSMenuItem()
+            appItem.submenu = NSMenu()
+            appItem.submenu!.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+            bar.addItem(appItem)
+            let fileItem = NSMenuItem()
+            fileItem.submenu = NSMenu(title: "File")
+            fileItem.submenu!.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+            bar.addItem(fileItem)
+            let editItem = NSMenuItem()
+            let edit = NSMenu(title: "Edit")
+            edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+            edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+            edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+            edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+            editItem.submenu = edit
+            bar.addItem(editItem)
+            NSApp.mainMenu = bar
+            window = NSWindow(contentRect: NSRect(x: 200, y: 300, width: 560, height: 220),
+                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            web = WKWebView(frame: window.contentView!.bounds)
+            web.autoresizingMask = [.width, .height]
+            window.contentView!.addSubview(web)
+            window.title = "loading"
+            window.makeKeyAndOrderFront(nil)
+            window.makeFirstResponder(web)
+            NSApp.activate(ignoringOtherApps: true)
+            web.loadHTMLString(page, baseURL: nil)
+            timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+                self?.web.evaluateJavaScript("document.title") { title, _ in
+                    if let title = title as? String { self?.window.title = title }
+                }
+            }
+        }
+    }
+
+    let app = NSApplication.shared
+    let delegate = Delegate()
+    app.delegate = delegate
+    app.setActivationPolicy(.regular)
+    app.run()
+    """#.write(toFile: source, atomically: true, encoding: .utf8)
+    try! FileManager.default.createDirectory(atPath: webBox + "/Contents/MacOS", withIntermediateDirectories: true)
+    try! """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0"><dict>
+    <key>CFBundleIdentifier</key><string>\(webBoxID)</string>
+    <key>CFBundleName</key><string>WebBox</string>
+    <key>CFBundleExecutable</key><string>WebBox</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    </dict></plist>
+    """.write(toFile: webBox + "/Contents/Info.plist", atomically: true, encoding: .utf8)
+    let build = Process()
+    build.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+    build.arguments = ["swiftc", "-O", source, "-o", webBox + "/Contents/MacOS/WebBox"]
+    try? build.run()
+    build.waitUntilExit()
+    return build.terminationStatus == 0
+}()
+check(webBoxBuilt, "the test builds an app with a web view")
+if webBoxBuilt {
+    /// The web view app's window title: "box: " and the box's text, once the page has loaded.
+    func boxText() -> String { mainWindow(webBoxID).flatMap { attribute($0, kAXTitleAttribute) as? String } ?? "" }
+    func lastWebBoxRead() -> String {
+        let log = home + "/Library/Logs/SuperEditr/capture.log"
+        let lines = (try? String(contentsOfFile: log, encoding: .utf8))?.split(separator: "\n") ?? []
+        return lines.last { $0.contains("\(webBoxID): read") }.map(String.init) ?? "none"
+    }
+    func reviewWebBox(_ what: String) -> Bool {
+        press(keyE, .maskCommand)
+        pump(0.1)
+        press(keyE, .maskCommand)
+        let panel = waitFor(10) { overlay() }
+        check(panel != nil, "⌘E E reviews \(what)", "no overlay within 10 s; last read: \(lastWebBoxRead())")
+        if panel != nil { pump(1.5) }  // the rule-based checker's result
+        return panel != nil
+    }
+
+    /// How the web view's focused element describes itself, with the roles above it. `hidden` when
+    /// it reports neither a settable value nor an editable ancestor, the two things SuperEditr
+    /// takes as saying a field can be edited.
+    func focusedBox() -> (hidden: Bool, says: String)? {
+        guard let element = focusedElement() else { return nil }
+        var settable = DarwinBoolean(false)
+        AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
+        let ancestor = attribute(element, "AXEditableAncestor") != nil
+        var roles: [String] = []
+        var current: AXUIElement? = element
+        while let e = current, roles.count < 5 {
+            roles.append(attribute(e, kAXRoleAttribute) as? String ?? "no role")
+            current = attribute(e, kAXParentAttribute).map { $0 as! AXUIElement }
+        }
+        // A web view that hasn't built its tree yet names the window or the view itself.
+        guard roles.contains("AXWebArea"), roles.first != "AXWebArea" else { return nil }
+        return (!settable.boolValue && !ancestor,
+                "\(roles.joined(separator: " in ")); value settable \(settable.boolValue), editable ancestor \(ancestor)")
+    }
+
+    // The box, selected by the page. What the check stands on: the box must hide that it is
+    // editable, as such an app's does. The page has several ways to build one; the first that a web
+    // view reports that way is used.
+    var boxVariant: String?
+    for variant in ["wrapped", "plaintext", "wrapped-plaintext", "user-modify", "read-only-label", "button"] {
+        guard openFront(webBox, bundleID: webBoxID, newInstance: true, launchArguments: ["variant=\(variant)"]),
+              waitFor(10, { boxText().contains("tommorow") ? true : nil }) != nil else {
+            log("NOTE web view box \"\(variant)\": the app or its page didn't open; window title: \(boxText())")
+            quitOpened(webBoxID)
+            continue
+        }
+        pump(1)
+        // A web view builds its Accessibility tree once asked, so the first answers can be empty.
+        let owner = waitFor(5) { focusedBox() }
+        log("NOTE web view box \"\(variant)\": \(owner?.says ?? "focus isn't on an element inside the web view; it is on \(focusedElement().flatMap { attribute($0, kAXRoleAttribute) as? String } ?? "nothing")")")
+        if owner?.hidden == true {
+            boxVariant = variant
+            break
+        }
+        quitOpened(webBoxID)
+    }
+    check(boxVariant != nil, "a web view box hides that it is editable", "every way of building one says it is editable; see the notes above")
+    if boxVariant != nil {
+        if reviewWebBox("the box that doesn't say it is editable") {
+            let offered = waitFor(3) { () -> String? in
+                let text = panelText()
+                return text.contains("⌥↩") && !text.contains("replace text here") ? text : nil
+            }
+            check(offered != nil, "the review offers ⌥↩ replace there", "panel text: \(panelText()); last read: \(lastWebBoxRead())")
+            screenshot(window: overlay(), to: outDir + "/web-view-box-review.png")
+            press(keyReturn, .maskAlternate)
+            let fixed = waitFor(5) { boxText().contains("tomorrow") ? boxText() : nil }
+            check(fixed != nil, "⌥↩ replaces the text in the box", "the box holds: \(boxText())")
+            log("NOTE the web view's box: \(lastWebBoxRead())")
+            if overlay() != nil {
+                log("NOTE after replacing in the web view's box the panel says: \(panelText())")
+                press(keyEscape)
+                _ = waitFor(3) { overlay() == nil ? true : nil }
+            }
+        }
+    }
+    quitOpened(webBoxID)
+
+    // Read-only text in the same page, selected by the page.
+    let fixedOpened = openFront(webBox, bundleID: webBoxID, newInstance: true, launchArguments: ["read-only", "variant=\(boxVariant ?? "wrapped")"])
+    check(fixedOpened, "the web view app opens with its read-only text selected")
+    if fixedOpened {
+        check(waitFor(10) { boxText().contains("tommorow") ? true : nil } != nil, "the web view's page loads again", "window title: \(boxText())")
+        pump(1)
+        if reviewWebBox("read-only text in the web view") {
+            let saysWhy = waitFor(3) { () -> String? in
+                let text = panelText()
+                return text.contains("replace text here") ? text : nil
+            }
+            check(saysWhy != nil, "read-only text in the web view stays copy-only", "panel text: \(panelText()); last read: \(lastWebBoxRead())")
+            press(keyEscape)
+            _ = waitFor(3) { overlay() == nil ? true : nil }
+        }
+    }
+    quitOpened(webBoxID)
+}
+
 // 6d. ↩ in a review applies the fix and never reaches the app: the panel doesn't take keyboard
 // focus, and SuperEditr's keyboard tap takes ↩ from the app instead. In a chat app, ↩ reaching the
 // app would send the message. The second time, the instruction box (/) takes focus first and esc
@@ -1824,8 +2170,9 @@ if twoPanel != nil {
         return value == fixed ? value : nil
     }
     check(value != nil, "both fixes land in TextEdit", "TextEdit reads \(String(reflecting: focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""))")
-    let path = appliedPath("com.apple.TextEdit")
-    check(path.contains("applied in place: 2 edits"), "TextEdit applies the proofread in place", "the log says: \(path)")
+    // The log line is written after the text changes; until then the last one is an earlier review's.
+    let path = waitFor(3) { appliedPath("com.apple.TextEdit").contains("applied in place: 2 edits") ? true : nil }
+    check(path != nil, "TextEdit applies the proofread in place", "the log says: \(appliedPath("com.apple.TextEdit"))")
 }
 quitOpened("com.apple.TextEdit")
 

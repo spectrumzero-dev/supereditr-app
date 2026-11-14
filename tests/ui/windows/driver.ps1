@@ -370,6 +370,26 @@ function Notepad-Case {
   $t = Notepad-Text $w
   Check 'Notepad: one Ctrl+Z puts the original back' ($t -eq $Sample) $t
   Shot 'notepad-undone'
+  # The footer's replace key is a button: a click on it does what Alt+Enter does.
+  Key 'ctrl+a'
+  Key 'ctrl+shift+f2'
+  Wait-Panel 6 | Out-Null
+  Wait-PanelText '\d+ changes?' 15 | Out-Null
+  $replace = Ui-Find (Panel) '*replace*' $ButtonType
+  Check "the footer's replace key is a button" ([bool]$replace) (Panel-Text)
+  if ($replace) {
+    $box = $replace.Current.BoundingRectangle
+    [Desk]::Click([int]($box.X + $box.Width / 2), [int]($box.Y + $box.Height / 2))
+    $t = ''
+    for ($i = 0; $i -lt 20 -and $t -notlike "*They're going*"; $i++) { Start-Sleep -Milliseconds 250; $t = Notepad-Text $w }
+    Check 'clicking the replace key: the document holds the fix' ($t -like "*They're going*" -and $t -like '*tomorrow*') $t
+    Check 'clicking the replace key closes the panel' (Wait-Closed 3)
+    Shot 'notepad-replace-key'
+    [Desk]::Front($w) | Out-Null
+    Key 'ctrl+z'
+    Start-Sleep -Milliseconds 500
+  }
+  if ((Panel) -ne [IntPtr]::Zero) { Key 'esc'; Wait-Closed 3 | Out-Null }
   End-Case
 }
 

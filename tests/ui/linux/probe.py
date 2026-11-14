@@ -122,7 +122,12 @@ def panel():
 
 
 def press(window_title, button):
-    """Presses a button in one of SuperEditr's windows through its accessible action."""
+    """Presses a button in one of SuperEditr's windows through its accessible action. A name that
+    starts with "~" matches any button whose name contains the rest."""
+    def named(node):
+        name = (node.get_name() or "").strip()
+        return button[1:] in name if button.startswith("~") else name == button
+
     for app, _, name in apps():
         if "supereditr" not in name.lower():
             continue
@@ -132,7 +137,7 @@ def press(window_title, button):
                 continue
             for node in walk(window):
                 try:
-                    if node.get_role() == Atspi.Role.BUTTON and (node.get_name() or "").strip() == button:
+                    if node.get_role() == Atspi.Role.BUTTON and named(node):
                         return {"pressed": Atspi.Action.do_action(node, 0)}
                 except Exception as error:
                     return {"error": str(error)}

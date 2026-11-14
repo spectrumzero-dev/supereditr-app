@@ -33,6 +33,7 @@ public static class Desk {
   [DllImport("user32.dll")] static extern bool AttachThreadInput(uint a, uint b, bool attach);
   [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
   [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
@@ -92,6 +93,18 @@ public static class Desk {
     Thread.Sleep(30);
     Send(up);
     Thread.Sleep(30);
+  }
+
+  /// <summary>Moves the pointer to a point on the screen, in physical pixels, and clicks the left button there.</summary>
+  public static void Click(int x, int y) {
+    SetCursorPos(x, y);
+    Thread.Sleep(100);
+    foreach (uint flag in new uint[] { 2, 4 }) {  // left button down, then up
+      var i = new INPUT { type = 0 };
+      i.u.mi = new MOUSEINPUT { dwFlags = flag };
+      Send(new List<INPUT> { i });
+      Thread.Sleep(40);
+    }
   }
 
   /// <summary>Types text as Unicode characters, independent of the keyboard layout.</summary>

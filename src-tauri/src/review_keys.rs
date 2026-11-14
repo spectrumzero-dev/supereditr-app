@@ -57,6 +57,17 @@ impl Key {
     }
 }
 
+/// Whether something other than the app under review has the keyboard: a launcher's search box, or
+/// another panel that takes keys without coming to the front. The app in front doesn't change then,
+/// so the review stays open, but the keys are for that box and not for the panel. Each argument is
+/// a process ID, or 0 for none or not known: a notice belongs to no app, and until Accessibility
+/// has said who has the keyboard the panel takes its keys, so ↩ never reaches a chat app by default.
+/// SuperEditr's own windows never count as elsewhere.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn keyboard_is_elsewhere(reviewed: i32, keyboard: i32, own: i32) -> bool {
+    reviewed != 0 && keyboard != 0 && keyboard != reviewed && keyboard != own
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,6 +107,16 @@ mod tests {
         for name in ["v", "z", "q", "w", "Tab"] {
             assert!(!key(name, true, false).for_panel(), "⌘{name} reaches the app");
         }
+    }
+
+    #[test]
+    fn the_panel_gives_up_its_keys_only_to_another_app_known_to_have_the_keyboard() {
+        let (reviewed, launcher, own) = (100, 200, 300);
+        assert!(keyboard_is_elsewhere(reviewed, launcher, own), "a launcher's box has the keyboard");
+        assert!(!keyboard_is_elsewhere(reviewed, reviewed, own), "the app under review has it");
+        assert!(!keyboard_is_elsewhere(reviewed, 0, own), "not known yet, or Accessibility was slow to say");
+        assert!(!keyboard_is_elsewhere(reviewed, own, own), "the panel itself, while an instruction is typed");
+        assert!(!keyboard_is_elsewhere(0, launcher, own), "a notice belongs to no app");
     }
 
     #[test]

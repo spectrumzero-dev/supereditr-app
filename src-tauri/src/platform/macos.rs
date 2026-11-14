@@ -2733,25 +2733,50 @@ pub fn take_review_keys(take: bool) -> bool {
 /// The app under review, or 0 for none: the tap takes the panel's keys only while this app has the
 /// keyboard.
 static REVIEW_APP: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+/// The app that has the keyboard, as last read by `watch_keyboard_app`, or 0 when it isn't known.
+static KEYBOARD_APP: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+/// How often the app with the keyboard is read while the panel takes keys. Short, so the first
+/// key typed into a launcher that has just opened already goes to it.
+const KEYBOARD_APP_EVERY: Duration = Duration::from_millis(40);
 
 /// Names the app whose review the panel shows, or 0 for a notice, which belongs to no app.
 pub fn set_review_app(pid: i32) {
+    static WATCHING: std::sync::Once = std::sync::Once::new();
     REVIEW_APP.store(pid, Ordering::Relaxed);
+    KEYBOARD_APP.store(0, Ordering::Relaxed);
+    WATCHING.call_once(|| {
+        let _ = std::thread::Builder::new().name("keyboard-app".into()).spawn(watch_keyboard_app);
+    });
 }
 
-/// Whether something other than the app under review has the keyboard: a launcher's search box, or
-/// another panel that takes keys without coming to the front. The app in front doesn't change then,
-/// so the review stays open, but the keys are for that box and not for the panel. False when
-/// Accessibility can't say who has the keyboard.
-fn keyboard_is_elsewhere() -> bool {
-    let reviewed = REVIEW_APP.load(Ordering::Relaxed);
-    if reviewed == 0 {
-        return false;
+/// Keeps `KEYBOARD_APP` current while the panel takes keys for a review. The keyboard tap must
+/// answer at once: a tap that waits on Accessibility stalls typing, and macOS turns off a tap that
+/// is slow. So the question is asked here, and the tap reads the last answer.
+fn watch_keyboard_app() {
+    loop {
+        let taking = REVIEW_KEYS.load(Ordering::Relaxed) != TAKE_NONE && REVIEW_APP.load(Ordering::Relaxed) != 0;
+        if !taking {
+            KEYBOARD_APP.store(0, Ordering::Relaxed);
+            std::thread::sleep(Duration::from_millis(200));
+            continue;
+        }
+        let pid = Element::from_create(unsafe { AXUIElementCreateSystemWide() })
+            .and_then(|system| system.element("AXFocusedApplication"))
+            .and_then(|app| app.pid())
+            .unwrap_or(0);
+        KEYBOARD_APP.store(pid, Ordering::Relaxed);
+        std::thread::sleep(KEYBOARD_APP_EVERY);
     }
-    Element::from_create(unsafe { AXUIElementCreateSystemWide() })
-        .and_then(|system| system.element("AXFocusedApplication"))
-        .and_then(|app| app.pid())
-        .is_some_and(|pid| pid != reviewed)
+}
+
+/// Whether something other than the app under review has the keyboard (see
+/// `review_keys::keyboard_is_elsewhere`), from the last read.
+fn keyboard_is_elsewhere() -> bool {
+    crate::review_keys::keyboard_is_elsewhere(
+        REVIEW_APP.load(Ordering::Relaxed),
+        KEYBOARD_APP.load(Ordering::Relaxed),
+        own_pid(),
+    )
 }
 
 /// A suggestion that opened by itself shows: the tap takes esc alone from the app, to close the
@@ -2905,7 +2930,6 @@ pub fn start_double_press_tap(
                         // A double-press shortcut still works during a review (⌘E E starts a new one).
                         let taking = REVIEW_KEYS.load(Ordering::Relaxed);
                         if matched.is_none() && taking != TAKE_NONE {
-                            // Asked only for a key the panel would take, since it asks Accessibility.
                             let key = review_key(event, code, taking == TAKE_ALL).filter(|_| !keyboard_is_elsewhere());
                             // Shortcuts are what can reach the wrong place. A key code, so never text.
                             if taking == TAKE_ALL && mods & (double_press::COMMAND | double_press::CONTROL) != 0 {

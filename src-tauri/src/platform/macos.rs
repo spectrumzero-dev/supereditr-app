@@ -1027,9 +1027,15 @@ fn capture_ax(app: &Element, pid: i32, bundle_id: &str, app_name: &str) -> Resul
     let (element, text) = read_until(tree_deadline, in_text_field, || read_selection(app))?;
     // A text role alone isn't enough: terminals, consoles, and read-only text views are text areas
     // too. Editable fields let their value be set; web editors report an editable ancestor.
-    let editable = element.settable("AXValue") || element.attr("AXEditableAncestor").is_some();
-    let range = element.range("AXSelectedTextRange");
     let web = is_browser_or_electron(bundle_id, pid) || in_web_area(&element);
+    // A web view inside another app can hold an editable box that doesn't say so: one given a
+    // button's role reports no settable value and no editable ancestor, though the user types in it.
+    // There the app's Cut menu item answers instead. Browsers and Chromium apps describe their
+    // fields well enough, and their menus are left out of it.
+    let editable = element.settable("AXValue")
+        || element.attr("AXEditableAncestor").is_some()
+        || (web && !is_browser_or_electron(bundle_id, pid) && cut_enabled(app));
+    let range = element.range("AXSelectedTextRange");
     // Only a text field is searched for code: when the selection is read from a whole page, the
     // page can have thousands of elements.
     let field = matches!(element.string("AXRole").as_deref(), Some("AXTextArea" | "AXTextField"));
@@ -1204,11 +1210,21 @@ fn press_copy_menu(app: &Element) -> Option<CopyRequest> {
 /// Presses the menu item whose shortcut is ⌘ plus `key` alone, such as Edit ▸ Copy or Edit ▸ Paste.
 /// Returns Some(false) when the item is disabled and None when the app has no such item.
 fn press_menu_item(app: &Element, key: &str) -> Option<bool> {
-    // A busy app answers each query slowly; give up and send the keystroke rather than make the
-    // user wait.
+    let item = menu_item(app, key)?;
+    if item.flag("AXEnabled") == Some(false) {
+        return Some(false);
+    }
+    item.press();
+    Some(true)
+}
+
+/// The menu item whose shortcut is ⌘ plus `key` alone, or None when the app has no such item or is
+/// too slow to say.
+fn menu_item(app: &Element, key: &str) -> Option<Element> {
+    // A busy app answers each query slowly; give up rather than make the user wait.
     let deadline = Instant::now() + Duration::from_millis(500);
     let bar = app.element("AXMenuBar")?;
-    // Skip the Apple and application menus; Copy and Paste live in Edit, normally the third.
+    // Skip the Apple and application menus; Cut, Copy and Paste live in Edit, normally the third.
     for menu_title in bar.children().into_iter().skip(2) {
         for menu in menu_title.children() {
             for item in menu.children() {
@@ -1216,20 +1232,22 @@ fn press_menu_item(app: &Element, key: &str) -> Option<bool> {
                     return None;
                 }
                 // Electron sets lowercase key equivalents; modifiers 0 means ⌘ alone.
-                if !item.string("AXMenuItemCmdChar").is_some_and(|c| c.eq_ignore_ascii_case(key))
-                    || item.number("AXMenuItemCmdModifiers") != Some(0)
+                if item.string("AXMenuItemCmdChar").is_some_and(|c| c.eq_ignore_ascii_case(key))
+                    && item.number("AXMenuItemCmdModifiers") == Some(0)
                 {
-                    continue;
+                    return Some(item);
                 }
-                if item.flag("AXEnabled") == Some(false) {
-                    return Some(false);
-                }
-                item.press();
-                return Some(true);
             }
         }
     }
     None
+}
+
+/// Whether the app's own Cut menu item is enabled. An app enables Cut only for a selection it would
+/// let the user remove, so with text selected this says the selection is somewhere text can be
+/// edited, whatever the element calls itself.
+fn cut_enabled(app: &Element) -> bool {
+    menu_item(app, "x").and_then(|item| item.flag("AXEnabled")) == Some(true)
 }
 
 fn capture_clipboard(app: &Element, pid: i32, bundle_id: String, app_name: String) -> Result<Capture, PlatformError> {

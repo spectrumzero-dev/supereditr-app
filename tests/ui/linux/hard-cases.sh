@@ -117,6 +117,27 @@ large_case() {
   page="$(vm "d_addr '^chromium(-browser)? \\| SuperEditr smoke fields'")"
   vm "d_focus $page; sleep 0.3; cdp_select large" > /dev/null
   length="$(vm "cdp \"document.getElementById('large').value.length\"")"
+  # A tall panel, opened three times and left a moment each time. Its window grows while the
+  # compositor is still mapping it, and a resize lost then once left the panel cut short and hanging
+  # off the bottom of the screen for good.
+  local round win where whole mark again
+  mark="$(vm log_mark)"
+  for round in 1 2 3; do
+    win="$(vm d_active)"
+    key meta_l-alt-e
+    vm 'wait_panel 6' > /dev/null
+    vm "wait_panel_text '[0-9]+ changes?' 15" > /dev/null
+    sleep 2
+    where="$(placement "$(vm panel_placed)" "$win")"
+    whole="$(vm panel_whole)"
+    check "large: opened and left open ($round of 3), the panel is whole and on one monitor" \
+      "$(ok both has "$where" "^ok" has "$whole" "^ok")" "${where#* }; ${whole#* }"
+    key esc
+    vm 'wait_closed 3' || true
+    vm "d_focus $page; sleep 0.3; cdp_select large" > /dev/null
+  done
+  again="$(vm "log_since $mark | grep -c 'placing it again'" || true)"
+  note "large: SuperEditr put the panel back ${again:-0} times in those three reviews"
   review_and_apply "large" "$page" chromium 75-large
   check "large: read through AT-SPI, pasting allowed" "$(ok has "$REVIEW_READ" "read $length characters via AT-SPI.*pasting allowed")" "${REVIEW_READ#* }"
   check "large: Alt+Enter applies" "$(ok has "$REVIEW_RESULT" ": applied")" "${REVIEW_RESULT#* }"

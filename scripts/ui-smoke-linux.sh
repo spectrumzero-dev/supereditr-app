@@ -264,9 +264,18 @@ review_and_apply() {
   if [[ "$panel_ms" == none ]]; then REVIEW_RESULT=""; return; fi
   text="$(vm "wait_panel_text '[0-9]+ changes?' 15")"
   check "$label: the panel shows a fix" "$(ok has "$text" "[0-9]+ changes?")" "${text:0:120}"
-  REVIEW_PANEL="$(vm panel_placed)"
-  where="$(placement "$REVIEW_PANEL" "$win")"
-  check "$label: the panel is on one monitor, over the app" "$(ok has "$where" "^ok")" "${where#* }"
+  # The compositor can undo a resize made while it maps the panel, and SuperEditr puts the panel
+  # back within moments (overlay.rs, keep_placed): it gets two seconds to be whole and in place.
+  local whole try
+  for try in 1 2 3 4 5 6 7 8; do
+    REVIEW_PANEL="$(vm panel_placed)"
+    where="$(placement "$REVIEW_PANEL" "$win")"
+    whole="$(vm panel_whole)"
+    if has "$where" "^ok" && has "$whole" "^ok"; then break; fi
+    sleep 0.25
+  done
+  check "$label: the panel is on one monitor, over the app" "$(ok has "$where" "^ok")" "${where#* } (look $try)"
+  check "$label: the panel's window is as tall as its card" "$(ok has "$whole" "^ok")" "${whole#* }"
   where="$(next_to "$REVIEW_PANEL" "$win" "${rect:-null}" "$pointer")"
   check "$label: the panel is next to what was reviewed" "$(ok has "$where" "^ok")" "${where#* }"
   vm "shot $name-review"

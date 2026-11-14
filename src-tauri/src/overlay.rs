@@ -7,7 +7,9 @@
 //!
 //! On Linux (Wayland) an app can't place its own windows or keep keys from another app's window.
 //! The desktop places the panel through a window rule, and for a review started with the shortcut
-//! the panel takes keyboard focus, then hands it back to the app when it closes.
+//! the panel takes keyboard focus, then hands it back to the app when it closes. The desktop can
+//! also undo a resize made while it is putting the panel on screen, so each placement is checked
+//! afterwards (`keep_placed`).
 //!
 //! On Windows the panel is a window that never activates on a click (`WS_EX_NOACTIVATE`), shown,
 //! placed and hidden with Win32 calls in physical pixels (`platform::overlay`). A review started
@@ -131,9 +133,86 @@ fn place(app: &AppHandle, anchor: Rect, height: f64) {
     *PLACED.lock().unwrap() = Some(Rect { x, y, width: WIDTH, height });
     let _ = window.set_size(LogicalSize::new(WIDTH, height));
     #[cfg(target_os = "linux")]
-    platform::place_overlay(Rect { x, y, width: WIDTH, height }, window.is_visible().unwrap_or(false));
+    {
+        let wanted = Rect { x, y, width: WIDTH, height };
+        platform::place_overlay(wanted, window.is_visible().unwrap_or(false));
+        keep_placed(window, wanted);
+    }
     #[cfg(target_os = "macos")]
     let _ = window.set_position(LogicalPosition::new(x, y));
+}
+
+/// Counts the panel's placements and each time it is hidden, so a check of an earlier placement
+/// stops.
+#[cfg(target_os = "linux")]
+static PLACEMENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How the panel's window differs from where it was put.
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, PartialEq)]
+struct Drift {
+    /// The window is smaller than it was asked to be, so part of the card is cut off.
+    short: bool,
+}
+
+/// Compares where the desktop has the panel's window with where it was put. A window larger than
+/// asked is fine: GTK keeps a window that can't be resized at least as tall as it was made, and the
+/// room past the card is transparent.
+#[cfg(any(target_os = "linux", test))]
+fn drift(wanted: Rect, actual: Rect) -> Option<Drift> {
+    let short = actual.width + 1.0 < wanted.width || actual.height + 1.0 < wanted.height;
+    let moved = (actual.x - wanted.x).abs() > 1.0 || (actual.y - wanted.y).abs() > 1.0;
+    (short || moved).then_some(Drift { short })
+}
+
+/// Checks a few times that the panel is where it was just put, and puts it back when it isn't.
+///
+/// On Hyprland the panel's size is the GTK window's own: Hyprland takes it from the size the window
+/// says it must have and, each time that changes, keeps the window's centre where it was and tells
+/// the window its new size. A resize made while one of those messages is on its way can lose: GTK
+/// takes the older size in the message as its size and forgets the one it was asked for. A tall
+/// panel then falls back to the height the window was made with, and Hyprland shrinks it around its
+/// centre: cut short, and hanging off the bottom of the screen. Nothing corrects that later. It
+/// happens when the answer arrives while the desktop is still putting the panel on screen.
+#[cfg(target_os = "linux")]
+fn keep_placed(window: WebviewWindow, wanted: Rect) {
+    use std::time::Duration;
+    /// Milliseconds between checks. They start again after a correction, which moves the window
+    /// once more when it resizes it.
+    const WAITS: [u64; 6] = [40, 80, 150, 300, 600, 1200];
+    const MOST_CORRECTIONS: u32 = 6;
+    let placement = PLACEMENT.fetch_add(1, Ordering::Relaxed) + 1;
+    tauri::async_runtime::spawn(async move {
+        let (mut corrections, mut next) = (0, 0);
+        while let Some(wait) = WAITS.get(next) {
+            next += 1;
+            tokio::time::sleep(Duration::from_millis(*wait)).await;
+            if PLACEMENT.load(Ordering::Relaxed) != placement {
+                return;
+            }
+            // Not on screen yet, or on a desktop that can't say where its windows are.
+            let Some(actual) = platform::overlay_rect() else { continue };
+            let Some(drift) = drift(wanted, actual) else { continue };
+            let again = corrections < MOST_CORRECTIONS;
+            platform::trace(format_args!(
+                "panel is at {:.0},{:.0}, {:.0}×{:.0}, not where it was put: {}",
+                actual.x,
+                actual.y,
+                actual.width,
+                actual.height,
+                if again { "placing it again" } else { "leaving it there" }
+            ));
+            if !again {
+                return;
+            }
+            corrections += 1;
+            if drift.short {
+                let _ = window.set_size(LogicalSize::new(wanted.width, wanted.height));
+            }
+            platform::place_overlay(wanted, true);
+            next = 0;
+        }
+    });
 }
 
 /// Where the overlay window goes for a selection at `anchor`: the top-left corner, in points.
@@ -374,6 +453,8 @@ pub fn hide(app: &AppHandle) {
     let had_focus = platform::overlay::hiding();
     #[cfg(target_os = "linux")]
     let had_focus = platform::overlay_focused();
+    #[cfg(target_os = "linux")]
+    PLACEMENT.fetch_add(1, Ordering::Relaxed);
     give_focus_back(app);
     on_main(app, move |app| {
         #[cfg(target_os = "macos")]
@@ -398,4 +479,35 @@ pub fn hide(app: &AppHandle) {
             platform::overlay_closed();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panel_shrunk_around_its_centre_is_resized_and_moved() {
+        // A tall panel for a long text, put at 590,297: the desktop was seen leaving it 240 high,
+        // 146 lower, with its foot off an 800-high screen.
+        let wanted = Rect { x: 590.0, y: 297.0, width: WIDTH, height: 531.0 };
+        let shrunk = Rect { x: 590.0, y: 443.0, width: WIDTH, height: 240.0 };
+        assert_eq!(drift(wanted, shrunk), Some(Drift { short: true }));
+        // Once it's tall again it only has to be right where it was put.
+        assert_eq!(drift(wanted, Rect { y: 297.0, ..wanted }), None);
+        assert_eq!(drift(wanted, Rect { y: 298.0, ..wanted }), None, "half a pixel rounds either way");
+    }
+
+    #[test]
+    fn a_panel_moved_by_its_own_resize_is_only_moved() {
+        // Growing from 210 to 531 after the move reached the desktop: 160 higher, at its full size.
+        let wanted = Rect { x: 590.0, y: 297.0, width: WIDTH, height: 531.0 };
+        assert_eq!(drift(wanted, Rect { y: 137.0, ..wanted }), Some(Drift { short: false }));
+        assert_eq!(drift(wanted, Rect { x: 600.0, ..wanted }), Some(Drift { short: false }));
+    }
+
+    #[test]
+    fn a_window_taller_than_a_short_panel_is_left_alone() {
+        let wanted = Rect { x: 3.0, y: 484.0, width: WIDTH, height: 201.0 };
+        assert_eq!(drift(wanted, Rect { height: 240.0, ..wanted }), None);
+    }
 }

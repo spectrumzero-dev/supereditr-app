@@ -1891,23 +1891,24 @@ if webBoxBuilt {
         return panel != nil
     }
 
-    /// How the element holding the web view's selection describes itself: the focused element or
-    /// the nearest one above it with selected text, as SuperEditr reads it.
-    func selectionOwner() -> (hidden: Bool, says: String)? {
-        guard var element = focusedElement() else { return nil }
-        for level in 0..<8 {
-            if let selected = attribute(element, kAXSelectedTextAttribute) as? String, !selected.isEmpty {
-                var settable = DarwinBoolean(false)
-                AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
-                let ancestor = attribute(element, "AXEditableAncestor") != nil
-                let role = attribute(element, kAXRoleAttribute) as? String ?? "no role"
-                return (!settable.boolValue && !ancestor,
-                        "\(role), \(level) above the focus, value settable \(settable.boolValue), editable ancestor \(ancestor)")
-            }
-            guard let parent = attribute(element, kAXParentAttribute) else { return nil }
-            element = parent as! AXUIElement
+    /// How the web view's focused element describes itself, with the roles above it. `hidden` when
+    /// it reports neither a settable value nor an editable ancestor, the two things SuperEditr
+    /// takes as saying a field can be edited.
+    func focusedBox() -> (hidden: Bool, says: String)? {
+        guard let element = focusedElement() else { return nil }
+        var settable = DarwinBoolean(false)
+        AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
+        let ancestor = attribute(element, "AXEditableAncestor") != nil
+        var roles: [String] = []
+        var current: AXUIElement? = element
+        while let e = current, roles.count < 5 {
+            roles.append(attribute(e, kAXRoleAttribute) as? String ?? "no role")
+            current = attribute(e, kAXParentAttribute).map { $0 as! AXUIElement }
         }
-        return nil
+        // A web view that hasn't built its tree yet names the window or the view itself.
+        guard roles.contains("AXWebArea"), roles.first != "AXWebArea" else { return nil }
+        return (!settable.boolValue && !ancestor,
+                "\(roles.joined(separator: " in ")); value settable \(settable.boolValue), editable ancestor \(ancestor)")
     }
 
     // The box, selected by the page. What the check stands on: the box must hide that it is
@@ -1923,8 +1924,8 @@ if webBoxBuilt {
         }
         pump(1)
         // A web view builds its Accessibility tree once asked, so the first answers can be empty.
-        let owner = waitFor(5) { selectionOwner() }
-        log("NOTE web view box \"\(variant)\": \(owner?.says ?? "no element with the selection")")
+        let owner = waitFor(5) { focusedBox() }
+        log("NOTE web view box \"\(variant)\": \(owner?.says ?? "focus isn't on an element inside the web view; it is on \(focusedElement().flatMap { attribute($0, kAXRoleAttribute) as? String } ?? "nothing")")")
         if owner?.hidden == true {
             boxVariant = variant
             break

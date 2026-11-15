@@ -65,6 +65,13 @@
         <span><kbd>{w.copyKey}</kbd> copy</span>
       </div>
     </div>
+    <div class="row">
+      <div>
+        <div class="label">Always show key tips in the suggestion panel</div>
+        <div class="hint">Off, the tips appear for your first few reviews, or until you close them.</div>
+      </div>
+      <input type="checkbox" class="switch" bind:checked={config.always_show_tips} onchange={onchange} />
+    </div>
     {#if problems.length}
       <div class="row warn">Some shortcuts are taken by another app: {problems.join("; ")}</div>
     {/if}

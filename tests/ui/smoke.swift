@@ -1114,7 +1114,7 @@ stop(app)
 // Chrome check.
 let named = work + "/named.txt"
 try! "Rhyan has tennis lessons today.".write(toFile: named, atomically: true, encoding: .utf8)
-try! #"{"onboarded": true, "excluded_apps": ["com.1password.1password"], "auto_popup": false, "diagnostic_log": true}"#
+try! #"{"onboarded": true, "excluded_apps": ["com.1password.1password"], "auto_popup": false, "diagnostic_log": true, "always_show_tips": true}"#
     .write(toFile: support + "/settings.json", atomically: true, encoding: .utf8)
 app = launch(appPath, home: home, environment: ["SUPEREDITR_FM_HELPER": work + "/no-helper"])
 pump(3)
@@ -1149,6 +1149,30 @@ if keepPanel != nil {
         return words
     }
     check(saved != nil, "A adds the kept name to the word list", "settings.json has no \"Rhyan\" in words")
+    // The key tips, which the settings above always show: their × closes them, says where the keys
+    // are listed, and turns "always show" off.
+    let closeTips = waitFor(3) { () -> AXUIElement? in
+        guard let app = running(superEditr).first,
+              let list = attribute(AXUIElementCreateApplication(app.processIdentifier), kAXWindowsAttribute) as? [AXUIElement] else { return nil }
+        return list.lazy.compactMap { button(in: $0, containing: "Don’t show tips again") }.first
+    }
+    check(closeTips != nil && panelText().contains("Tip:"), "the key tips show with a close button", "panel text: \(panelText())")
+    if let closeTips {
+        click(closeTips)
+        let closed = waitFor(3) { () -> String? in
+            let text = panelText()
+            return !text.contains("Tip:") && text.contains("Settings → Shortcuts") ? text : nil
+        }
+        screenshot(window: overlay(), to: outDir + "/tips-closed.png")
+        check(closed != nil, "× closes the key tips and says where the keys are listed", "panel text: \(panelText())")
+        let off = waitFor(3) { () -> Bool? in
+            guard let data = FileManager.default.contents(atPath: support + "/settings.json"),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  json["always_show_tips"] as? Bool == false else { return nil }
+            return true
+        }
+        check(off != nil, "closing the key tips turns “always show” off", "settings.json still has always_show_tips on")
+    }
     press(keyEscape)
 }
 quitOpened("com.apple.TextEdit")

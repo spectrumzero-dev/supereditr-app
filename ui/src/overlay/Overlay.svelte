@@ -6,6 +6,7 @@
   import type { EngineEvent, SessionPayload, StatusPayload } from "../lib/types";
   import { ipc } from "./ipc";
   import { canUse, emptyReview, footerAction, keptWording, notReplacing, offerAnyway, offerToKeep, reduce, runRequest, startReplacing, type Replacing, type Review } from "./review";
+  import { closeTips, countTip } from "./tips";
   import { words } from "../lib/platform";
 
   let session = $state<SessionPayload | null>(null);
@@ -48,18 +49,15 @@
   const keepOffer = $derived(offerToKeep(review, rejected, focusedId, added));
   const action = $derived(footerAction(review, session?.canApply ?? false));
 
-  /** Key tips for the first few reviews, until the keys are familiar. */
-  const TIP_REVIEWS = 3;
+  /** Key tips for the first few reviews, until the keys are familiar or the author closes them. */
   let showTips = $state(false);
-  function countTip(): boolean {
-    try {
-      const seen = Number(localStorage.getItem("tipsSeen") ?? 0);
-      if (seen >= TIP_REVIEWS) return false;
-      localStorage.setItem("tipsSeen", String(seen + 1));
-      return true;
-    } catch {
-      return false;
-    }
+
+  function hideTips() {
+    showTips = false;
+    closeTips();
+    // Also turns "always show" off; if that can't be saved, the tips return with the next review.
+    ipc.hideTips().catch(() => {});
+    showFlash("The keys are listed in Settings → Shortcuts", 4000);
   }
 
   function reset(next: SessionPayload) {
@@ -71,7 +69,7 @@
     rejected = new Set();
     focusedId = null;
     keyboard = !next.auto;
-    showTips = keyboard && countTip();
+    showTips = keyboard && countTip(next.alwaysShowTips);
     steer = "";
     steering = false;
     clearTimeout(flashTimer);
@@ -414,7 +412,7 @@
       {#if replacing.anyway}
         <p class="anyway" role="status">Your clipboard can’t be restored after replacing. <kbd>{words().applyKey}</kbd> again to replace anyway.</p>
       {:else if showTips && keyboard && phase === "done" && list.length}
-        <p class="tips">Tip: {#if session.canApply}<kbd>{words().applyKey}</kbd> replaces your text with{:else}<kbd>{words().copyKey}</kbd> copies{/if} everything you see · <kbd>{words().tabKey}</kbd> steps through changes · <kbd>␣</kbd> switches a change between yours and the suggestion · <kbd>{words().escKey}</kbd> closes</p>
+        <p class="tips"><span>Tip: {#if session.canApply}<kbd>{words().applyKey}</kbd> replaces your text with{:else}<kbd>{words().copyKey}</kbd> copies{/if} everything you see · <kbd>{words().tabKey}</kbd> steps through changes · <kbd>␣</kbd> switches a change between yours and the suggestion · <kbd>{words().escKey}</kbd> closes</span><button class="hide-tips" onclick={hideTips} title="Don’t show again. The keys are listed in Settings → Shortcuts." aria-label="Don’t show tips again">×</button></p>
       {/if}
       <footer>
         <div class="status" title={[summarize(view), sourceLabel(source, view), remembered ? "from earlier" : timing].filter(Boolean).join(" · ")}>
@@ -563,6 +561,32 @@
     color: var(--text-2);
     background: var(--accent-soft);
     border-top: 1px solid var(--border);
+  }
+  /* Only the tip line has a close button; the copy-only note shares the class without one. */
+  .tips:has(.hide-tips) {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding-right: 10px;
+  }
+  .tips > span {
+    flex: 1;
+  }
+  .hide-tips {
+    all: unset;
+    flex: none;
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    text-align: center;
+    font-size: 15px;
+    line-height: 20px;
+    color: var(--text-3);
+    cursor: pointer;
+  }
+  .hide-tips:hover {
+    color: var(--text);
+    background: var(--border);
   }
   .anyway {
     margin: 0;

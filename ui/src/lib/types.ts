@@ -66,6 +66,8 @@ export interface SessionPayload {
   presetId: string;
   presets: PresetInfo[];
   showTiming: boolean;
+  /** Key tips in every review, not only the first few. */
+  alwaysShowTips: boolean;
   provider: string | null;
 }
 
@@ -118,6 +120,8 @@ export interface Config {
   /** Built-in styles already offered, so a deleted one stays deleted. */
   offered_presets: string[];
   show_timing: boolean;
+  /** Show the panel's key tips in every review; see crates/core/src/config.rs. */
+  always_show_tips: boolean;
   /** Keep capture.log for diagnosing a problem in a particular app; see crates/core/src/config.rs. */
   diagnostic_log: boolean;
   /** Opening at login was turned on once as the default; see crates/core/src/config.rs. */

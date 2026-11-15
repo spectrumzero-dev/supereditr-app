@@ -277,7 +277,22 @@ pub fn stop() {
 
 /// Calls `on_switch` with the pid of each window that comes to the front.
 pub fn start_app_switch_watcher(on_switch: impl Fn(i32) + Send + Sync + 'static) {
-    std::mem::forget(desktop().watch_front_window(Box::new(move |window| on_switch(window.pid))));
+    std::mem::forget(desktop().watch_front_window(Box::new(move |window| {
+        // Before `on_switch` closes the panel: focus stays with the window the user moved to, even
+        // one of the same app, such as a second terminal on another workspace.
+        let mut target = TARGET.lock().unwrap();
+        if moved_away_from(target.as_ref(), &window, own_pid()) {
+            *target = None;
+        }
+        drop(target);
+        on_switch(window.pid)
+    })));
+}
+
+/// Whether `front`, the window now in front, is another window than `target`, the one the panel
+/// would give focus back to. SuperEditr's own windows, the panel included, don't count.
+fn moved_away_from(target: Option<&WindowRef>, front: &WindowRef, own: i32) -> bool {
+    target.is_some_and(|target| front.pid != own && front.handle != target.handle)
 }
 
 /// Calls `on_change` each time the user moves to another workspace.
@@ -647,6 +662,27 @@ async fn keyring_check() -> SetupCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn focus_goes_back_only_to_the_reviewed_window_itself() {
+        let window = |handle: &str, pid| WindowRef {
+            handle: handle.into(),
+            pid,
+            app_id: "foot".into(),
+            title: "foot".into(),
+            rect: None,
+            xwayland: false,
+            tags: Vec::new(),
+        };
+        let reviewed = window("0x1", 100);
+        // A second window of the same app, on another workspace.
+        assert!(moved_away_from(Some(&reviewed), &window("0x2", 100), 1));
+        assert!(moved_away_from(Some(&reviewed), &window("0x3", 200), 1));
+        // Back in the reviewed window, or in SuperEditr's own panel.
+        assert!(!moved_away_from(Some(&reviewed), &window("0x1", 100), 1));
+        assert!(!moved_away_from(Some(&reviewed), &window("0x9", 1), 1));
+        assert!(!moved_away_from(None, &window("0x2", 100), 1));
+    }
 
     #[test]
     fn an_app_started_without_the_flag_is_told_how_to_be_replaceable() {

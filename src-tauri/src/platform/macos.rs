@@ -1655,8 +1655,7 @@ fn set_selection(element: &Element, start: usize, length: usize) -> bool {
 fn type_text(pid: i32, text: &str) -> bool {
     const DELETE: u16 = 51;
     if text.is_empty() {
-        post_key(pid, DELETE, CGEventFlags::empty());
-        return true;
+        return post_key(pid, DELETE, CGEventFlags::empty());
     }
     let units: Vec<u16> = text.encode_utf16().collect();
     let Ok(source) = CGEventSource::new(CGEventSourceStateID::CombinedSessionState) else { return false };
@@ -1665,6 +1664,9 @@ fn type_text(pid: i32, text: &str) -> bool {
             let Ok(event) = CGEvent::new_keyboard_event(source.clone(), 0, down) else { return false };
             event.set_flags(CGEventFlags::empty());
             event.set_string_from_utf16_unchecked(chunk);
+            if !accessibility_trusted(false) {
+                return false;
+            }
             event.post_to_pid(pid);
         }
     }
@@ -1922,19 +1924,22 @@ fn post_command_key(pid: i32, key: Key) {
 }
 
 /// Sends one key press with exactly `flags`, to `pid`, or as a keystroke to the front app when 0.
-fn post_key(pid: i32, code: u16, flags: CGEventFlags) {
-    let Ok(source) = CGEventSource::new(CGEventSourceStateID::CombinedSessionState) else { return };
+fn post_key(pid: i32, code: u16, flags: CGEventFlags) -> bool {
+    let Ok(source) = CGEventSource::new(CGEventSourceStateID::CombinedSessionState) else { return false };
     for down in [true, false] {
-        if let Ok(event) = CGEvent::new_keyboard_event(source.clone(), code, down) {
-            // Explicit flags so modifiers still held from the hotkey don't leak into the key.
-            event.set_flags(flags);
-            if pid > 0 {
-                event.post_to_pid(pid);
-            } else {
-                event.post(CGEventTapLocation::HID);
-            }
+        let Ok(event) = CGEvent::new_keyboard_event(source.clone(), code, down) else { return false };
+        // Explicit flags so modifiers still held from the hotkey don't leak into the key.
+        event.set_flags(flags);
+        if !accessibility_trusted(false) {
+            return false;
+        }
+        if pid > 0 {
+            event.post_to_pid(pid);
+        } else {
+            event.post(CGEventTapLocation::HID);
         }
     }
+    true
 }
 
 pub fn mouse_location() -> (f64, f64) {
@@ -2711,17 +2716,16 @@ pub fn own_bundle() -> Option<std::path::PathBuf> {
 /// Marks events SuperEditr replays, so its own tap lets them through.
 const REPLAY_MARK: i64 = 0x5345_4454; // "SEDT"
 static DOUBLE_CHORDS: Mutex<Vec<Chord>> = Mutex::new(Vec::new());
-static TAP_PORT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static TAP_PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Which keys the tap takes from the app for the panel (see `crate::review_keys`): none, esc alone
 /// for a suggestion that opened by itself, or all the panel's keys for a review the user opened.
-static REVIEW_KEYS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(TAKE_NONE);
+static REVIEW_KEYS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(TAP_OFFLINE);
 const TAKE_NONE: u8 = 0;
 const TAKE_ESCAPE: u8 = 1;
 const TAKE_ALL: u8 = 2;
+const TAP_OFFLINE: u8 = 3;
 
 unsafe extern "C" {
-    fn CGEventTapEnable(tap: *const c_void, enable: bool);
     fn CGEventKeyboardGetUnicodeString(event: *const c_void, max: usize, actual: *mut usize, chars: *mut u16);
 }
 
@@ -2779,8 +2783,11 @@ pub fn pause_double_presses(paused: bool) {
 /// Starts or stops passing the review panel's keys to it instead of the app. Returns false when
 /// the tap isn't running (it waits for Accessibility access), so the keys can't be taken.
 pub fn take_review_keys(take: bool) -> bool {
-    REVIEW_KEYS.store(if take { TAKE_ALL } else { TAKE_NONE }, Ordering::Relaxed);
-    TAP_PORT.load(Ordering::Relaxed) != 0
+    set_review_keys(if take { TAKE_ALL } else { TAKE_NONE })
+}
+
+fn set_review_keys(keys: u8) -> bool {
+    REVIEW_KEYS.try_update(Ordering::Relaxed, Ordering::Relaxed, |state| (state != TAP_OFFLINE).then_some(keys)).is_ok()
 }
 
 /// The app under review, or 0 for none: the tap takes the panel's keys only while this app has the
@@ -2807,7 +2814,8 @@ pub fn set_review_app(pid: i32) {
 /// is slow. So the question is asked here, and the tap reads the last answer.
 fn watch_keyboard_app() {
     loop {
-        let taking = REVIEW_KEYS.load(Ordering::Relaxed) != TAKE_NONE && REVIEW_APP.load(Ordering::Relaxed) != 0;
+        let taking = matches!(REVIEW_KEYS.load(Ordering::Relaxed), TAKE_ALL | TAKE_ESCAPE)
+            && REVIEW_APP.load(Ordering::Relaxed) != 0;
         if !taking {
             KEYBOARD_APP.store(0, Ordering::Relaxed);
             std::thread::sleep(Duration::from_millis(200));
@@ -2835,7 +2843,7 @@ fn keyboard_is_elsewhere() -> bool {
 /// A suggestion that opened by itself shows: the tap takes esc alone from the app, to close the
 /// panel, and every other key still reaches the app. Without the tap, esc reaches the app too.
 pub fn take_escape_key() {
-    REVIEW_KEYS.store(TAKE_ESCAPE, Ordering::Relaxed);
+    set_review_keys(TAKE_ESCAPE);
 }
 
 /// Names a key press the panel takes while it takes all its keys (`all`) or esc alone, or `None`
@@ -2920,6 +2928,9 @@ fn replay(chord: &Chord, proxy: Option<core_graphics::event::CGEventTapProxy>) {
         let Ok(event) = CGEvent::new_keyboard_event(source.clone(), code, down) else { continue };
         event.set_flags(flags);
         event.set_integer_value_field(core_graphics::event::EventField::EVENT_SOURCE_USER_DATA, REPLAY_MARK);
+        if !accessibility_trusted(false) {
+            return;
+        }
         match proxy {
             Some(proxy) => event.post_from_tap(proxy),
             None => event.post(CGEventTapLocation::Session),
@@ -2935,7 +2946,7 @@ pub fn start_double_press_tap(
     on_fire: impl Fn(usize) + Send + Sync + 'static,
     on_review_key: impl Fn(crate::review_keys::Key) + Send + Sync + 'static,
 ) {
-    use core_foundation::runloop::{CFRunLoop, kCFRunLoopCommonModes};
+    use core_foundation::runloop::{CFRunLoop, CFRunLoopRunResult, kCFRunLoopDefaultMode};
     use core_graphics::event::{
         CGEventTap, CGEventTapOptions, CGEventTapPlacement, CGEventType, CallbackResult, EventField,
     };
@@ -2943,7 +2954,6 @@ pub fn start_double_press_tap(
 
     let on_fire = Arc::new(on_fire);
     let on_review_key = Arc::new(on_review_key);
-    let detector = Arc::new(Mutex::new(double_press::Detector::default()));
     std::thread::Builder::new()
         .name("double-press".into())
         .spawn(move || {
@@ -2952,7 +2962,8 @@ pub fn start_double_press_tap(
                     std::thread::sleep(Duration::from_secs(2));
                     continue;
                 }
-                let detector = detector.clone();
+                let detector = Arc::new(Mutex::new(double_press::Detector::default()));
+                let callback_detector = detector.clone();
                 let on_fire = on_fire.clone();
                 let on_review_key = on_review_key.clone();
                 let tap = CGEventTap::new(
@@ -2962,10 +2973,8 @@ pub fn start_double_press_tap(
                     vec![CGEventType::KeyDown],
                     move |proxy, kind, event| {
                         if matches!(kind, CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput) {
-                            let port = TAP_PORT.load(Ordering::Relaxed);
-                            if port != 0 {
-                                unsafe { CGEventTapEnable(port as *const c_void, true) };
-                            }
+                            // Return to the owner loop to recheck trust before enabling the tap.
+                            CFRunLoop::get_current().stop();
                             return CallbackResult::Keep;
                         }
                         if !matches!(kind, CGEventType::KeyDown)
@@ -2998,15 +3007,16 @@ pub fn start_double_press_tap(
                             return CallbackResult::Keep;
                         }
                         let autorepeat = event.get_integer_value_field(EventField::KEYBOARD_EVENT_AUTOREPEAT) != 0;
-                        let step = detector.lock().unwrap().press(matched, autorepeat, Instant::now());
+                        let step = callback_detector.lock().unwrap().press(matched, autorepeat, Instant::now());
                         if let Some(held) = step.replay.and_then(|i| chords.get(i)) {
                             replay(held, Some(proxy));
                         }
                         if let Some(generation) = step.hold {
-                            let detector = detector.clone();
+                            let detector = callback_detector.clone();
                             std::thread::spawn(move || {
                                 std::thread::sleep(double_press::WINDOW);
-                                let held = detector.lock().unwrap().expire(generation);
+                                let mut detector = detector.lock().unwrap();
+                                let held = detector.expire(generation);
                                 if let Some(chord) = held.and_then(|i| DOUBLE_CHORDS.lock().unwrap().get(i).cloned()) {
                                     replay(&chord, None);
                                 }
@@ -3022,12 +3032,31 @@ pub fn start_double_press_tap(
                     std::thread::sleep(Duration::from_secs(2));
                     continue;
                 };
-                let Ok(source) = tap.mach_port().create_runloop_source(0) else { return };
-                CFRunLoop::get_current().add_source(&source, unsafe { kCFRunLoopCommonModes });
-                TAP_PORT.store(tap.mach_port().as_concrete_TypeRef() as usize, Ordering::Relaxed);
-                tap.enable();
-                CFRunLoop::run_current();
-                return;
+                let Ok(source) = tap.mach_port().create_runloop_source(0) else {
+                    drop(tap);
+                    std::thread::sleep(Duration::from_secs(2));
+                    continue;
+                };
+                let run_loop = CFRunLoop::get_current();
+                let mode = unsafe { kCFRunLoopDefaultMode };
+                run_loop.add_source(&source, mode);
+                REVIEW_KEYS.store(TAKE_NONE, Ordering::Relaxed);
+                let mut enable = true;
+                while accessibility_trusted(false) {
+                    if enable {
+                        tap.enable();
+                    }
+                    match CFRunLoop::run_in_mode(mode, Duration::from_secs(1), false) {
+                        CFRunLoopRunResult::Stopped => enable = true,
+                        CFRunLoopRunResult::TimedOut => enable = false,
+                        _ => break,
+                    }
+                }
+                REVIEW_KEYS.store(TAP_OFFLINE, Ordering::Relaxed);
+                run_loop.remove_source(&source, mode);
+                drop(tap); // Invalidates its Mach port.
+                // A pending timeout belongs to this tap. Cancel it before installing another one.
+                *detector.lock().unwrap() = double_press::Detector::default();
             }
         })
         .expect("thread spawns");

@@ -3,13 +3,14 @@ name: Omarchy plugin
 # Publishes the Omarchy bar widget, packaging/omarchy, as the main branch of
 # spectrumzero-dev/supereditr-omarchy, the repository Omarchy installs it from, then asks the Omarchy
 # plugin marketplace to verify the new commit. It runs when a release is published, from the
-# release's tag, so the widget users get is always one from a release and never main between
-# releases. git subtree split turns the folder's history into a branch of its own and gives the same
-# commits every time, so each run fast-forwards the plugin repository, and a release that doesn't
-# change the widget pushes nothing. That repository's rulesets refuse every push but the publisher
-# app's. The secrets live in the omarchy-plugin environment, which only v* tags can use, so pull
-# requests and branches never see them. To publish a release's widget again, run this workflow by
-# hand on its tag.
+# release's tag, and publishes only when that release ships Linux (its assets include the Linux
+# tarball), so the widget users get is always the one from a Linux release, carrying that release's
+# version (the version pull request sets the manifest's version with the app's), and never main
+# between releases. git subtree split turns the folder's history into a branch of its own and gives
+# the same commits every time, so each run fast-forwards the plugin repository. That repository's
+# rulesets refuse every push but the publisher app's. The secrets live in the omarchy-plugin
+# environment, which only v* tags can use, so pull requests and branches never see them. To publish
+# a release's widget again, run this workflow by hand on its tag.
 
 on:
   release:
@@ -37,18 +38,41 @@ jobs:
       PLUGIN_REPO: spectrumzero-dev/supereditr-omarchy
       PLUGIN_ID: app.supereditr
     steps:
+      # A release ships Linux when it has the Linux tarball (docs/versioning.md). One that doesn't
+      # leaves the published widget at the last Linux release's.
+      - name: Check that the release ships Linux
+        id: linux
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tarball="supereditr-${TAG#v}-x86_64.tar.gz"
+          # Fetched on its own, so a failure to read the release fails the run instead of reading as
+          # "no Linux tarball".
+          assets=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          if grep -qxF "$tarball" <<< "$assets"; then
+            echo "ships=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::$TAG doesn't ship Linux (no $tarball), so the widget isn't published."
+            echo "ships=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.linux.outputs.ships == 'true'
         with:
           fetch-depth: 0
           persist-credentials: false
       - name: Test the widget
-        run: node --test tests/omarchy/model.test.mjs
+        if: steps.linux.outputs.ships == 'true'
+        run: node --test tests/omarchy/model.test.mjs tests/versions.test.mjs
       - name: Split the plugin's history
+        if: steps.linux.outputs.ships == 'true'
         run: git subtree split --prefix=packaging/omarchy -b plugin
       # A token for the SuperEditr Omarchy publisher app, which is installed only on the plugin
       # repository and may only write its contents. It expires within the hour.
       - name: Get a token for the plugin repository
         id: app-token
+        if: steps.linux.outputs.ships == 'true'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.OMARCHY_PLUGIN_APP_CLIENT_ID }}
@@ -58,6 +82,7 @@ jobs:
           permission-contents: write
       - name: Publish to the plugin repository
         id: publish
+        if: steps.linux.outputs.ships == 'true'
         env:
           TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
@@ -75,6 +100,7 @@ jobs:
           fi
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
       - name: Ask the marketplace to verify the new commit
+        if: steps.linux.outputs.ships == 'true'
         env:
           GH_TOKEN: ${{ secrets.OMARCHY_MARKETPLACE_TOKEN }}
           COMMIT: ${{ steps.publish.outputs.commit }}

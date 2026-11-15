@@ -4,7 +4,7 @@ SuperEditr has one version line for every platform. A version number names a sna
 
 ## The version
 
-One pull request sets the version in the workspace `Cargo.toml`, `src-tauri/tauri.conf.json` and `ui/package.json`, and their lock files. Every platform's build reports that version. Versions only go up by SemVer precedence (`0.1.6-rc.1` before `0.1.6`), and a number is never reused, so a version one platform skips stays skipped there.
+One pull request sets the version in the workspace `Cargo.toml`, `src-tauri/tauri.conf.json`, `ui/package.json` and `packaging/omarchy/manifest.json` (the Omarchy bar widget's), and the lock files. Every platform's build reports that version, and `tests/versions.test.mjs`, run by `scripts/check.sh`, fails when any of these files disagree. So a version names the same code everywhere: 0.1.9 on macOS is 0.1.9 on Linux, Windows and the widget. Versions only go up by SemVer precedence (`0.1.6-rc.1` before `0.1.6`), and a number is never reused, so a version one platform skips stays skipped there.
 
 ## Which platforms a release ships
 
@@ -24,7 +24,7 @@ The platform ships when the diff touches a file in its row or the shared row. `-
 | Linux | `src-tauri/src/platform/linux/`, `src-tauri/src/tray_linux.rs`, `src-tauri/icons/tray-light.png`, `packaging/arch/`, `packaging/linux/`, `packaging/omarchy/` (the Omarchy bar widget), `scripts/linux-release.sh` |
 | Windows | `src-tauri/src/platform/windows/`, `src-tauri/tauri.windows.conf.json`, `src-tauri/windows/`, `src-tauri/icons/icon.ico` |
 | Not shipped | Markdown files; tests (`tests/`, `scripts/ui-smoke*.sh`, Rust `tests` modules and files, UI `*.test.ts`); CI (`.github/`); development tools (`scripts/check.sh`, `scripts/count-lines.sh`, formatter and linter configuration) |
-| Release bookkeeping | a change to the version alone, in the files above, and the version and SHA-256 lines of `packaging/arch/PKGBUILD` |
+| Release bookkeeping | a change to the version alone, in the files above (the widget's `manifest.json` included), and the version and SHA-256 lines of `packaging/arch/PKGBUILD` |
 | Shared | everything else |
 
 Shared ships every platform. It covers code with platform branches, such as `lib.rs` and `crates/core/src/config.rs`, because a change there can alter any platform's build, and every file outside the other rows: a file nobody has classified counts as shared. Bookkeeping counts only when it is the whole change; a dependency change in `Cargo.toml` or a lock file is shared. When a new file belongs to one platform only, add it to that platform's row, and to that platform's label in `.github/labeler.yml`, in the same pull request.
@@ -35,4 +35,4 @@ The version pull request lists every platform with its baseline and whether it s
 
 - **macOS** apps check `latest.json` on the repository's release marked Latest. That mark stays on the newest release that ships macOS: a release that leaves out macOS is published without it, so Mac apps keep finding the last macOS release and its download link keeps working. Older Mac installs can still update to that release.
 - **Windows** apps ask the update server for the newest stable release that includes a Windows installer, so a release that leaves out Windows doesn't change what they see, and one that ships only Windows reaches them without being marked Latest.
-- **Linux** has no in-app updater. A release that ships Linux also publishes the Omarchy bar widget to its own repository when the widget changed; `docs/omarchy-plugin.md` explains how. `packaging/arch/PKGBUILD` names a release and the SHA-256 of its tarball, written after that release's tarball is built, as release bookkeeping.
+- **Linux** has no in-app updater. Every release that ships Linux also publishes the Omarchy bar widget to its own repository, with that release's version, even when only the version changed; a release that leaves out Linux leaves the published widget alone. `docs/omarchy-plugin.md` explains how. `packaging/arch/PKGBUILD` names a release and the SHA-256 of its tarball, written after that release's tarball is built, as release bookkeeping.

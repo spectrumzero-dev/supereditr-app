@@ -641,6 +641,8 @@ pub fn run() {
                     review::on_app_switch(&switch_app, pid);
                     app_toggle::on_app_switch(&switch_app, pid);
                 });
+                let space_app = handle.clone();
+                platform::start_space_change_watcher(move || review::on_space_change(&space_app));
             }
 
             if let Some(settings) = handle.get_webview_window("settings") {

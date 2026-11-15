@@ -2134,6 +2134,29 @@ pub fn start_app_switch_watcher(on_switch: impl Fn(i32) + 'static) {
     std::mem::forget(handler);
 }
 
+/// Calls `on_change` each time the user moves to another Space. The app in front can stay the same
+/// (on an empty desktop, say), so this isn't always an app switch. Must be called on the main thread.
+pub fn start_space_change_watcher(on_change: impl Fn() + 'static) {
+    use block2::RcBlock;
+    use objc2_app_kit::{NSWorkspace, NSWorkspaceActiveSpaceDidChangeNotification};
+    use objc2_foundation::NSNotification;
+    use std::ptr::NonNull;
+
+    let handler = RcBlock::new(move |_: NonNull<NSNotification>| on_change());
+    let center = NSWorkspace::sharedWorkspace().notificationCenter();
+    let observer = unsafe {
+        center.addObserverForName_object_queue_usingBlock(
+            Some(NSWorkspaceActiveSpaceDidChangeNotification),
+            None,
+            None,
+            &handler,
+        )
+    };
+    // Both live for the life of the app.
+    std::mem::forget(observer);
+    std::mem::forget(handler);
+}
+
 // --- The reviewed window ---------------------------------------------------------------------
 
 type AXObserverRef = *const c_void;

@@ -461,6 +461,12 @@ pub fn overlay_focused() -> bool {
 }
 
 /// The panel closed while it had focus: focus goes back to the window the review started in.
+/// The user moved to another workspace. The window the text came from stays on the one they left,
+/// and focusing it as the panel closes would take them back there.
+pub fn forget_focus_target() {
+    *TARGET.lock().unwrap() = None;
+}
+
 pub fn overlay_closed() {
     // Not inside an `if let` on the lock: `return_focus` takes it too.
     let target = TARGET.lock().unwrap().clone();

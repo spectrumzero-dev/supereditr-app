@@ -636,6 +636,7 @@ pub fn on_space_change(app: &AppHandle) {
     platform::selection_app_switched();
     let reviewing = state.session.lock().unwrap().is_some();
     if reviewing || state.notice_visible.load(Ordering::Relaxed) {
+        overlay::forget_focus_return();
         dismiss(app, None);
     }
 }

@@ -435,6 +435,15 @@ fn give_focus_back(app: &AppHandle) -> bool {
     true
 }
 
+/// The user moved to another Space or workspace: closing the panel next mustn't focus the app the
+/// text came from, which would take them back to the one they left.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn forget_focus_return() {
+    TYPING_FOR.store(0, Ordering::Relaxed);
+    #[cfg(target_os = "linux")]
+    platform::forget_focus_target();
+}
+
 pub fn hide(app: &AppHandle) {
     platform::take_review_keys(false);
     // At once, not on the main thread: the app coming back to the front from here on isn't the user

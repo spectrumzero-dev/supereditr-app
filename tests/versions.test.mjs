@@ -8,7 +8,8 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
-const read = (path) => readFileSync(join(repo, path), "utf8");
+// Windows checkouts may have CRLF line endings.
+const read = (path) => readFileSync(join(repo, path), "utf8").replaceAll("\r\n", "\n");
 const json = (path) => JSON.parse(read(path));
 
 test("every version file names the app's version", () => {

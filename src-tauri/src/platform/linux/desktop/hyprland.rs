@@ -28,6 +28,7 @@ const TESTED: &[(u32, u32)] = &[(0, 56), (0, 57)];
 const OLDEST: (u32, u32) = (0, 55);
 
 type FrontWatcher = Arc<dyn Fn(WindowRef) + Send + Sync>;
+type WorkspaceWatcher = Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Default)]
 struct Runtime {
@@ -43,6 +44,7 @@ pub struct HyprlandDesktop {
     version: (u32, u32, u32),
     runtime: Mutex<Runtime>,
     watchers: Arc<Mutex<Vec<(u64, FrontWatcher)>>>,
+    workspace_watchers: Arc<Mutex<Vec<(u64, WorkspaceWatcher)>>>,
 }
 
 impl HyprlandDesktop {
@@ -57,6 +59,7 @@ impl HyprlandDesktop {
             version: (0, 0, 0),
             runtime: Mutex::default(),
             watchers: Arc::default(),
+            workspace_watchers: Arc::default(),
         };
         desktop.version = parse_version(&desktop.json("version").ok()?)?;
         ((desktop.version.0, desktop.version.1) >= OLDEST).then_some(desktop)
@@ -179,6 +182,14 @@ impl HyprlandDesktop {
                     }
                 }
             }
+            // The active workspace changed, on the focused monitor.
+            "workspacev2" => {
+                let watchers: Vec<WorkspaceWatcher> =
+                    self.workspace_watchers.lock().unwrap().iter().map(|(_, watcher)| watcher.clone()).collect();
+                for watcher in watchers {
+                    watcher();
+                }
+            }
             _ => {}
         }
     }
@@ -287,6 +298,14 @@ impl Desktop for HyprlandDesktop {
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         self.watchers.lock().unwrap().push((id, Arc::from(on_change)));
         let watchers = self.watchers.clone();
+        Subscription::new(move || watchers.lock().unwrap().retain(|(watcher, _)| *watcher != id))
+    }
+
+    fn watch_workspace(&self, on_change: Box<dyn Fn() + Send + Sync>) -> Subscription {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        self.workspace_watchers.lock().unwrap().push((id, Arc::from(on_change)));
+        let watchers = self.workspace_watchers.clone();
         Subscription::new(move || watchers.lock().unwrap().retain(|(watcher, _)| *watcher != id))
     }
 
@@ -480,12 +499,31 @@ pub(crate) mod tests {
             version: (0, 56, 2),
             runtime: Mutex::default(),
             watchers: Arc::default(),
+            workspace_watchers: Arc::default(),
         };
         (desktop, commands)
     }
 
     fn answer_with_monitors(command: &str) -> String {
         if command == "j/monitors" { MONITORS.into() } else { "ok".into() }
+    }
+
+    #[test]
+    fn a_workspace_change_reaches_its_watchers_until_they_stop() {
+        let (desktop, _) = fake_hyprland(|_| "ok".into());
+        let changes = Arc::new(AtomicU64::new(0));
+        let counted = changes.clone();
+        let watch = desktop.watch_workspace(Box::new(move || {
+            counted.fetch_add(1, Ordering::Relaxed);
+        }));
+        desktop.on_event("workspacev2>>2,2");
+        // Other events, the old-style workspace event included, aren't counted twice.
+        desktop.on_event("workspace>>2");
+        desktop.on_event("focusedmon>>DP-1,2");
+        assert_eq!(changes.load(Ordering::Relaxed), 1);
+        drop(watch);
+        desktop.on_event("workspacev2>>3,3");
+        assert_eq!(changes.load(Ordering::Relaxed), 1);
     }
 
     #[test]

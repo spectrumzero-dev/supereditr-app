@@ -179,6 +179,11 @@ pub trait Desktop: Send + Sync {
     fn front_window(&self) -> Result<WindowRef, DesktopError>;
     /// Calls `on_change` with each window that comes to the front.
     fn watch_front_window(&self, on_change: Box<dyn Fn(WindowRef) + Send + Sync>) -> Subscription;
+    /// Calls `on_change` each time the user moves to another workspace. The window in front can
+    /// stay the same: SuperEditr's panel shows on every workspace, and an empty one has none.
+    fn watch_workspace(&self, _on_change: Box<dyn Fn() + Send + Sync>) -> Subscription {
+        Subscription::none()
+    }
     /// The pointer, in global logical coordinates.
     fn cursor(&self) -> Result<(f64, f64), DesktopError>;
     /// Puts the panel's window at `at`: where it opens next, or, while it shows, where it moves.

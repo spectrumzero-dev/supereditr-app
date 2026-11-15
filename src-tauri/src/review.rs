@@ -626,10 +626,10 @@ pub fn on_app_switch(app: &AppHandle, pid: i32) {
     }
 }
 
-/// The user moved to another Space. The panel shows on every Space, but what it reviews stays on
-/// the one the user left, so it would float there attached to nothing: close it, and forget a review
-/// about to start or a selection under way.
-#[cfg(target_os = "macos")]
+/// The user moved to another Space (a workspace, on Linux). The panel shows on every one, but what
+/// it reviews stays on the one the user left, so it would float there attached to nothing: close
+/// it, and forget a review about to start or a selection under way.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn on_space_change(app: &AppHandle) {
     let state = state(app);
     state.watch_generation.fetch_add(1, Ordering::Relaxed);

@@ -280,6 +280,11 @@ pub fn start_app_switch_watcher(on_switch: impl Fn(i32) + Send + Sync + 'static)
     std::mem::forget(desktop().watch_front_window(Box::new(move |window| on_switch(window.pid))));
 }
 
+/// Calls `on_change` each time the user moves to another workspace.
+pub fn start_workspace_watcher(on_change: impl Fn() + Send + Sync + 'static) {
+    std::mem::forget(desktop().watch_workspace(Box::new(on_change)));
+}
+
 /// Linux has no permission like macOS's Accessibility switch: any app in the session may use the
 /// accessibility bus.
 pub fn accessibility_trusted(_prompt: bool) -> bool {

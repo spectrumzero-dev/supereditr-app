@@ -48,7 +48,10 @@ jobs:
         run: |
           set -euo pipefail
           tarball="supereditr-${TAG#v}-x86_64.tar.gz"
-          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qxF "$tarball"; then
+          # Fetched on its own, so a failure to read the release fails the run instead of reading as
+          # "no Linux tarball".
+          assets=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          if grep -qxF "$tarball" <<< "$assets"; then
             echo "ships=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::$TAG doesn't ship Linux (no $tarball), so the widget isn't published."

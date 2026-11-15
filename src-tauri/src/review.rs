@@ -622,6 +622,34 @@ pub fn on_app_switch(app: &AppHandle, pid: i32) {
         if reviewing == Some(pid) && crate::follow::hold_for_click(app) {
             return;
         }
+        // Focus stays with the window the user chose. On Hyprland this is also how a move to
+        // another workspace often arrives, before the workspace event itself.
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        if left_for_another_window(reviewing, pid) {
+            overlay::forget_focus_return();
+        }
+        dismiss(app, None);
+    }
+}
+
+/// Whether the window that came to the front belongs to another app than the reviewed one, so
+/// closing the panel mustn't take focus back from it.
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+fn left_for_another_window(reviewing: Option<i32>, front: i32) -> bool {
+    reviewing != Some(front)
+}
+
+/// The user moved to another Space (a workspace, on Linux). The panel shows on every one, but what
+/// it reviews stays on the one the user left, so it would float there attached to nothing: close
+/// it, and forget a review about to start or a selection under way.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn on_space_change(app: &AppHandle) {
+    let state = state(app);
+    state.watch_generation.fetch_add(1, Ordering::Relaxed);
+    platform::selection_app_switched();
+    let reviewing = state.session.lock().unwrap().is_some();
+    if reviewing || state.notice_visible.load(Ordering::Relaxed) {
+        overlay::forget_focus_return();
         dismiss(app, None);
     }
 }
@@ -836,6 +864,17 @@ fn trace_auto(gesture: SelectionGesture, app_id: Option<&str>, outcome: &AutoOut
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn focus_goes_back_only_when_the_reviewed_app_comes_to_the_front() {
+        // A window of another app took focus, as on Hyprland when the new workspace's window is
+        // reported before the workspace change: closing the panel leaves focus there.
+        assert!(left_for_another_window(Some(100), 200));
+        // A notice with no review, then another app.
+        assert!(left_for_another_window(None, 200));
+        // The user clicked back into the reviewed app.
+        assert!(!left_for_another_window(Some(100), 100));
+    }
 
     #[test]
     fn the_excluded_message_points_to_the_menu_where_it_can_turn_the_app_on() {

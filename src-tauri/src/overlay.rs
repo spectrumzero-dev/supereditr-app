@@ -60,8 +60,11 @@ pub fn init(app: &AppHandle) {
         {
             panel.set_level(PanelLevel::PopUpMenu.value());
             let _ = panel.set_style_mask(StyleMask::empty().borderless().nonactivating_panel().value());
+            // It opens on the Space the user is on, and stays there: on a move to another Space it
+            // slides away with the text it reviews, and closes once the move ends
+            // (`review::on_space_change`). On every Space, it would float over the switch.
             panel.set_collection_behavior(
-                CollectionBehavior::new().can_join_all_spaces().full_screen_auxiliary().transient().value(),
+                CollectionBehavior::new().move_to_active_space().full_screen_auxiliary().transient().value(),
             );
             panel.set_has_shadow(false);
             panel.set_opaque(false);
@@ -435,6 +438,16 @@ fn give_focus_back(app: &AppHandle) -> bool {
     true
 }
 
+/// The user moved to another window, Space or workspace: closing the panel next mustn't focus the
+/// app the text came from, which would take focus from where the user went, or take them back to
+/// the Space or workspace they left.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn forget_focus_return() {
+    TYPING_FOR.store(0, Ordering::Relaxed);
+    #[cfg(target_os = "linux")]
+    platform::forget_focus_target();
+}
+
 pub fn hide(app: &AppHandle) {
     platform::take_review_keys(false);
     // At once, not on the main thread: the app coming back to the front from here on isn't the user
@@ -474,6 +487,15 @@ pub fn hide(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn forgetting_the_focus_return_leaves_nothing_to_refocus() {
+        // The user was typing an instruction for an app with pid 4242, then went elsewhere.
+        TYPING_FOR.store(4242, Ordering::Relaxed);
+        forget_focus_return();
+        assert_eq!(TYPING_FOR.load(Ordering::Relaxed), 0);
+    }
 
     #[test]
     fn a_panel_cut_short_or_moved_has_drifted() {

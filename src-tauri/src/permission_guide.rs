@@ -61,8 +61,11 @@ pub fn init(app: &AppHandle) {
             // dialogs such as the Touch ID prompt for adding an app always appear over the card.
             panel.set_level(PanelLevel::Normal.value());
             let _ = panel.set_style_mask(StyleMask::empty().borderless().nonactivating_panel().value());
+            // It shows on the Space it's shown on, beside System Settings, and stays there: on a move
+            // to another Space it slides away with that window. On every Space, it would show on the
+            // new one until the next check hid it.
             panel.set_collection_behavior(
-                CollectionBehavior::new().can_join_all_spaces().full_screen_auxiliary().transient().value(),
+                CollectionBehavior::new().move_to_active_space().full_screen_auxiliary().transient().value(),
             );
             panel.set_opaque(false);
         }

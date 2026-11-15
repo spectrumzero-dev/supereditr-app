@@ -157,7 +157,10 @@ BarWidget {
     bar: root.bar
     owner: root
     open: root.opened
-    contentWidth: popup.fittedContentWidth(Style.space(300))
+    // Wide enough for the longest action row, so a long shortcut never runs into its label.
+    contentWidth: popup.fittedContentWidth(Math.max(Style.space(300),
+      Math.max(reviewAction.fittedWidth, quickFixAction.fittedWidth)
+        + popup.padding * 2 + Border.left(popup.borderSpec) + Border.right(popup.borderSpec)))
     contentHeight: popup.fittedContentHeight(content.implicitHeight, Style.space(520))
 
     Column {
@@ -207,6 +210,7 @@ BarWidget {
       }
 
       ActionButton {
+        id: reviewAction
         visible: root.running
         text: "Review selection"
         iconText: Model.glyph("review")
@@ -215,6 +219,7 @@ BarWidget {
       }
 
       ActionButton {
+        id: quickFixAction
         visible: root.running
         text: "Quick fix selection"
         iconText: Model.glyph("quickFix")
@@ -269,9 +274,20 @@ BarWidget {
   }
 
   // A full-width button, with the action's shortcut on its right when it has one ("Off" when the
-  // user cleared it).
+  // user cleared it). Button sizes itself to its icon and label only, so this measures them to
+  // keep the shortcut clear of the label: fittedWidth is the width that shows both, and when the
+  // screen is too narrow for it the shortcut is elided from the left, keeping its key.
   component ActionButton: Button {
+    id: action
     property var shortcut: undefined
+
+    readonly property real labelEnd: _reservedContentLeftInset
+      + (iconText !== "" ? iconMetrics.advanceWidth + Style.spacing.controlGap : 0)
+      + labelMetrics.advanceWidth
+    readonly property real shortcutEnd: rightPadding + _reservedBorderRight
+    readonly property real fittedWidth: Math.ceil(labelEnd
+      + (shortcut !== undefined ? Style.spacing.controlGap * 2 + shortcutLabel.implicitWidth : 0)
+      + shortcutEnd)
 
     width: parent.width
     foreground: root.popupForeground
@@ -279,12 +295,29 @@ BarWidget {
     focusable: true
     leftAlign: true
 
+    TextMetrics {
+      id: iconMetrics
+      font.family: action.fontFamily
+      font.pixelSize: action.iconSize
+      text: action.iconText
+    }
+
+    TextMetrics {
+      id: labelMetrics
+      font.family: action.fontFamily
+      font.pixelSize: action.fontSize
+      text: action.text
+    }
+
     Text {
-      visible: parent.shortcut !== undefined
+      id: shortcutLabel
+      visible: action.shortcut !== undefined
       anchors.right: parent.right
-      anchors.rightMargin: Style.spacing.controlPaddingX
+      anchors.rightMargin: action.shortcutEnd
       anchors.verticalCenter: parent.verticalCenter
-      text: Model.shortcutText(parent.shortcut)
+      width: Math.max(0, Math.min(implicitWidth, action.width - action.labelEnd - Style.spacing.controlGap * 2 - action.shortcutEnd))
+      elide: Text.ElideLeft
+      text: Model.shortcutText(action.shortcut)
       textFormat: Text.PlainText
       color: root.popupForeground
       opacity: 0.55

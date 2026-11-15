@@ -14,11 +14,17 @@ omarchy plugin add https://github.com/spectrumzero-dev/supereditr-omarchy --enab
 
 SuperEditr's own icon stays in the system tray. To keep only the widget, right-click the tray's arrow and choose Hide beside SuperEditr.
 
-To update the widget, or remove it:
+To update the widget, update it, then restart Omarchy's shell, since the bar keeps showing the old version until the shell restarts:
 
 ```bash
 omarchy plugin update app.supereditr
 ```
+
+```bash
+omarchy restart shell
+```
+
+To remove it:
 
 ```bash
 omarchy plugin remove app.supereditr

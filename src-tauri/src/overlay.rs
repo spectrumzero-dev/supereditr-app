@@ -60,8 +60,11 @@ pub fn init(app: &AppHandle) {
         {
             panel.set_level(PanelLevel::PopUpMenu.value());
             let _ = panel.set_style_mask(StyleMask::empty().borderless().nonactivating_panel().value());
+            // It opens on the Space the user is on, and stays there: on a move to another Space it
+            // slides away with the text it reviews, and closes once the move ends
+            // (`review::on_space_change`). On every Space, it would float over the switch.
             panel.set_collection_behavior(
-                CollectionBehavior::new().can_join_all_spaces().full_screen_auxiliary().transient().value(),
+                CollectionBehavior::new().move_to_active_space().full_screen_auxiliary().transient().value(),
             );
             panel.set_has_shadow(false);
             panel.set_opaque(false);

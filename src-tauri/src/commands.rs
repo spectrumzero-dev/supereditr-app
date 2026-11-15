@@ -69,6 +69,18 @@ pub fn add_word(app: AppHandle, state: State<'_, AppState>, word: String) -> Cmd
     Ok(true)
 }
 
+/// The panel's key tips were closed: turns "always show" off, so they stay closed.
+#[tauri::command]
+pub fn hide_tips(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
+    let mut config = state.config();
+    if config.always_show_tips {
+        config.always_show_tips = false;
+        state.save_config(config).map_err(|e| e.to_string())?;
+        let _ = app.emit_to("settings", "settings:reload", ());
+    }
+    Ok(())
+}
+
 /// Rebuilds the offline checker with a changed word list in the background, so the next review
 /// doesn't wait for it.
 fn prepare_words(state: &AppState, words: Vec<String>) {

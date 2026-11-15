@@ -204,6 +204,9 @@ pub struct Config {
     #[serde(default = "first_default_exclusions")]
     pub offered_exclusions: Vec<String>,
     pub show_timing: bool,
+    /// Show the panel's key tips in every review. Off, they show for the first few reviews, or
+    /// until the author closes them.
+    pub always_show_tips: bool,
     /// Keep capture.log, a local record of each selection read and write (app IDs, timings and
     /// lengths, never text), for diagnosing a problem in a particular app. Off unless turned on.
     pub diagnostic_log: bool,
@@ -236,6 +239,7 @@ impl Default for Config {
             excluded_apps: DEFAULT_EXCLUSIONS.iter().map(|s| s.to_string()).collect(),
             offered_exclusions: DEFAULT_EXCLUSIONS.iter().map(|s| s.to_string()).collect(),
             show_timing: true,
+            always_show_tips: false,
             diagnostic_log: false,
             offered_launch_at_login: false,
             onboarded: false,

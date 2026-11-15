@@ -45,6 +45,8 @@ export const ipc = {
   openSettings: () => invoke("open_settings", { section: null }),
   /** Adds a word to the word list; false when it's already there. */
   addWord: (word: string) => invoke<boolean>("add_word", { word }),
+  /** The key tips were closed: turns "always show" off in settings. */
+  hideTips: () => invoke("hide_tips"),
   listen(handlers: Handlers): () => void {
     if (!inTauri) return demo.listen(handlers);
     const stops: Array<() => void> = [];

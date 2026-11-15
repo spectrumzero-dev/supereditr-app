@@ -40,6 +40,7 @@ struct SessionPayload {
     preset_id: String,
     presets: Vec<PresetInfo>,
     show_timing: bool,
+    always_show_tips: bool,
     provider: Option<String>,
 }
 
@@ -288,6 +289,7 @@ fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<Strin
         preset_id: preset_id.clone(),
         presets: config.presets.iter().map(|p| PresetInfo { id: p.id.clone(), name: p.name.clone() }).collect(),
         show_timing: config.show_timing,
+        always_show_tips: config.always_show_tips,
         provider: state.active_profile().map(|p| p.model),
     };
     {

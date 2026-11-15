@@ -665,6 +665,7 @@ pub fn run() {
             commands::overlay_typing,
             commands::open_settings,
             commands::add_word,
+            commands::hide_tips,
             commands::get_settings,
             commands::save_settings,
             commands::set_api_key,

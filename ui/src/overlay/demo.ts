@@ -87,6 +87,7 @@ export const demo = {
           name,
         })),
         showTiming: true,
+        alwaysShowTips: new URLSearchParams(location.search).has("tips"),
         provider: "claude-haiku-5-5",
       });
       play("proofread");

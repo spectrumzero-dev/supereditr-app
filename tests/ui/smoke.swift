@@ -550,8 +550,9 @@ func focusedValueSettable() -> Bool? {
 // MARK: Main
 
 let arguments = CommandLine.arguments
-guard arguments.count == 3 else {
-    log("usage: smoke APP OUT_DIR")
+let accessibilityCycle = arguments.count == 4 && arguments[3] == "--accessibility-cycle"
+guard arguments.count == 3 || accessibilityCycle else {
+    log("usage: smoke APP OUT_DIR [--accessibility-cycle]")
     exit(2)
 }
 let appPath = arguments[1], outDir = arguments[2]
@@ -563,6 +564,93 @@ if let session = CGSessionCopyCurrentDictionary() as? [String: Any], session["CG
     skipEnvironment("the screen is locked")
 }
 guard AXIsProcessTrusted() else { skipEnvironment("this process lacks Accessibility permission") }
+if accessibilityCycle {
+    // Launch SuperEditr from Finder in the VM so it has its own grant. The usual child process
+    // inherits the test driver's grant, which the driver needs throughout this check.
+    guard inVirtualMachine(), let app = running(superEditr).first,
+          app.bundleURL?.resolvingSymlinksInPath() == URL(fileURLWithPath: appPath, isDirectory: true).resolvingSymlinksInPath(),
+          running("com.apple.TextEdit").isEmpty else {
+        log("Run this check in a disposable VM with the specified app open independently and TextEdit closed.")
+        finish(1)
+    }
+    let pid = app.processIdentifier
+    let statusURL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/" + superEditr + "/status.json")
+    func trustsApp(_ trusted: Bool) -> Bool {
+        guard !app.isTerminated, let data = try? Data(contentsOf: statusURL),
+              let status = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return status["pid"] as? Int32 == pid && status["accessibility"] as? Bool == trusted
+    }
+    // Include disabled taps: the old port and its source should be gone after revocation.
+    func keyboardTap(installed: Bool) -> Bool {
+        var count: UInt32 = 0
+        guard CGGetEventTapList(0, nil, &count) == .success else { return false }
+        var taps = [CGEventTapInformation](repeating: CGEventTapInformation(), count: Int(count) + 8)
+        guard CGGetEventTapList(UInt32(taps.count), &taps, &count) == .success, count <= taps.count else { return false }
+        return taps.prefix(Int(count)).contains {
+            $0.tappingProcess == pid && $0.options == .defaultTap && (!installed || $0.enabled)
+                && $0.eventsOfInterest & (1 << CGEventType.keyDown.rawValue) != 0
+        } == installed
+    }
+    func require(_ ok: Bool, _ name: String) {
+        check(ok, name)
+        if !ok { finish(1) }
+    }
+    log("Enable Accessibility for SuperEditr in System Settings and leave it running.")
+    require(waitFor(120) { trustsApp(true) && keyboardTap(installed: true) ? true : nil } != nil,
+            "SuperEditr has an active keyboard tap before revocation")
+    let document = NSTemporaryDirectory() + "accessibility-cycle-\(getpid()).txt"
+    let sample = "Their going to love this."
+    try! sample.write(toFile: document, atomically: true, encoding: .utf8)
+    cleanups.append { try? FileManager.default.removeItem(atPath: document) }
+    cleanups.append { quitOpened("com.apple.TextEdit") }
+    require(openFront("TextEdit", bundleID: "com.apple.TextEdit", file: document), "TextEdit opens the test document")
+    let editor = running("com.apple.TextEdit").first!
+    func testInput(_ phase: String) {
+        editor.activate()
+        require(waitFor(5) { editor.isActive ? true : nil } != nil, "TextEdit is frontmost \(phase)")
+        func value() -> String? { focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } }
+        guard let before = waitFor(5, value) else {
+            check(false, "TextEdit has a focused document \(phase)")
+            return
+        }
+        press(keyDown, .maskCommand)
+        press(keyA)
+        check(waitFor(3) { value() == before + "a" ? true : nil } != nil,
+              "TextEdit receives a typed letter \(phase)", "document after typing: \(String(describing: value()))")
+        guard let window = waitFor(5, { mainWindow("com.apple.TextEdit") }),
+              let minimize = waitFor(5, { attribute(window, kAXMinimizeButtonAttribute) }) else {
+            check(false, "TextEdit exposes its minimize button \(phase)")
+            return
+        }
+        click(minimize as! AXUIElement)
+        let minimized = waitFor(3) { attribute(window, kAXMinimizedAttribute) as? Bool == true ? true : nil } != nil
+        check(minimized, "TextEdit receives a click on its minimize button \(phase)")
+        if minimized {
+            AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+            editor.activate()
+            _ = waitFor(5) { attribute(window, kAXMinimizedAttribute) as? Bool == false && editor.isActive ? true : nil }
+        }
+    }
+    testInput("before revocation")
+    log("Turn off only SuperEditr's Accessibility switch in the VM. Leave the test driver's grant enabled.")
+    require(waitFor(120) { trustsApp(false) ? true : nil } != nil, "the running SuperEditr reports loss of trust")
+    check(waitFor(3) { keyboardTap(installed: false) ? true : nil } != nil, "SuperEditr removes its keyboard tap")
+    testInput("while SuperEditr is untrusted")
+    log("Enable Accessibility for SuperEditr again, leaving the same copy running.")
+    require(waitFor(120) { trustsApp(true) && keyboardTap(installed: true) ? true : nil } != nil,
+            "the same SuperEditr process regains its keyboard tap")
+    editor.activate()
+    require(waitFor(5) { editor.isActive ? true : nil } != nil && selectAll(), "TextEdit has the selection for the shortcut")
+    // Dismiss the automatic suggestion so only the shortcut can open the review.
+    if waitFor(5, { overlay() }) != nil { press(keyEscape) }
+    require(waitFor(3) { overlay() == nil ? true : nil } != nil, "the panel is closed before the shortcut")
+    press(keyE, .maskCommand)
+    pump(0.1)
+    press(keyE, .maskCommand)
+    check(waitFor(5) { overlay() } != nil && !app.isTerminated, "a double press opens a review without relaunching SuperEditr")
+    finish(failures.isEmpty ? 0 : 1)
+}
 // Versions before 0.1.2 have the identifier com.sghael.supereditr.
 if !running(superEditr).isEmpty || !running("com.sghael.supereditr").isEmpty { skipEnvironment("another SuperEditr is running") }
 // The test opens and force-quits these; never touch someone's open documents.

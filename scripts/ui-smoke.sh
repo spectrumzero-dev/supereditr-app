@@ -4,6 +4,10 @@
 # permission, another SuperEditr running), it warns and exits 0, so a build that runs it still succeeds.
 #
 #   scripts/ui-smoke.sh [APP] [OUT_DIR]     defaults: build/SuperEditr.app build/ui-smoke
+#   scripts/ui-smoke.sh APP OUT_DIR --accessibility-cycle
+# In a disposable VM, open APP normally, finish onboarding and close its Settings window.
+# Run the second command from an independently trusted driver. Toggle only SuperEditr's
+# Accessibility switch when prompted. The driver checks input and recovery in the same process.
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP="$(cd "$(dirname "${1:-$ROOT_DIR/build/SuperEditr.app}")" && pwd)/$(basename "${1:-$ROOT_DIR/build/SuperEditr.app}")"
@@ -17,10 +21,11 @@ xcrun swiftc -O "$ROOT_DIR/tests/ui/smoke.swift" -o "$tool"
 caffeinate -u -t 2 || true
 
 status=0
-"$tool" "$APP" "$OUT_DIR" || status=$?
+"$tool" "$APP" "$OUT_DIR" "${@:3}" || status=$?
 case "$status" in
   0) ;;
   78)
+    [[ "${3:-}" != --accessibility-cycle ]] || exit 1
     message="UI smoke tests skipped: this Mac can't run them right now (see the log)."
     if [[ -n "${GITHUB_ACTIONS:-}" ]]; then echo "::warning title=UI smoke tests skipped::$message"; else echo "$message"; fi
     ;;

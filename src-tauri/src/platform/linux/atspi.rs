@@ -552,7 +552,9 @@ pub fn assemble(pieces: &[Piece]) -> Assembled {
             chars += 1;
         }
         let length = part.chars().count();
-        if is_code && length > 0 {
+        // A code block is code whether or not a <code> wraps its text.
+        let all_code = part_code.iter().any(|&(from, to)| from == 0 && to >= length);
+        if length > 0 && (is_code || (is_pre && !all_code)) {
             code.push((chars, chars + length));
         }
         code.extend(part_code.into_iter().map(|(from, to)| (chars + from, chars + to)));
@@ -707,9 +709,16 @@ mod tests {
             pieces: vec![object(false, true, vec![object(true, false, vec![text("npm ci\nnpm test\n")])])],
         };
         let alone = Piece::Object { block: true, code: true, pre: true, pieces: vec![text("make")] };
-        let (text, code, blocks) = assemble(&[object(true, false, vec![text("Run it:")]), nested, alone]);
-        assert_eq!(text, "Run it:\nnpm ci\nnpm test\nmake");
-        assert_eq!(code, [(8, 23), (24, 28)]);
-        assert_eq!(blocks, [(8, 23), (24, 28)]);
+        // A <pre> that holds its text itself, with a word in bold.
+        let bare = Piece::Object {
+            block: true,
+            code: false,
+            pre: true,
+            pieces: vec![text("git "), object(false, false, vec![text("push")])],
+        };
+        let (text, code, blocks) = assemble(&[object(true, false, vec![text("Run it:")]), nested, alone, bare]);
+        assert_eq!(text, "Run it:\nnpm ci\nnpm test\nmake\ngit push");
+        assert_eq!(code, [(8, 23), (24, 28), (29, 37)]);
+        assert_eq!(blocks, code);
     }
 }

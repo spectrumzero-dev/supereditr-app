@@ -37,6 +37,8 @@ pub fn field(selected: &str) -> Field {
         window_bounds: None,
         code: Vec::new(),
         rich: None,
+        runs: Vec::new(),
+        objects: Vec::new(),
         embedded: false,
     }
 }
@@ -49,6 +51,8 @@ pub struct FakeFields {
     content: Mutex<String>,
     /// The app doesn't answer, as when it's frozen.
     frozen: std::sync::atomic::AtomicBool,
+    /// The app doesn't let its selection be moved.
+    fixed_selection: std::sync::atomic::AtomicBool,
 }
 
 #[async_trait]
@@ -66,6 +70,20 @@ impl Fields for FakeFields {
 
     async fn whole_text(&self, _field: &Field) -> Result<String, ReadError> {
         Ok(self.content.lock().unwrap().clone())
+    }
+
+    async fn select(&self, id: &FieldId, start: i32, end: i32) -> Result<bool, ReadError> {
+        let content = self.content.lock().unwrap().clone();
+        let mut fields = self.field.lock().unwrap();
+        let Some(field) = fields
+            .as_mut()
+            .filter(|field| field.id == *id && !self.fixed_selection.load(std::sync::atomic::Ordering::Relaxed))
+        else {
+            return Ok(false);
+        };
+        (field.start, field.end) = (start, end);
+        field.selected = content.chars().skip(start as usize).take((end - start) as usize).collect();
+        Ok(true)
     }
 
     async fn select_sentence(&self, _field: &Field) -> Result<Option<Field>, ReadError> {
@@ -236,6 +254,12 @@ impl World {
         self
     }
 
+    /// The app doesn't let SuperEditr move its selection.
+    pub fn with_a_fixed_selection(self) -> Self {
+        self.fields.fixed_selection.store(true, std::sync::atomic::Ordering::Relaxed);
+        self
+    }
+
     pub fn on_fallback(mut self) -> Self {
         self.desktop.fallback = true;
         self
@@ -249,8 +273,14 @@ impl World {
         tauri::async_runtime::block_on(capture::capture(&self.services(), allow_copy, select_sentence))
     }
 
+    /// Replaces the selection with a rewrite of it.
     pub fn replace(&self, capture: &Capture, text: &str) -> ReplaceOutcome {
-        tauri::async_runtime::block_on(replace::replace(&self.services(), capture, text))
+        tauri::async_runtime::block_on(replace::replace(&self.services(), capture, text, false))
+    }
+
+    /// Replaces the selection with a proofread of it.
+    pub fn proofread(&self, capture: &Capture, text: &str) -> ReplaceOutcome {
+        tauri::async_runtime::block_on(replace::replace(&self.services(), capture, text, true))
     }
 
     pub fn keys_sent(&self) -> Vec<String> {

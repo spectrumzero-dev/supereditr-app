@@ -13,7 +13,33 @@ use crate::diff::{Segment, diff};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Piece {
     Text(String),
+    /// Text with where the app holds it: `offset` characters into the text of the element the
+    /// platform numbers `object`. A fix applied in place selects its words there.
+    Run {
+        text: String,
+        object: usize,
+        offset: usize,
+    },
     Object(Object),
+}
+
+impl Piece {
+    fn own_text(&self) -> Option<&str> {
+        match self {
+            Self::Text(text) | Self::Run { text, .. } => Some(text),
+            Self::Object(_) => None,
+        }
+    }
+}
+
+/// Characters `start..end` of a selection's text, held by an element from `offset` in its own
+/// text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Run {
+    pub start: usize,
+    pub end: usize,
+    pub object: usize,
+    pub offset: usize,
 }
 
 /// An element inside a rich-text field.
@@ -179,6 +205,8 @@ impl Node {
 pub struct Rich {
     pub text: String,
     pub root: Node,
+    /// Where the app holds each stretch of the text, for the pieces that say.
+    pub runs: Vec<Run>,
 }
 
 /// Puts the pieces' text together as the field shows it: each block (a paragraph, a list item) on a
@@ -187,12 +215,19 @@ pub struct Rich {
 pub fn assemble(pieces: &[Piece]) -> Rich {
     let mut text = String::new();
     let mut chars = 0;
-    let children = build(pieces, None, &mut text, &mut chars);
-    Rich { text, root: Node { kind: Kind::Root, start: 0, end: chars, children } }
+    let mut runs = Vec::new();
+    let children = build(pieces, None, &mut text, &mut chars, &mut runs);
+    Rich { text, root: Node { kind: Kind::Root, start: 0, end: chars, children }, runs }
 }
 
 /// `marker` is the bullet or number of the list item these pieces are in.
-fn build(pieces: &[Piece], marker: Option<&str>, text: &mut String, chars: &mut usize) -> Vec<Node> {
+fn build(
+    pieces: &[Piece],
+    marker: Option<&str>,
+    text: &mut String,
+    chars: &mut usize,
+    runs: &mut Vec<Run>,
+) -> Vec<Node> {
     let is_block =
         |piece: Option<&Piece>| matches!(piece, Some(Piece::Object(object)) if object.block && !object.generated());
     let mut nodes = Vec::new();
@@ -201,8 +236,8 @@ fn build(pieces: &[Piece], marker: Option<&str>, text: &mut String, chars: &mut 
         // A list item's first paragraph is on the line of its bullet.
         let after_marker = i == 1
             && match (before, marker) {
-                (Some(Piece::Text(run)), Some(marker)) => run == marker,
                 (Some(Piece::Object(object)), _) => object.generated(),
+                (Some(own), Some(marker)) => own.own_text() == Some(marker),
                 _ => false,
             };
         if i > 0 && !after_marker && (is_block(Some(piece)) || is_block(before)) {
@@ -210,20 +245,31 @@ fn build(pieces: &[Piece], marker: Option<&str>, text: &mut String, chars: &mut 
             *chars += 1;
         }
         let object = match piece {
-            Piece::Text(run) => {
+            Piece::Object(object) => object,
+            own => {
+                let run = own.own_text().unwrap_or_default();
+                let length = run.chars().count();
+                if let Piece::Run { object, offset, .. } = own {
+                    runs.push(Run { start: *chars, end: *chars + length, object: *object, offset: *offset });
+                }
                 text.push_str(run);
-                *chars += run.chars().count();
+                *chars += length;
                 continue;
             }
-            Piece::Object(object) => object,
         };
         let start = *chars;
-        let mut children = build(&object.pieces, object.marker.as_deref(), text, chars);
+        let mut children = build(&object.pieces, object.marker.as_deref(), text, chars, runs);
         // An empty paragraph holds a line break, and a paragraph may end with one.
         if is_block(Some(piece)) && *chars > start && text.ends_with('\n') {
             text.pop();
             *chars -= 1;
             children.iter_mut().for_each(|child| child.clamp(*chars));
+            while let Some(last) = runs.last_mut().filter(|last| last.end > *chars) {
+                last.end = *chars;
+                if last.start >= last.end {
+                    runs.pop();
+                }
+            }
         }
         // A bullet an editor draws itself has no space after it; the text reads better with one.
         if object.generated() && *chars > start && !text.ends_with(char::is_whitespace) {
@@ -262,6 +308,73 @@ fn build(pieces: &[Piece], marker: Option<&str>, text: &mut String, chars: &mut 
         nodes.push(Node { kind, start, end: *chars, children });
     }
     nodes
+}
+
+/// One write of a proofread applied in place: in the element the platform numbers `object`,
+/// characters `start..end` of its own text, which read `old`, become `new`. Neither is empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Step {
+    pub object: usize,
+    pub start: usize,
+    pub end: usize,
+    pub old: String,
+    pub new: String,
+}
+
+/// `edits` (from [`crate::edits::plan`], last first) as writes into the elements that hold the
+/// text, in the same order. Each write replaces text with text, so the platform can select what is
+/// there, check it, and paste over it: words to add or remove take one character beside them along,
+/// which is written back.
+///
+/// None when an edit doesn't lie inside one stretch of one element's text, so it can't be selected
+/// there, or when two writes would touch.
+pub fn steps(original: &str, runs: &[Run], edits: &[crate::edits::Edit]) -> Option<Vec<Step>> {
+    let chars: Vec<char> = original.chars().collect();
+    let mut steps = Vec::with_capacity(edits.len());
+    // Where the write before this one (later in the text) starts.
+    let mut floor = usize::MAX;
+    for edit in edits {
+        let (mut start, mut end) = (edit.start, edit.start + edit.old.chars().count());
+        // Text added goes with its anchor: after the text before it, or before the text after it.
+        let with_before = edit.anchor.as_ref().is_none_or(|anchor| !anchor.after);
+        let run = if end > start {
+            runs.iter().find(|run| run.start <= start && end <= run.end)?
+        } else {
+            let before = |run: &&Run| run.start < start && start <= run.end;
+            let after = |run: &&Run| run.start <= start && start < run.end;
+            match with_before {
+                true => runs.iter().find(before).or_else(|| runs.iter().find(after))?,
+                false => runs.iter().find(after).or_else(|| runs.iter().find(before))?,
+            }
+        };
+        let mut new = edit.new.clone();
+        if end == start || new.is_empty() {
+            let usable = |at: usize| chars.get(at).is_some_and(|c| *c != '\n' && !crate::diff::is_invisible(*c));
+            let left = start > run.start && usable(start - 1);
+            let right = end < run.end && usable(end);
+            if left && (with_before || !right) {
+                start -= 1;
+                new.insert(0, chars[start]);
+            } else if right {
+                new.push(chars[end]);
+                end += 1;
+            } else {
+                return None;
+            }
+        }
+        if end > floor || end > chars.len() {
+            return None;
+        }
+        floor = start;
+        steps.push(Step {
+            object: run.object,
+            start: run.offset + start - run.start,
+            end: run.offset + end - run.start,
+            old: chars[start..end].iter().collect(),
+            new,
+        });
+    }
+    Some(steps)
 }
 
 /// `revised`, a revision of `original`, as HTML for pasting, with the formatting `root` gives
@@ -679,6 +792,53 @@ mod tests {
                  <p>Line one<br>Line two after a <em>break</em>.</p>"
             )
         );
+    }
+
+    fn run(text: &str, object: usize, offset: usize) -> Piece {
+        Piece::Run { text: text.into(), object, offset }
+    }
+
+    #[test]
+    fn a_proofread_becomes_writes_into_the_elements_that_hold_the_words() {
+        // A paragraph (element 1) with bold (element 2) in it, then a second paragraph (element 3).
+        // In its element's text an inner element counts as one character.
+        let bold =
+            Piece::Object(Object { tag: "strong".into(), pieces: vec![run("realy good", 2, 0)], ..Object::default() });
+        let pieces = [
+            block("p", vec![run("Their going to love ", 1, 0), bold, run(" news news.", 1, 21)]),
+            block("p", vec![run("See you soon", 3, 0)]),
+        ];
+        let rich = assemble(&pieces);
+        assert_eq!(rich.text, "Their going to love realy good news news.\nSee you soon");
+        let fixed = "They’re going to love really good news.\nSee you soon.";
+        let edits = crate::edits::plan(&rich.text, fixed, true, &[]).unwrap();
+        let steps = steps(&rich.text, &rich.runs, &edits).unwrap();
+        let written: Vec<(usize, usize, usize, &str, &str)> =
+            steps.iter().map(|s| (s.object, s.start, s.end, s.old.as_str(), s.new.as_str())).collect();
+        assert_eq!(
+            written,
+            [
+                // A full stop added: the letter before it is written again with it.
+                (3, 11, 12, "n", "n."),
+                // A word removed: the letter before it is written again alone.
+                (1, 25, 31, "s news", "s"),
+                (2, 0, 5, "realy", "really"),
+                (1, 0, 5, "Their", "They’re"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_change_that_no_single_element_holds_isnt_applied_in_place() {
+        // "alot" is split between plain text and bold.
+        let bold = Piece::Object(Object { tag: "strong".into(), pieces: vec![run("lot", 2, 0)], ..Object::default() });
+        let rich = assemble(&[run("Thanks a", 1, 0), bold, run(" for it.", 1, 9)]);
+        let edits = crate::edits::plan(&rich.text, "Thanks a lot for it.", true, &[]).unwrap();
+        assert_eq!(steps(&rich.text, &rich.runs, &edits), None);
+        // Text read without its place can't be written in place either.
+        let rich = assemble(&[text("Their going")]);
+        let edits = crate::edits::plan(&rich.text, "They’re going", true, &[]).unwrap();
+        assert_eq!(steps(&rich.text, &rich.runs, &edits), None);
     }
 
     #[test]

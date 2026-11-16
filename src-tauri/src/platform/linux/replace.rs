@@ -5,7 +5,9 @@
 //! 2. Read the field again through AT-SPI: the same field with the same selection, or it's stale.
 //! 3. Paste, as a clipboard transaction: the user's clipboard aside, the correction in (marked
 //!    sensitive), Ctrl+V to that window, the user's clipboard back unless something newer was
-//!    copied.
+//!    copied. A proofread of formatted text in a web editor is pasted change by change, each over
+//!    only the words it fixes, so nothing around them is rewritten; anything else is one paste over
+//!    the whole selection, with its formatting as HTML.
 //! 4. Read the field back. Unconfirmed after a paste means the paste may have landed: uncertain,
 //!    never retried, so the text is never written twice.
 //!
@@ -17,6 +19,7 @@ use super::desktop::{Desktop, Shortcut, WindowRef};
 use super::{Capture, Source, trace};
 use crate::platform::{PlatformError, ReplaceOutcome};
 use std::time::{Duration, Instant};
+use supereditr_core::rich::Step;
 
 /// How long the desktop gets to bring the window back to the front.
 const FOCUS_WAIT: Duration = Duration::from_millis(if cfg!(test) { 60 } else { 600 });
@@ -27,9 +30,9 @@ const CLIPBOARD_SETTLE: Duration = Duration::from_millis(if cfg!(test) { 0 } els
 /// How long a paste gets to show up in the field.
 const PASTE_WAIT: Duration = Duration::from_millis(if cfg!(test) { 60 } else { 1000 });
 
-pub async fn replace(services: &Services<'_>, capture: &Capture, text: &str) -> ReplaceOutcome {
+pub async fn replace(services: &Services<'_>, capture: &Capture, text: &str, proofread: bool) -> ReplaceOutcome {
     let started = Instant::now();
-    let outcome = attempt(services, capture, text).await;
+    let outcome = attempt(services, capture, text, proofread).await;
     let said = match &outcome {
         ReplaceOutcome::Applied => "applied".to_string(),
         ReplaceOutcome::CopyOnly(why) => format!("copy-only ({why})"),
@@ -40,7 +43,7 @@ pub async fn replace(services: &Services<'_>, capture: &Capture, text: &str) -> 
     outcome
 }
 
-async fn attempt(services: &Services<'_>, capture: &Capture, text: &str) -> ReplaceOutcome {
+async fn attempt(services: &Services<'_>, capture: &Capture, text: &str, proofread: bool) -> ReplaceOutcome {
     let copy_only = || ReplaceOutcome::CopyOnly(PlatformError::CopyOnly);
     let (Some(window), Some(field)) = (&capture.window, &capture.field) else { return copy_only() };
     if capture.source != Source::Atspi || !capture.editable {
@@ -77,6 +80,27 @@ async fn attempt(services: &Services<'_>, capture: &Capture, text: &str) -> Repl
     // pastes plain text ignores the HTML, and a field without formatting gets none.
     let formatting = field.rich.as_ref().filter(|rich| field.embedded && rich.formatted(&capture.text));
     let html = formatting.and_then(|rich| supereditr_core::rich::html(&capture.text, rich, text));
+    let steps = formatting.and_then(|_| steps(capture, field, text, proofread));
+    if let Some(steps) = &steps {
+        match in_place(services, capture, window, field, steps, &transaction).await {
+            InPlace::Untouched => {}
+            InPlace::Stopped(outcome) => {
+                transaction.restore();
+                return outcome;
+            }
+            InPlace::Done => {
+                let landed = landed(services, field, text).await;
+                match transaction.restore() {
+                    Restore::Restored => {}
+                    other => trace(format_args!("paste {}: clipboard {other:?}", capture.bundle_id)),
+                }
+                return match landed {
+                    true => ReplaceOutcome::Applied,
+                    false => ReplaceOutcome::Uncertain(PlatformError::Unverified),
+                };
+            }
+        }
+    }
     if formatting.is_some() {
         trace(format_args!(
             "paste {}: the formatting goes as {}",
@@ -100,6 +124,131 @@ async fn attempt(services: &Services<'_>, capture: &Capture, text: &str) -> Repl
         other => trace(format_args!("replace {}: clipboard {other:?}", capture.bundle_id)),
     }
     if landed { ReplaceOutcome::Applied } else { ReplaceOutcome::Uncertain(PlatformError::Unverified) }
+}
+
+/// The writes that apply `text` in place, when it is a proofread of a few local changes and each
+/// lies in text the read placed. None says to replace the whole selection.
+fn steps(capture: &Capture, field: &super::atspi::Field, text: &str, proofread: bool) -> Option<Vec<Step>> {
+    let whole = |why: &dyn std::fmt::Display| {
+        trace(format_args!("paste {}: the whole selection: {why}", capture.bundle_id));
+        None
+    };
+    let edits = match supereditr_core::edits::plan(&capture.text, text, proofread, &capture.code) {
+        Ok(edits) if edits.is_empty() => return None,
+        Ok(edits) => edits,
+        Err(why) => return whole(&why),
+    };
+    match supereditr_core::rich::steps(&capture.text, &field.runs, &edits) {
+        Some(steps) if steps.iter().all(|step| step.object < field.objects.len()) => Some(steps),
+        _ => whole(&"a change isn’t inside one element’s text"),
+    }
+}
+
+/// How applying a proofread in place ended.
+enum InPlace {
+    /// Every change is written.
+    Done,
+    /// Nothing was written and the selection is as captured: the whole selection can be replaced.
+    Untouched,
+    Stopped(ReplaceOutcome),
+}
+
+/// Applies a proofread as `steps`, last first: each selects the words it changes in the element
+/// that holds them, reads them back, pastes over them and reads the result back. Once a step is
+/// written there is no going back: a later failure stops and reports a partial fix.
+async fn in_place(
+    services: &Services<'_>,
+    capture: &Capture,
+    window: &WindowRef,
+    field: &super::atspi::Field,
+    steps: &[Step],
+    transaction: &Transaction<'_>,
+) -> InPlace {
+    let started = Instant::now();
+    let untouched = |why: &str| {
+        trace(format_args!("paste {}: the whole selection: {why}", capture.bundle_id));
+        InPlace::Untouched
+    };
+    let range = |step: &Step| (step.start as i32, step.end as i32);
+    // Every place is checked before anything is written.
+    for step in steps {
+        let (start, end) = range(step);
+        let there = services.fields.text(&field.objects[step.object], start, end).await;
+        if there.ok().as_deref() != Some(step.old.as_str()) {
+            return untouched("the field’s text doesn’t line up with the changes");
+        }
+    }
+    for (i, step) in steps.iter().enumerate() {
+        let stopped = |why: &str| {
+            trace(format_args!(
+                "paste {}: applied in place partly: {i} of {} edits, then {why}",
+                capture.bundle_id,
+                steps.len()
+            ));
+            // With nothing applied, the first edit may still have landed unseen.
+            InPlace::Stopped(ReplaceOutcome::Uncertain(match i {
+                0 => PlatformError::Unverified,
+                applied => PlatformError::Partial { applied, total: steps.len() },
+            }))
+        };
+        let id = &field.objects[step.object];
+        let (start, end) = range(step);
+        let in_front = services.desktop.front_window().is_ok_and(|front| front.handle == window.handle);
+        if !in_front || !services.fields.select(id, start, end).await.unwrap_or(false) {
+            if i > 0 {
+                return stopped("the words to fix couldn’t be selected");
+            }
+            // Nothing is written yet: with the selection as captured, or put back, all of it can
+            // be replaced.
+            let captured =
+                |now: &super::atspi::Field| now.id == field.id && (now.start, now.end) == (field.start, field.end);
+            let kept = services.fields.focused(window.pid).await.ok().flatten().is_some_and(|now| captured(&now));
+            return match kept || services.fields.select(&field.id, field.start, field.end).await.unwrap_or(false) {
+                true => untouched("the app doesn’t let SuperEditr move the selection"),
+                false => InPlace::Stopped(ReplaceOutcome::CopyOnly(PlatformError::Stale)),
+            };
+        }
+        if transaction.put_text(&step.new, None).is_err() {
+            return stopped("the clipboard didn’t take the fix");
+        }
+        if i == 0 {
+            super::wait_for_shortcut_release();
+        }
+        tokio::time::sleep(CLIPBOARD_SETTLE).await;
+        if services.desktop.send_shortcut(window, Shortcut::ctrl("V")).await.is_err() {
+            return stopped("the paste couldn’t be sent");
+        }
+        let written = start + step.new.chars().count() as i32;
+        let pasted = Instant::now();
+        loop {
+            if services.fields.text(id, start, written).await.is_ok_and(|now| now == step.new) {
+                break;
+            }
+            if pasted.elapsed() >= PASTE_WAIT {
+                return stopped("a change didn’t land");
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+    // The caret after the fixed text, where replacing the whole selection leaves it.
+    if let Some(last) = field.runs.iter().max_by_key(|run| run.end) {
+        let grown: i32 = steps
+            .iter()
+            .filter(|step| step.object == last.object && step.start >= last.offset)
+            .map(|step| step.new.chars().count() as i32 - step.old.chars().count() as i32)
+            .sum();
+        let end = (last.offset + last.end - last.start) as i32 + grown;
+        if let Some(id) = field.objects.get(last.object) {
+            let _ = services.fields.select(id, end, end).await;
+        }
+    }
+    trace(format_args!(
+        "paste {}: applied in place: {} edits in {} ms",
+        capture.bundle_id,
+        steps.len(),
+        started.elapsed().as_millis()
+    ));
+    InPlace::Done
 }
 
 /// Focuses `window` if it isn't in front, and waits until the desktop says it is.
@@ -261,6 +410,55 @@ mod tests {
         );
         assert!(world.field_text().starts_with(fixed), "the plain text is the fix as it is");
         assert_eq!(world.clipboard.get("text/html").unwrap(), b"<b>Rhyan's</b> own copy", "the user's HTML is back");
+    }
+
+    /// A heading and a code block in a web editor, as read: the fake app holds all of its text in
+    /// one element, so each run is where it is in the text.
+    fn formatted(heading: &str, code: &str) -> super::super::atspi::Field {
+        use supereditr_core::rich::{Object, Piece, assemble};
+        let block = |tag: &str, run: &str, offset: usize| {
+            let pieces = vec![Piece::Run { text: run.into(), object: 0, offset }];
+            Piece::Object(Object { tag: tag.into(), block: true, pieces, ..Object::default() })
+        };
+        let read = assemble(&[block("h2", heading, 0), block("pre", code, heading.chars().count() + 1)]);
+        let mut editor = field(&read.text);
+        editor.embedded = true;
+        editor.code = read.root.code();
+        editor.rich = Some(read.root);
+        editor.runs = read.runs;
+        editor.objects = vec![editor.id.clone()];
+        editor
+    }
+
+    #[test]
+    fn a_proofread_of_formatted_text_is_pasted_change_by_change() {
+        let world = World::new("chromium").with_field(formatted("Their going realy soon", "npm ci")).pasting();
+        let capture = captured(&world);
+        let fixed = "They’re going really soon\nnpm ci";
+        assert!(matches!(world.proofread(&capture, fixed), ReplaceOutcome::Applied));
+        assert_eq!(world.keys_sent(), ["CTRL V", "CTRL V"], "one paste for each change");
+        assert_eq!(world.pasted_html(), None, "only the changed words are pasted, as plain text");
+        assert!(world.field_text().starts_with(fixed), "{}", world.field_text());
+        assert_eq!(world.clipboard.get("text/plain;charset=utf-8").unwrap(), b"Rhyan's own copy");
+    }
+
+    #[test]
+    fn a_rewrite_or_an_app_that_keeps_its_selection_gets_the_whole_selection() {
+        let fixed = "They’re going really soon\nnpm ci";
+        let world = World::new("chromium").with_field(formatted("Their going realy soon", "npm ci")).pasting();
+        let capture = captured(&world);
+        assert!(matches!(world.replace(&capture, fixed), ReplaceOutcome::Applied));
+        assert_eq!(world.keys_sent(), ["CTRL V"]);
+        assert!(world.pasted_html().is_some_and(|html| html.contains("<h2>They’re going really soon</h2>")));
+
+        let world = World::new("chromium")
+            .with_field(formatted("Their going realy soon", "npm ci"))
+            .pasting()
+            .with_a_fixed_selection();
+        let capture = captured(&world);
+        assert!(matches!(world.proofread(&capture, fixed), ReplaceOutcome::Applied));
+        assert_eq!(world.keys_sent(), ["CTRL V"], "one paste of everything");
+        assert!(world.field_text().starts_with(fixed), "{}", world.field_text());
     }
 
     #[test]

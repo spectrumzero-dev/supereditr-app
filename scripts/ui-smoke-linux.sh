@@ -318,7 +318,7 @@ chromium_cases() {
   local page
   page="$(vm "d_addr '^chromium(-browser)? \\| SuperEditr smoke fields'")"
   vm "shot 10-chromium-page"
-  local kinds=(html image text) i=0 id before after value
+  local kinds=(html image text) i=0 id before after value mark how
   for id in plain rich code markdown tiptap lexical slate quill; do
     set_clipboard "${kinds[$((i % 3))]}"
     i=$((i + 1))
@@ -328,6 +328,7 @@ chromium_cases() {
     [[ "$selected" == true ]] || note "$id: couldn't select the field ($selected)"
     sleep 0.4
     before="$(vm clip_digest)"
+    mark="$(vm log_mark)"
     review_and_apply "$id" page chromium "11-chromium-$id"
     check "$id: read through AT-SPI, pasting allowed" "$(ok has "$REVIEW_READ" "via AT-SPI.*pasting allowed")" "${REVIEW_READ#* }"
     check "$id: Alt+Enter applies" "$(ok has "$REVIEW_RESULT" ": applied")" "${REVIEW_RESULT#* }"
@@ -339,11 +340,12 @@ chromium_cases() {
         local state
         state="$(vm "cdp \"document.getElementById('$id-state').textContent\"")"
         note "$id: the page describes the field as $state"
-        # The fix replaces the whole selection, and goes on the clipboard as HTML too, so an editor
-        # that pastes HTML keeps the code as code. The others paste the plain text.
-        case "$id" in
-          code | tiptap) check "$id: the code is still formatted as code" "$(ok has "$state" "code=teh fix\|their going to work;")" "${state:0:120}" ;;
-        esac
+        # A proofread of formatted text is pasted change by change, each over only the words it
+        # fixes, so every editor keeps its code, bold, link and paragraphs, whatever it does with
+        # pasted HTML.
+        how="$(vm "log_since $mark | grep 'paste chromium: ' | cut -d' ' -f2- | tr '\n' ';'")"
+        check "$id: the proofread is applied in place" "$(ok has "$how" "applied in place: 2 edits")" "$how"
+        check "$id: the code, bold, link and paragraphs are as they were" "$(ok has "$state" "typo=0; code=teh fix\|their going to work; bold=today; links=the notes; paragraphs=3; empty=1")" "${state:0:140}"
         ;;
     esac
     after="$(vm 'sleep 0.3; clip_digest')"
@@ -352,12 +354,11 @@ chromium_cases() {
   done
 
   # The formats document: a heading, bold, italics, a link, code, lists, a quote, a code block and a
-  # line break, with four typos. The fix replaces the whole selection and goes on the clipboard as
-  # HTML too, so an editor that pastes HTML holds the same structure after it as before. Chromium's
-  # own paste into an editable div merges what it pastes with the blocks around it, so there the
-  # structure is only noted.
-  local mark text structure
-  for id in formats-div formats-tiptap formats-lexical formats-quill; do
+  # line break. With four typos it is fixed change by change, in every editor. With more typos than
+  # are applied that way (the "many" fields) the fix replaces the whole selection, and goes on the
+  # clipboard as HTML too, so an editor that pastes HTML still holds the same structure afterwards.
+  local text structure fixed
+  for id in formats-div formats-tiptap formats-lexical formats-slate formats-quill many-tiptap many-lexical many-quill; do
     set_clipboard text
     vm "d_focus $page; sleep 0.3; d_cursor_move \$(d_active | jq -r '.at[0] + 300') \$(d_active | jq -r '.at[1] + 200')" > /dev/null
     selected="$(vm "cdp_select $id")"
@@ -371,16 +372,24 @@ chromium_cases() {
     check "$id: the panel shows the fixes" "$(ok has "$text" "[0-9]+ changes?")" "${text:0:120}"
     vm "shot 13-chromium-$id-review"
     key alt-ret
-    REVIEW_RESULT="$(vm "wait_log $mark 'replace chromium: ' 6")"
+    REVIEW_RESULT="$(vm "wait_log $mark 'replace chromium: ' 10")"
     vm 'wait_closed 3' || true
     sleep 0.5
-    check "$id: Alt+Enter applies" "$(ok has "$REVIEW_RESULT" ": applied")" "${REVIEW_RESULT#* }; $(vm "log_since $mark | grep -m1 'paste chromium: ' | cut -d' ' -f2-")"
-    state="$(vm "cdp \"document.getElementById('$id-state').textContent\"")"
-    check "$id: the fixes land" "$(ok both has "$state" "fixed the .*Second step.*really good news" lacks "$state" "you you")" "${state:0:200}"
+    how="$(vm "log_since $mark | grep 'paste chromium: ' | cut -d' ' -f2- | tr '\n' ';'")"
+    check "$id: Alt+Enter applies" "$(ok has "$REVIEW_RESULT" ": applied")" "${REVIEW_RESULT#* }"
     case "$id" in
-      formats-div) note "$id: the structure was ${structure:0:160} and is ${state%%; text=*}" ;;
-      *) check "$id: every structure is kept" "$(ok is "${state%%; text=*}" "$structure")" "was ${structure:0:160}; is ${state%%; text=*}" ;;
+      many-*)
+        check "$id: the whole selection is replaced, with its formatting as HTML" "$(ok both has "$how" "more than 8" has "$how" "goes as HTML")" "$how"
+        fixed="fixed the .*yesterday.*tomorrow.*weird.*everything.*dependency.*really good news.*running"
+        ;;
+      *)
+        check "$id: the proofread is applied in place" "$(ok has "$how" "applied in place: [0-9]+ edits")" "$how"
+        fixed="fixed the .*Second step.*really good news"
+        ;;
     esac
+    state="$(vm "cdp \"document.getElementById('$id-state').textContent\"")"
+    check "$id: the fixes land" "$(ok both has "$state" "$fixed" lacks "$state" "you you")" "${state:0:240}"
+    check "$id: every structure is kept" "$(ok is "${state%%; text=*}" "$structure")" "was ${structure:0:160}; is ${state%%; text=*}"
     vm "shot 13-chromium-$id-applied"
   done
 

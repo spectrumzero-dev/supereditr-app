@@ -397,16 +397,22 @@ pub fn focused_app_identity() -> Option<(i32, String, String)> {
     Some((window.pid, window.app_id, name))
 }
 
-/// Pastes `text` over the captured selection. `_proofread` asks macOS to change only the words a
-/// proofread fixes; Linux always replaces the whole selection. Runs on a worker thread.
-pub fn replace(capture: &Capture, text: &str, _proofread: bool) -> Result<ReplaceMethod, PlatformError> {
+/// Pastes `text` over the captured selection. A `proofread` of formatted text in a web editor
+/// changes only the words it fixes, where the app lets SuperEditr select them; anything else
+/// replaces the whole selection. Runs on a worker thread.
+pub fn replace(capture: &Capture, text: &str, proofread: bool) -> Result<ReplaceMethod, PlatformError> {
     let _one_at_a_time = CHAIN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let desktop = desktop();
     let clipboard = clipboard::Wayland;
-    match tauri::async_runtime::block_on(replace::replace(&services(desktop.as_ref(), &clipboard), capture, text)) {
+    match tauri::async_runtime::block_on(replace::replace(
+        &services(desktop.as_ref(), &clipboard),
+        capture,
+        text,
+        proofread,
+    )) {
         ReplaceOutcome::Applied => Ok(ReplaceMethod::Paste),
         ReplaceOutcome::CopyOnly(error) => Err(error),
-        ReplaceOutcome::Uncertain(_) => Err(PlatformError::Unverified),
+        ReplaceOutcome::Uncertain(error) => Err(error),
         ReplaceOutcome::ClipboardKept(error) => Err(error),
     }
 }

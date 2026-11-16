@@ -323,6 +323,7 @@ pub fn html(original: &str, root: &Node, revised: &str) -> Option<String> {
         html: String::from("<meta charset=\"utf-8\">"),
         run: String::new(),
         exact: true,
+        item_value: None,
     };
     writer.node(root, 0, chars.len());
     writer.end_run();
@@ -340,6 +341,8 @@ struct Writer<'a> {
     run: String,
     /// Whether HTML holds every run so far exactly.
     exact: bool,
+    /// The number the next list item must say it has: one that doesn't follow the item before it.
+    item_value: Option<u32>,
 }
 
 impl Writer<'_> {
@@ -430,7 +433,10 @@ impl Writer<'_> {
                 ["</h1>", "</h2>", "</h3>", "</h4>", "</h5>", "</h6>"][usize::from(level.clamp(&1, &6) - 1)],
             ),
             Kind::Quote => ("<blockquote>".into(), "</blockquote>"),
-            Kind::Item { .. } => ("<li>".into(), "</li>"),
+            Kind::Item { .. } => match self.item_value.take() {
+                Some(value) => (format!("<li value=\"{value}\">"), "</li>"),
+                None => ("<li>".into(), "</li>"),
+            },
             Kind::Block => ("<div>".into(), "</div>"),
             Kind::Bold => ("<strong>".into(), "</strong>"),
             Kind::Italic => ("<em>".into(), "</em>"),
@@ -453,6 +459,8 @@ impl Writer<'_> {
             && node.children.iter().any(|child| child.kind.is_block());
         let (mut cursor, mut after_block) = (from, false);
         let mut list: Option<bool> = None;
+        // The number a numbered item gets when it says nothing.
+        let mut expected: Option<u32> = None;
         let list_end = |ordered: bool| if ordered { "</ol>" } else { "</ul>" };
         for child in &node.children {
             if let Kind::List { ordered } = node.kind {
@@ -471,6 +479,12 @@ impl Writer<'_> {
                         (false, _) => self.html.push_str("<ul>"),
                     }
                     list = Some(ordered);
+                    expected = number.or(Some(1));
+                }
+                if ordered && matches!(child.kind, Kind::Item { .. }) {
+                    // A list that skips a number keeps the skip.
+                    self.item_value = number.filter(|number| Some(*number) != expected);
+                    expected = number.or(expected).map(|number| number.saturating_add(1));
                 }
             }
             let (start, end) = self.span(child);
@@ -673,6 +687,14 @@ mod tests {
         assert_eq!(
             pasted(&pieces, |text| text.replace("Forth", "Fourth")).unwrap(),
             "<ol start=\"3\"><li>Third step</li><li>Fourth step</li></ol>"
+        );
+        let skips = [block(
+            "ol",
+            vec![item("3. ", vec![text("Third")]), item("5. ", vec![text("Fifth")]), item("6. ", vec![text("Sixth")])],
+        )];
+        assert_eq!(
+            pasted(&skips, same).unwrap(),
+            "<ol start=\"3\"><li>Third</li><li value=\"5\">Fifth</li><li>Sixth</li></ol>"
         );
     }
 

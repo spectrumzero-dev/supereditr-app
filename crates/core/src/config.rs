@@ -279,11 +279,13 @@ impl Config {
         }
         #[cfg(target_os = "linux")]
         if OLD_QUICK_FIX_SHORTCUTS.contains(&config.hotkeys.quick_fix.as_str()) {
-            // Review could already be on Super+Alt+R, which its choices offered: one key would
-            // then do both.
-            config.hotkeys.quick_fix =
-                if config.hotkeys.review == QUICK_FIX_SHORTCUT { SPARE_QUICK_FIX_SHORTCUT } else { QUICK_FIX_SHORTCUT }
-                    .into();
+            config.hotkeys.quick_fix = QUICK_FIX_SHORTCUT.into();
+        }
+        // Review could already be on Super+Alt+R, which its choices offered, with Quick fix moved
+        // or defaulted to it: one key would then do both.
+        #[cfg(target_os = "linux")]
+        if config.hotkeys.quick_fix == QUICK_FIX_SHORTCUT && config.hotkeys.review == QUICK_FIX_SHORTCUT {
+            config.hotkeys.quick_fix = SPARE_QUICK_FIX_SHORTCUT.into();
         }
         config
     }
@@ -570,6 +572,10 @@ mod tests {
             ("Super+Alt+R", "Super+Alt+D"),
             "never one key for both"
         );
+        std::fs::write(&path, r#"{"linux_hotkeys": {"review": "Super+Alt+R"}}"#).unwrap();
+        assert_eq!(Config::load(&path).hotkeys.quick_fix, "Super+Alt+D", "nor when Quick fix takes the default");
+        std::fs::write(&path, r#"{"linux_hotkeys": {"review": "Super+Alt+R", "quick_fix": ""}}"#).unwrap();
+        assert_eq!(Config::load(&path).hotkeys.quick_fix, "", "Quick fix turned off stays off");
         assert_eq!(saved("Super+Control+Alt+P").quick_fix, "Super+Control+Alt+P", "a chosen key stays");
         assert_eq!(saved("").quick_fix, "", "a quick fix turned off stays off");
         std::fs::remove_dir_all(dir).unwrap();

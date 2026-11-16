@@ -6,7 +6,7 @@ var INSTALL_URL = "https://supereditr.app/#omarchy"
 // SuperEditr's Linux defaults, used while its settings name no shortcuts (crates/core/src/config.rs).
 var DEFAULT_REVIEW = "Super+Alt+E"
 var DEFAULT_QUICK_FIX = "Super+Alt+R"
-// What SuperEditr moves an earlier default to when review already uses Super+Alt+R.
+// What SuperEditr gives Quick fix instead when review already uses Super+Alt+R.
 var SPARE_QUICK_FIX = "Super+Alt+D"
 // Earlier quick-fix defaults, which SuperEditr moves to the current one (Omarchy 4.5 binds the first).
 var OLD_QUICK_FIX = ["Super+Control+Alt+E", "Super+Control+Alt+Shift+E"]
@@ -61,7 +61,8 @@ function shortcuts(settingsText, statusText) {
   var own = settings && typeof settings.linux_hotkeys === "object" ? settings.linux_hotkeys : null
   var review = own && typeof own.review === "string" ? own.review : DEFAULT_REVIEW
   var quickFix = own && typeof own.quick_fix === "string" ? own.quick_fix : DEFAULT_QUICK_FIX
-  if (OLD_QUICK_FIX.indexOf(quickFix) !== -1) quickFix = review === DEFAULT_QUICK_FIX ? SPARE_QUICK_FIX : DEFAULT_QUICK_FIX
+  if (OLD_QUICK_FIX.indexOf(quickFix) !== -1) quickFix = DEFAULT_QUICK_FIX
+  if (quickFix === DEFAULT_QUICK_FIX && review === DEFAULT_QUICK_FIX) quickFix = SPARE_QUICK_FIX
   return { review: review, quickFix: quickFix }
 }
 

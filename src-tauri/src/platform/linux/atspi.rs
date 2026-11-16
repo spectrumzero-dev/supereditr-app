@@ -71,6 +71,9 @@ pub struct Field {
     pub window_bounds: Option<Rect>,
     /// Character ranges of `selected` the app shows as code (`<code>` in a web page).
     pub code: Vec<(usize, usize)>,
+    /// Character ranges of `selected` the app shows as code blocks (`<pre>`, or a `<code>` that is
+    /// a block itself).
+    pub blocks: Vec<(usize, usize)>,
     /// The field's text holds embedded objects, as a web editor's paragraphs are, and `selected`
     /// is their text put together; `start` and `end` count each object as one character.
     pub embedded: bool,
@@ -286,6 +289,7 @@ impl Atspi {
                 let attributes = limit(self.accessible(&child.bus, &child.path).await?.get_attributes()).await?;
                 let block = attributes.get("display").is_some_and(|display| !display.starts_with("inline"));
                 let code = attributes.get("tag").is_some_and(|tag| tag == "code");
+                let pre = attributes.get("tag").is_some_and(|tag| tag == "pre") || (code && block);
                 let text = self.text_proxy(&child).await?;
                 let count = limit(text.character_count()).await?;
                 let (from, to) = match limit(text.get_n_selections()).await {
@@ -294,7 +298,7 @@ impl Atspi {
                 };
                 let (from, to) = (from.min(to).clamp(0, count), to.max(from).clamp(0, count));
                 let inner = self.pieces(child, from, to, depth + 1, seen).await?;
-                pieces.push(Piece::Object { block, code, pieces: inner });
+                pieces.push(Piece::Object { block, code, pre, pieces: inner });
             }
             if !run.is_empty() {
                 pieces.push(Piece::Text(run));
@@ -304,13 +308,8 @@ impl Atspi {
     }
 
     /// The text between `start` and `end` with its embedded objects' text put together, and the
-    /// code in it.
-    async fn embedded_text(
-        &self,
-        id: &FieldId,
-        start: i32,
-        end: i32,
-    ) -> Result<(String, Vec<(usize, usize)>), ReadError> {
+    /// code and code blocks in it.
+    async fn embedded_text(&self, id: &FieldId, start: i32, end: i32) -> Result<Assembled, ReadError> {
         let mut seen = 0;
         match tokio::time::timeout(EMBEDDED_LIMIT, self.pieces(id.clone(), start, end, 0, &mut seen)).await {
             Ok(pieces) => Ok(assemble(&pieces?)),
@@ -415,6 +414,7 @@ impl Atspi {
             bounds: None,
             window_bounds: None,
             code: Vec::new(),
+            blocks: Vec::new(),
             embedded: false,
         };
         if password {
@@ -437,12 +437,12 @@ impl Atspi {
         let selected = if end > start { limit(text.get_text(start, end)).await? } else { String::new() };
         // A web editor's paragraphs, links and code are embedded objects: read their text. If they
         // can't be read, the field stays partial, and a shortcut falls back to a copy-only read.
-        let (selected, code, embedded) = match selected.contains(OBJECT) {
+        let (selected, code, blocks, embedded) = match selected.contains(OBJECT) {
             true => match self.embedded_text(id, start, end).await {
-                Ok((text, code)) => (text, code, true),
-                Err(_) => (selected, Vec::new(), false),
+                Ok((text, code, blocks)) => (text, code, blocks, true),
+                Err(_) => (selected, Vec::new(), Vec::new(), false),
             },
-            false => (selected, Vec::new(), false),
+            false => (selected, Vec::new(), Vec::new(), false),
         };
         // Where the selection is; with nothing selected, where the caret is.
         let extents = |coordinates| {
@@ -458,7 +458,7 @@ impl Atspi {
         };
         let bounds = extents(CoordType::Screen).await;
         let window_bounds = if bounds.is_none() { extents(CoordType::Window).await } else { None };
-        Ok(Some(Field { start, end, selected, caret, bounds, window_bounds, code, embedded, ..blank }))
+        Ok(Some(Field { start, end, selected, caret, bounds, window_bounds, code, blocks, embedded, ..blank }))
     }
 }
 
@@ -514,27 +514,37 @@ impl Fields for Atspi {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Piece {
     Text(String),
-    Object { block: bool, code: bool, pieces: Vec<Piece> },
+    /// `block`: on a line of its own. `code`: shown as code. `pre`: a code block.
+    Object {
+        block: bool,
+        code: bool,
+        pre: bool,
+        pieces: Vec<Piece>,
+    },
 }
+
+/// Text put together from pieces, the character ranges of code in it, and those of code blocks.
+pub type Assembled = (String, Vec<(usize, usize)>, Vec<(usize, usize)>);
 
 /// Puts the pieces' text together as the field shows it: each block (a paragraph, a list item) on a
 /// line of its own, an empty paragraph as an empty line, and inline objects (links, bold, code) in
-/// the line. Returns the text and the character ranges of code in it.
-pub fn assemble(pieces: &[Piece]) -> (String, Vec<(usize, usize)>) {
+/// the line.
+pub fn assemble(pieces: &[Piece]) -> Assembled {
     let mut text = String::new();
     let mut chars = 0;
     let mut code = Vec::new();
+    let mut blocks = Vec::new();
     let mut after_block = false;
     for (i, piece) in pieces.iter().enumerate() {
-        let (part, part_code, block, is_code) = match piece {
-            Piece::Text(run) => (run.clone(), Vec::new(), false, false),
-            Piece::Object { block, code, pieces } => {
-                let (mut part, part_code) = assemble(pieces);
+        let (part, part_code, part_blocks, block, is_code, is_pre) = match piece {
+            Piece::Text(run) => (run.clone(), Vec::new(), Vec::new(), false, false, false),
+            Piece::Object { block, code, pre, pieces } => {
+                let (mut part, part_code, part_blocks) = assemble(pieces);
                 // An empty paragraph holds a line break, and a paragraph may end with one.
                 if *block && part.ends_with('\n') {
                     part.pop();
                 }
-                (part, part_code, *block, *code)
+                (part, part_code, part_blocks, *block, *code, *pre)
             }
         };
         if i > 0 && (block || after_block) {
@@ -546,11 +556,16 @@ pub fn assemble(pieces: &[Piece]) -> (String, Vec<(usize, usize)>) {
             code.push((chars, chars + length));
         }
         code.extend(part_code.into_iter().map(|(from, to)| (chars + from, chars + to)));
+        if is_pre && length > 0 {
+            blocks.push((chars, chars + length));
+        } else {
+            blocks.extend(part_blocks.into_iter().map(|(from, to)| (chars + from, chars + to)));
+        }
         text.push_str(&part);
         chars += length;
         after_block = block;
     }
-    (text, code)
+    (text, code, blocks)
 }
 
 /// The byte range of a character range in `text`; `None` when it runs past the end.
@@ -624,6 +639,7 @@ mod tests {
             bounds: None,
             window_bounds: None,
             code: Vec::new(),
+            blocks: Vec::new(),
             embedded: false,
         };
         assert!(field.has_selection());
@@ -635,7 +651,7 @@ mod tests {
     }
 
     fn object(block: bool, code: bool, pieces: Vec<Piece>) -> Piece {
-        Piece::Object { block, code, pieces }
+        Piece::Object { block, code, pre: false, pieces }
     }
 
     #[test]
@@ -657,7 +673,8 @@ mod tests {
         );
         let pieces =
             vec![first, object(true, false, vec![text("\n")]), object(true, false, vec![text("See you soon.")])];
-        let (text, code) = assemble(&pieces);
+        let (text, code, blocks) = assemble(&pieces);
+        assert!(blocks.is_empty(), "inline code is no code block");
         assert_eq!(
             text,
             "teh fix first. Their going to love this today. Read the notes and realy run their going to work\n\nSee you soon."
@@ -674,8 +691,25 @@ mod tests {
             object(true, false, vec![text("Rhyan 👋🏽 ran "), object(false, true, vec![text("make teh")])]),
             object(true, false, vec![]),
         ];
-        let (text, code) = assemble(&pieces);
+        let (text, code, _) = assemble(&pieces);
         assert_eq!(text, "\nRhyan 👋🏽 ran make teh\n");
         assert_eq!(code, [(14, 22)], "characters: the line break, \"Rhyan \", the emoji as two, \" ran \"");
+    }
+
+    #[test]
+    fn a_code_block_is_found_whatever_wraps_its_text() {
+        // A paragraph, then <pre><code> around blocks that hold the text, as one editor nests it,
+        // then a <code> that is a block itself, as another shows a code block.
+        let nested = Piece::Object {
+            block: true,
+            code: false,
+            pre: true,
+            pieces: vec![object(false, true, vec![object(true, false, vec![text("npm ci\nnpm test\n")])])],
+        };
+        let alone = Piece::Object { block: true, code: true, pre: true, pieces: vec![text("make")] };
+        let (text, code, blocks) = assemble(&[object(true, false, vec![text("Run it:")]), nested, alone]);
+        assert_eq!(text, "Run it:\nnpm ci\nnpm test\nmake");
+        assert_eq!(code, [(8, 23), (24, 28)]);
+        assert_eq!(blocks, [(8, 23), (24, 28)]);
     }
 }

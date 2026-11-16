@@ -167,9 +167,11 @@ impl<'a> Transaction<'a> {
         &self.before
     }
 
-    /// Puts `text` on the clipboard, marked sensitive and as this transaction's.
-    pub fn put_text(&self, text: &str) -> Result<(), ClipboardError> {
+    /// Puts `text` on the clipboard, marked sensitive and as this transaction's, with `html` when
+    /// given: the same text for a rich-text editor, which a plain-text one ignores.
+    pub fn put_text(&self, text: &str, html: Option<&str>) -> Result<(), ClipboardError> {
         let mut items = text_items(text);
+        items.extend(html.map(|html| ("text/html".to_string(), html.as_bytes().to_vec())));
         items.push((self.marker.clone(), Vec::new()));
         self.clipboard.offer(items)
     }
@@ -474,7 +476,7 @@ mod tests {
         let clipboard = chromium_copy();
         let before = clipboard.types();
         let transaction = Transaction::begin(&clipboard, &Limits::default()).unwrap();
-        transaction.put_text("They’re going").unwrap();
+        transaction.put_text("They’re going", None).unwrap();
         assert_eq!(clipboard.get("text/plain").unwrap(), "They’re going".as_bytes());
         assert_eq!(clipboard.get(SENSITIVE_HINT).unwrap(), b"secret", "history skips the correction");
         assert!(transaction.owned());
@@ -490,7 +492,7 @@ mod tests {
     fn a_newer_copy_is_never_overwritten_by_the_restore() {
         let clipboard = chromium_copy();
         let transaction = Transaction::begin(&clipboard, &Limits::default()).unwrap();
-        transaction.put_text("They’re going").unwrap();
+        transaction.put_text("They’re going", None).unwrap();
         clipboard.copy_from_app("Kyndal's newer copy");
         assert!(!transaction.owned());
         assert_eq!(transaction.restore(), Restore::Superseded);
@@ -502,7 +504,7 @@ mod tests {
         let clipboard = FakeClipboard::default();
         let transaction = Transaction::begin(&clipboard, &Limits::default()).unwrap();
         assert_eq!(transaction.before().types().count(), 0);
-        transaction.put_text("They’re going").unwrap();
+        transaction.put_text("They’re going", None).unwrap();
         assert_eq!(transaction.restore(), Restore::Restored);
         assert!(clipboard.types().is_empty());
     }

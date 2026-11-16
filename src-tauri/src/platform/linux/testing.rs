@@ -36,6 +36,7 @@ pub fn field(selected: &str) -> Field {
         bounds: None,
         window_bounds: None,
         code: Vec::new(),
+        blocks: Vec::new(),
         embedded: false,
     }
 }
@@ -85,6 +86,8 @@ pub struct FakeDesktop {
     copies: Option<String>,
     /// Whether Ctrl+V pastes the clipboard into the field.
     pastes: bool,
+    /// The HTML on the clipboard at the last Ctrl+V, if any.
+    pasted_html: Mutex<Option<String>>,
     keys: Mutex<Vec<String>>,
     focus_requests: Mutex<usize>,
     clipboard: Arc<FakeClipboard>,
@@ -148,6 +151,8 @@ impl Desktop for FakeDesktop {
                 }
             }
             "V" if self.pastes => {
+                *self.pasted_html.lock().unwrap() =
+                    self.clipboard.get("text/html").map(|html| String::from_utf8(html).unwrap());
                 let pasted = String::from_utf8(self.clipboard.get("text/plain;charset=utf-8").unwrap()).unwrap();
                 let field = self.fields.field.lock().unwrap().clone().unwrap();
                 let mut content = self.fields.content.lock().unwrap();
@@ -190,6 +195,7 @@ impl World {
             refuse_focus: false,
             copies: None,
             pastes: false,
+            pasted_html: Mutex::default(),
             keys: Mutex::default(),
             focus_requests: Mutex::default(),
             clipboard: clipboard.clone(),
@@ -254,6 +260,11 @@ impl World {
     pub fn clear_keys(&self) {
         self.desktop.keys.lock().unwrap().clear();
         *self.clipboard.offers_made.lock().unwrap() = 0;
+    }
+
+    /// The HTML the last paste carried, if it carried any.
+    pub fn pasted_html(&self) -> Option<String> {
+        self.desktop.pasted_html.lock().unwrap().clone()
     }
 
     pub fn clipboard_offers(&self) -> usize {

@@ -72,7 +72,22 @@ async fn attempt(services: &Services<'_>, capture: &Capture, text: &str) -> Repl
         }
         Err(_) => return copy_only(),
     };
-    if transaction.put_text(text).is_err() {
+    // Code the app formatted is pasted as code again: a web editor makes paragraphs of plain text,
+    // so a code block would come back as ordinary lines. A field without code gets plain text only.
+    let code = supereditr_core::diff::carry_ranges(&capture.text, text, &capture.code);
+    let blocks = supereditr_core::diff::carry_ranges(&capture.text, text, &field.blocks);
+    let html =
+        if field.embedded && !code.is_empty() { supereditr_core::html::with_code(text, &code, &blocks) } else { None };
+    if !capture.code.is_empty() {
+        trace(format_args!(
+            "replace {}: {} of {} code ranges pasted as {}",
+            capture.bundle_id,
+            code.len(),
+            capture.code.len(),
+            if html.is_some() { "HTML" } else { "plain text" }
+        ));
+    }
+    if transaction.put_text(text, html.as_deref()).is_err() {
         transaction.restore();
         return copy_only();
     }
@@ -218,6 +233,37 @@ mod tests {
         let world = World::new("chromium").with_field(paragraphs).pasting();
         let capture = captured(&world);
         assert!(matches!(world.replace(&capture, "They’re going\n\nSee you soon."), ReplaceOutcome::Applied));
+    }
+
+    #[test]
+    fn a_code_block_in_a_web_editor_is_pasted_as_html_too() {
+        let text = "Their going\nnpm ci\nnpm test\nSee you soon.";
+        let mut editor = field(text);
+        editor.embedded = true;
+        editor.code = vec![(12, 27)];
+        editor.blocks = vec![(12, 27)];
+        let world = World::new("chromium").with_field(editor).pasting();
+        let capture = captured(&world);
+        let fixed = "They’re going\nnpm ci\nnpm test\nSee you soon.";
+        assert!(matches!(world.replace(&capture, fixed), ReplaceOutcome::Applied));
+        assert_eq!(
+            world.pasted_html().as_deref(),
+            Some(
+                "<meta charset=\"utf-8\"><p>They’re going</p><pre><code>npm ci\nnpm test</code></pre><p>See you soon.</p>"
+            )
+        );
+        assert!(world.field_text().starts_with(fixed), "the plain text is the fix as it is");
+        assert_eq!(world.clipboard.get("text/html").unwrap(), b"<b>Rhyan's</b> own copy", "the user's HTML is back");
+    }
+
+    #[test]
+    fn a_field_without_code_gets_plain_text_only() {
+        let mut paragraphs = field("Their going\n\nSee you soon.");
+        paragraphs.embedded = true;
+        let world = World::new("chromium").with_field(paragraphs).pasting();
+        let capture = captured(&world);
+        assert!(matches!(world.replace(&capture, "They’re going\n\nSee you soon."), ReplaceOutcome::Applied));
+        assert_eq!(world.pasted_html(), None);
     }
 
     #[test]

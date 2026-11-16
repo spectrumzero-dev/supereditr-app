@@ -339,6 +339,11 @@ chromium_cases() {
         local state
         state="$(vm "cdp \"document.getElementById('$id-state').textContent\"")"
         note "$id: the page describes the field as $state"
+        # The fix replaces the whole selection, and goes on the clipboard as HTML too, so an editor
+        # that pastes HTML keeps the code as code. The others paste the plain text.
+        case "$id" in
+          code | tiptap) check "$id: the code is still formatted as code" "$(ok has "$state" "code=teh fix\|their going to work;")" "${state:0:120}" ;;
+        esac
         ;;
     esac
     after="$(vm 'sleep 0.3; clip_digest')"

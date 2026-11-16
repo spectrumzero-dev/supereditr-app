@@ -8,6 +8,7 @@ pub mod diff;
 pub mod edits;
 pub mod engine;
 pub mod guard;
+pub mod html;
 pub mod install;
 pub mod lang;
 pub mod local;

@@ -486,7 +486,7 @@ editor_cases() {
   # Quick fix: no panel, the fix goes straight in.
   vm "d_focus $e; sleep 0.3; select_all $e; sleep 0.3"
   mark="$(vm log_mark)"
-  key meta_l-ctrl-alt-e
+  key meta_l-ctrl-alt-shift-e
   result="$(vm "wait_log $mark 'replace org.gnome.TextEditor: ' 10")"
   check "quick fix: applies without a review" "$(ok has "$result" ": applied")" "${result#* }"
   value="$(vm "field $pid | jq -r .text")"

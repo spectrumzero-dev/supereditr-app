@@ -28,6 +28,8 @@ struct State {
     wanted: Vec<Binding>,
     /// Bound now, to unbind when they change.
     bound: Vec<Binding>,
+    /// Wanted but left unbound because something else uses the key, with what uses it.
+    refused: Vec<(Action, String)>,
     on_fire: Option<OnFire>,
 }
 
@@ -44,7 +46,13 @@ impl HyprlandShortcuts {
     pub fn new(hyprland: Arc<HyprlandDesktop>) -> Arc<Self> {
         Arc::new(Self {
             hyprland,
-            state: Mutex::new(State { route: Route::Pending, wanted: Vec::new(), bound: Vec::new(), on_fire: None }),
+            state: Mutex::new(State {
+                route: Route::Pending,
+                wanted: Vec::new(),
+                bound: Vec::new(),
+                refused: Vec::new(),
+                on_fire: None,
+            }),
             pressed: Mutex::new(None),
             released: Condvar::new(),
         })
@@ -136,16 +144,26 @@ impl HyprlandShortcuts {
             Route::Portal => "through the GlobalShortcuts portal",
             Route::Exec => "by running `supereditr review` (the GlobalShortcuts portal didn’t answer)",
         };
-        let detail = match (bound.is_empty(), state.wanted.is_empty()) {
+        let mut detail = match (bound.is_empty(), state.wanted.is_empty()) {
             (_, true) => "None chosen. Pick one on the Shortcuts page.".to_string(),
-            (true, false) => format!("Not bound yet, {route}"),
+            (true, false) if state.refused.is_empty() => format!("Not bound yet, {route}"),
+            (true, false) => "None bound".to_string(),
             (false, false) => format!("{}, {route}", bound.join("; ")),
         };
+        if !state.refused.is_empty() {
+            let refused: Vec<&str> = state.refused.iter().map(|(_, problem)| problem.as_str()).collect();
+            detail = format!("{detail}. Not bound: {}. Choose another key on the Shortcuts page.", refused.join("; "));
+        }
         SetupCheck {
             name: "Shortcuts".into(),
             ok: state.route != Route::Pending && !bound.is_empty() && bound.len() == state.wanted.len(),
             detail,
         }
+    }
+
+    /// The shortcuts left unbound because something else uses their keys, with why.
+    pub fn refused(&self) -> Vec<(Action, String)> {
+        self.state.lock().unwrap().refused.clone()
     }
 
     /// What already uses this key in Hyprland, other than SuperEditr.
@@ -183,10 +201,13 @@ impl HyprlandShortcuts {
         let mut problems = Vec::new();
         let mut bound = Vec::new();
         let mut add = Vec::new();
+        let mut refused = Vec::new();
         for binding in wanted {
             // A key Omarchy (or the user) already uses would do both things.
             if let Some(what) = self.taken_by(binding) {
-                problems.push(format!("{} is already used for “{what}”", binding.shortcut.label()));
+                let problem = format!("{} is already used for “{what}”", binding.shortcut.label());
+                problems.push(problem.clone());
+                refused.push((binding.action, problem));
                 continue;
             }
             let exec = format!("{command} {}", binding.action.id());
@@ -209,6 +230,7 @@ impl HyprlandShortcuts {
         let remove = unbinds(&before, &bound);
         problems.extend(self.hyprland.set_binds(&remove, add));
         state.bound = bound;
+        state.refused = refused;
         problems
     }
 }
@@ -362,5 +384,25 @@ mod tests {
         let commands = commands.lock().unwrap();
         assert!(!commands.iter().any(|c| c == r#"eval hl.unbind("SUPER + ALT + E")"#), "{commands:?}");
         assert!(commands.iter().any(|c| c == r#"eval hl.unbind("SUPER + CTRL + ALT + E")"#), "{commands:?}");
+    }
+
+    #[test]
+    fn a_refused_key_is_remembered_and_shown_on_the_setup_page() {
+        let (desktop, _) = super::super::hyprland::tests::fake_hyprland(answer_with_binds);
+        let shortcuts = HyprlandShortcuts::new(Arc::new(desktop));
+        shortcuts.state.lock().unwrap().route = Route::Exec;
+        shortcuts.install(&[binding(Action::Review, "Super+Alt+E"), binding(Action::QuickFix, "Super+Alt+P")]);
+        assert_eq!(
+            shortcuts.refused(),
+            [(Action::Review, "Super+Alt+E is already used for “Emoji picker”".to_string())]
+        );
+        let check = shortcuts.status();
+        assert!(!check.ok);
+        assert!(check.detail.contains("Super+Alt+P to"), "{}", check.detail);
+        assert!(check.detail.contains("Not bound: Super+Alt+E is already used for “Emoji picker”"), "{}", check.detail);
+        // Choosing a free key clears it.
+        shortcuts.install(&[binding(Action::Review, "Super+Alt+R"), binding(Action::QuickFix, "Super+Alt+P")]);
+        assert!(shortcuts.refused().is_empty());
+        assert!(shortcuts.status().ok, "{}", shortcuts.status().detail);
     }
 }

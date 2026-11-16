@@ -61,6 +61,7 @@
     }
     base = latest;
     revision = fresh.revision;
+    problems = fresh.hotkeyProblems ?? [];
     payload = fresh;
     config = payload.config;
   }

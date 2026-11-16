@@ -143,6 +143,9 @@ pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> SettingsPaylo
         version: env!("SUPEREDITR_VERSION_LABEL"),
         platform: std::env::consts::OS,
         log_path: platform::log_path().map(|path| path.display().to_string()),
+        #[cfg(target_os = "linux")]
+        hotkey_problems: platform::refused_shortcuts().into_iter().map(|(_, problem)| problem).collect(),
+        #[cfg(not(target_os = "linux"))]
         hotkey_problems: Vec::new(),
         #[cfg(windows)]
         key_labels: platform::key_labels(),

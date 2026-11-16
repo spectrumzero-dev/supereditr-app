@@ -20,7 +20,7 @@ BarWidget {
 
   readonly property string configDir: (Quickshell.env("XDG_CONFIG_HOME") || Quickshell.env("HOME") + "/.config") + "/app.supereditr"
   readonly property bool running: appState === "running"
-  readonly property var shortcuts: Model.shortcuts(settingsText)
+  readonly property var shortcuts: Model.shortcuts(settingsText, running ? statusText : "")
   readonly property color popupForeground: bar ? bar.foreground : Color.popups.text
 
   function open() { opened = true; refresh() }
@@ -274,7 +274,7 @@ BarWidget {
   }
 
   // A full-width button, with the action's shortcut on its right when it has one ("Off" when the
-  // user cleared it). Button sizes itself to its icon and label only, so this measures them to
+  // user cleared it, "Not bound" when the desktop refused it). Button sizes itself to its icon and label only, so this measures them to
   // keep the shortcut clear of the label: fittedWidth is the width that shows both, and when the
   // screen is too narrow for it the shortcut is elided from the left, keeping its key.
   component ActionButton: Button {

@@ -43,9 +43,29 @@ test("missing or unreadable settings mean the defaults", () => {
   for (const text of ["", "{", JSON.stringify({ hotkeys: { review: "Cmd+E" } }), JSON.stringify({ linux_hotkeys: null })]) {
     const shortcuts = Model.shortcuts(text);
     assert.equal(shortcuts.review, "Super+Alt+E", text);
-    assert.equal(shortcuts.quickFix, "Super+Control+Alt+E", text);
+    assert.equal(shortcuts.quickFix, "Super+Control+Alt+Shift+E", text);
   }
-  assert.equal(Model.shortcuts(JSON.stringify({ linux_hotkeys: { review: "Super+R" } })).quickFix, "Super+Control+Alt+E");
+  assert.equal(Model.shortcuts(JSON.stringify({ linux_hotkeys: { review: "Super+R" } })).quickFix, "Super+Control+Alt+Shift+E");
+});
+
+test("the old quick-fix default reads as the new one, as SuperEditr moves it", () => {
+  const settings = (quickFix) => JSON.stringify({ linux_hotkeys: { review: "Super+Alt+E", quick_fix: quickFix } });
+  assert.equal(Model.shortcuts(settings("Super+Control+Alt+E")).quickFix, "Super+Control+Alt+Shift+E");
+  assert.equal(Model.shortcuts(settings("Super+Control+Alt+P")).quickFix, "Super+Control+Alt+P");
+});
+
+test("while SuperEditr runs, status.json's shortcuts win, and a refused one is Not bound", () => {
+  const settings = JSON.stringify({ linux_hotkeys: { review: "Super+Alt+R", quick_fix: "Super+Control+Alt+E" } });
+  const status = JSON.stringify({
+    version: "0.1.9",
+    shortcuts: { review: "Super+Alt+R", quick_fix: "Super+Control+Alt+P", refused: ["quick_fix"] },
+  });
+  const shortcuts = Model.shortcuts(settings, status);
+  assert.equal(Model.shortcutText(shortcuts.review), "Super+Alt+R");
+  assert.equal(Model.shortcutText(shortcuts.quickFix), "Not bound");
+  // A status.json from a version without shortcuts falls back to the settings.
+  assert.equal(Model.shortcuts(settings, JSON.stringify({ version: "0.1.8" })).review, "Super+Alt+R");
+  assert.equal(Model.shortcuts(settings, "{").review, "Super+Alt+R");
 });
 
 test("every icon is a single character", () => {

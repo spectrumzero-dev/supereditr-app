@@ -43,14 +43,19 @@ test("missing or unreadable settings mean the defaults", () => {
   for (const text of ["", "{", JSON.stringify({ hotkeys: { review: "Cmd+E" } }), JSON.stringify({ linux_hotkeys: null })]) {
     const shortcuts = Model.shortcuts(text);
     assert.equal(shortcuts.review, "Super+Alt+E", text);
-    assert.equal(shortcuts.quickFix, "Super+Control+Alt+Shift+E", text);
+    assert.equal(shortcuts.quickFix, "Super+Alt+R", text);
   }
-  assert.equal(Model.shortcuts(JSON.stringify({ linux_hotkeys: { review: "Super+R" } })).quickFix, "Super+Control+Alt+Shift+E");
+  assert.equal(Model.shortcuts(JSON.stringify({ linux_hotkeys: { review: "Super+R" } })).quickFix, "Super+Alt+R");
 });
 
 test("the old quick-fix default reads as the new one, as SuperEditr moves it", () => {
   const settings = (quickFix) => JSON.stringify({ linux_hotkeys: { review: "Super+Alt+E", quick_fix: quickFix } });
-  assert.equal(Model.shortcuts(settings("Super+Control+Alt+E")).quickFix, "Super+Control+Alt+Shift+E");
+  assert.equal(Model.shortcuts(settings("Super+Control+Alt+E")).quickFix, "Super+Alt+R");
+  assert.equal(Model.shortcuts(settings("Super+Control+Alt+Shift+E")).quickFix, "Super+Alt+R");
+  const reviewOnR = JSON.stringify({ linux_hotkeys: { review: "Super+Alt+R", quick_fix: "Super+Control+Alt+E" } });
+  assert.equal(Model.shortcuts(reviewOnR).quickFix, "Super+Alt+D", "never one key for both");
+  assert.equal(Model.shortcuts(JSON.stringify({ linux_hotkeys: { review: "Super+Alt+R" } })).quickFix, "Super+Alt+D");
+  assert.equal(Model.shortcuts(JSON.stringify({ linux_hotkeys: { review: "Super+Alt+R", quick_fix: "" } })).quickFix, "");
   assert.equal(Model.shortcuts(settings("Super+Control+Alt+P")).quickFix, "Super+Control+Alt+P");
 });
 

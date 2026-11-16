@@ -262,6 +262,11 @@ pub fn set_shortcuts(bindings: &[Binding]) -> Vec<String> {
     }
 }
 
+/// The shortcuts left unbound because something else in the desktop uses their keys, with why.
+pub fn refused_shortcuts() -> Vec<(Action, String)> {
+    SHORTCUTS.get().map(|shortcuts| shortcuts.refused()).unwrap_or_default()
+}
+
 /// What in the desktop already uses this shortcut, if anything does.
 pub fn shortcut_taken(accelerator: &str) -> Option<String> {
     let shortcut = desktop::Shortcut::parse(accelerator)?;

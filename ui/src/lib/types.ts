@@ -152,6 +152,8 @@ export interface SettingsPayload {
   platform: string;
   /** Where capture.log is written. */
   logPath: string | null;
+  /** Shortcuts the desktop left unbound because something else uses their keys (Linux). */
+  hotkeyProblems?: string[];
   /** On Windows, what keys saved by virtual key ("VkBA") show on the current keyboard layout. */
   keyLabels?: Record<string, string>;
   /** The revision `config` was saved at; see `save_settings` in commands.rs. */

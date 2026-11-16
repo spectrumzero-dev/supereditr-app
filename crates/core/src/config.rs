@@ -140,7 +140,10 @@ const OLD_REVIEW_SHORTCUT: &str = "Control+Alt+E";
 #[cfg(target_os = "linux")]
 const REVIEW_SHORTCUT: &str = "Super+Alt+E";
 #[cfg(target_os = "linux")]
-const QUICK_FIX_SHORTCUT: &str = "Super+Control+Alt+E";
+const QUICK_FIX_SHORTCUT: &str = "Super+Control+Alt+Shift+E";
+/// The first quick-fix default, replaced because Omarchy 4.5 binds it to its world clock.
+#[cfg(target_os = "linux")]
+const OLD_QUICK_FIX_SHORTCUT: &str = "Super+Control+Alt+E";
 
 /// A chord, since a double press needs a keyboard hook. Ctrl+Shift+F2 has the same key and label on
 /// common layouts and is free in Windows and common apps, unlike the Windows key (the shell's),
@@ -270,6 +273,10 @@ impl Config {
         #[cfg(not(any(target_os = "linux", windows)))]
         if config.hotkeys.review == OLD_REVIEW_SHORTCUT {
             config.hotkeys.review = REVIEW_SHORTCUT.into();
+        }
+        #[cfg(target_os = "linux")]
+        if config.hotkeys.quick_fix == OLD_QUICK_FIX_SHORTCUT {
+            config.hotkeys.quick_fix = QUICK_FIX_SHORTCUT.into();
         }
         config
     }
@@ -526,8 +533,30 @@ mod tests {
         assert!(is_terminal("FOOT"));
         assert!(!is_terminal("1Password"));
         assert_eq!(config.hotkeys.review, "Super+Alt+E");
-        assert_eq!(config.hotkeys.quick_fix, "Super+Control+Alt+E");
+        assert_eq!(config.hotkeys.quick_fix, "Super+Control+Alt+Shift+E");
         assert!(!config.auto_popup, "no automatic suggestions on Linux");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_old_linux_quick_fix_default_moves_to_the_new_one() {
+        let dir = std::env::temp_dir().join(format!("supereditr-quick-fix-{}", std::process::id()));
+        let path = dir.join("settings.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        let saved = |quick_fix: &str| {
+            std::fs::write(
+                &path,
+                format!(r#"{{"linux_hotkeys": {{"review": "Super+Alt+R", "quick_fix": "{quick_fix}"}}}}"#),
+            )
+            .unwrap();
+            Config::load(&path).hotkeys
+        };
+        let moved = saved("Super+Control+Alt+E");
+        assert_eq!(moved.quick_fix, "Super+Control+Alt+Shift+E", "Omarchy 4.5 binds the old default");
+        assert_eq!(moved.review, "Super+Alt+R", "the review shortcut is left as it is");
+        assert_eq!(saved("Super+Control+Alt+P").quick_fix, "Super+Control+Alt+P", "a chosen key stays");
+        assert_eq!(saved("").quick_fix, "", "a quick fix turned off stays off");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(windows)]

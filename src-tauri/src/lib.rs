@@ -35,14 +35,17 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
 /// Keeps `status.json` (next to settings.json) current with whether macOS trusts SuperEditr for
-/// Accessibility. Only the app itself can ask, so this is how scripts and UI tests check it.
-fn write_status_file(path: std::path::PathBuf) {
+/// Accessibility. Only the app itself can ask, so this is how scripts and UI tests check it. On
+/// Linux it also holds the shortcuts in use and which of them the desktop left unbound, for the
+/// Omarchy bar widget.
+fn write_status_file(app: AppHandle, path: std::path::PathBuf) {
     std::thread::spawn(move || {
         let mut last = None;
         loop {
             let trusted = platform::accessibility_trusted(false);
-            if last != Some(trusted) {
-                let status = serde_json::json!({
+            let current = (trusted, shortcut_status(&app));
+            if last.as_ref() != Some(&current) {
+                let mut status = serde_json::json!({
                     "accessibility": trusted,
                     "version": env!("CARGO_PKG_VERSION"),
                     "pid": std::process::id(),
@@ -51,14 +54,40 @@ fn write_status_file(path: std::path::PathBuf) {
                         .map(|d| d.as_secs())
                         .unwrap_or(0),
                 });
+                if let Some(shortcuts) = &current.1 {
+                    status["shortcuts"] = shortcuts.clone();
+                }
                 let tmp = path.with_extension("json.tmp");
                 if std::fs::write(&tmp, status.to_string()).is_ok() && std::fs::rename(&tmp, &path).is_ok() {
-                    last = Some(trusted);
+                    last = Some(current);
                 }
             }
             std::thread::sleep(std::time::Duration::from_secs(2));
         }
     });
+}
+
+/// The review and quick-fix shortcuts as settings name them ("" when off), and which of them the
+/// desktop left unbound because something else uses the key: `{"review": "Super+Alt+E",
+/// "quick_fix": "…", "refused": ["quick_fix"]}`. The settings file can be older than what the app
+/// uses, since the app moves an old default to the new one only in memory.
+#[cfg(target_os = "linux")]
+fn shortcut_status(app: &AppHandle) -> Option<serde_json::Value> {
+    use platform::desktop::Action as DesktopAction;
+    let hotkeys = app.try_state::<state::AppState>()?.config().hotkeys;
+    let refused: Vec<&str> = platform::refused_shortcuts()
+        .iter()
+        .map(|(action, _)| match action {
+            DesktopAction::Review => "review",
+            DesktopAction::QuickFix => "quick_fix",
+        })
+        .collect();
+    Some(serde_json::json!({ "review": hotkeys.review, "quick_fix": hotkeys.quick_fix, "refused": refused }))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn shortcut_status(_app: &AppHandle) -> Option<serde_json::Value> {
+    None
 }
 
 /// SuperEditr is a menu-bar app, out of the Dock and ⌘Tab, except while Settings is open: then it
@@ -562,7 +591,7 @@ pub fn run() {
                 #[cfg(windows)]
                 watch_webview(app.handle(), &_window);
             }
-            write_status_file(config_dir.join("status.json"));
+            write_status_file(app.handle().clone(), config_dir.join("status.json"));
 
             let handle = app.handle().clone();
             overlay::init(&handle);

@@ -11,11 +11,12 @@
   }
   let { value, slot, onchange }: Props = $props();
 
-  /** Combinations Omarchy 4 leaves free (Super+Alt+Shift+E is its "New email"). Linux has no
+  /** Combinations Omarchy 4.0 and 4.5 leave free (Super+Alt+Shift+E is its "New email", and 4.5
+   * gives Super+Ctrl+Alt+E to its world clock and Super+Ctrl+Alt+C to screenshots). Linux has no
    * shortcut recorder yet, so these are the choices. */
   const CHOICES: Record<string, string[]> = {
     review: ["Super+Alt+E", "Super+Alt+R", "Super+Alt+P", "Super+Alt+C", "F6"],
-    quick_fix: ["Super+Control+Alt+E", "Super+Control+Alt+P", "Super+Control+Alt+C", "F7"],
+    quick_fix: ["Super+Control+Alt+Shift+E", "Super+Control+Alt+P", "F7"],
   };
   const choices = $derived(CHOICES[slot] ?? []);
   /** Why a choice can't be used, by choice. */

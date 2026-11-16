@@ -143,10 +143,7 @@ pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> SettingsPaylo
         version: env!("SUPEREDITR_VERSION_LABEL"),
         platform: std::env::consts::OS,
         log_path: platform::log_path().map(|path| path.display().to_string()),
-        #[cfg(target_os = "linux")]
-        hotkey_problems: platform::refused_shortcuts().into_iter().map(|(_, problem)| problem).collect(),
-        #[cfg(not(target_os = "linux"))]
-        hotkey_problems: Vec::new(),
+        hotkey_problems: refused_shortcuts(),
         #[cfg(windows)]
         key_labels: platform::key_labels(),
         #[cfg(not(windows))]
@@ -186,7 +183,17 @@ pub fn save_settings(
     {
         return Ok(Saved { revision, problems: hotkeys::register_from_config(&app) });
     }
-    Ok(Saved { revision, problems: Vec::new() })
+    // The shortcuts weren't touched, so any the desktop refused still are.
+    Ok(Saved { revision, problems: refused_shortcuts() })
+}
+
+/// Shortcuts the desktop left unbound because something else uses their keys, as Settings shows
+/// them. Only Linux keeps them: elsewhere a refused shortcut is reported when it's saved.
+fn refused_shortcuts() -> Vec<String> {
+    #[cfg(target_os = "linux")]
+    return platform::refused_shortcuts().into_iter().map(|(_, problem)| problem).collect();
+    #[cfg(not(target_os = "linux"))]
+    Vec::new()
 }
 
 #[tauri::command]

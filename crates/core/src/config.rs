@@ -144,6 +144,8 @@ const QUICK_FIX_SHORTCUT: &str = "Super+Alt+R";
 /// Earlier quick-fix defaults: Super+Ctrl+Alt+E, which Omarchy 4.5 binds to its world clock, and
 /// Super+Ctrl+Alt+Shift+E, which replaced it briefly and was too many keys.
 #[cfg(target_os = "linux")]
+const SPARE_QUICK_FIX_SHORTCUT: &str = "Super+Alt+D";
+#[cfg(target_os = "linux")]
 const OLD_QUICK_FIX_SHORTCUTS: [&str; 2] = ["Super+Control+Alt+E", "Super+Control+Alt+Shift+E"];
 
 /// A chord, since a double press needs a keyboard hook. Ctrl+Shift+F2 has the same key and label on
@@ -277,7 +279,11 @@ impl Config {
         }
         #[cfg(target_os = "linux")]
         if OLD_QUICK_FIX_SHORTCUTS.contains(&config.hotkeys.quick_fix.as_str()) {
-            config.hotkeys.quick_fix = QUICK_FIX_SHORTCUT.into();
+            // Review could already be on Super+Alt+R, which its choices offered: one key would
+            // then do both.
+            config.hotkeys.quick_fix =
+                if config.hotkeys.review == QUICK_FIX_SHORTCUT { SPARE_QUICK_FIX_SHORTCUT } else { QUICK_FIX_SHORTCUT }
+                    .into();
         }
         config
     }
@@ -556,6 +562,14 @@ mod tests {
         assert_eq!(moved.quick_fix, "Super+Alt+R", "Omarchy 4.5 binds the first default");
         assert_eq!(moved.review, "Super+Alt+W", "the review shortcut is left as it is");
         assert_eq!(saved("Super+Control+Alt+Shift+E").quick_fix, "Super+Alt+R", "the brief second default moves too");
+        std::fs::write(&path, r#"{"linux_hotkeys": {"review": "Super+Alt+R", "quick_fix": "Super+Control+Alt+E"}}"#)
+            .unwrap();
+        let hotkeys = Config::load(&path).hotkeys;
+        assert_eq!(
+            (hotkeys.review.as_str(), hotkeys.quick_fix.as_str()),
+            ("Super+Alt+R", "Super+Alt+D"),
+            "never one key for both"
+        );
         assert_eq!(saved("Super+Control+Alt+P").quick_fix, "Super+Control+Alt+P", "a chosen key stays");
         assert_eq!(saved("").quick_fix, "", "a quick fix turned off stays off");
         std::fs::remove_dir_all(dir).unwrap();

@@ -52,6 +52,8 @@ test("the old quick-fix default reads as the new one, as SuperEditr moves it", (
   const settings = (quickFix) => JSON.stringify({ linux_hotkeys: { review: "Super+Alt+E", quick_fix: quickFix } });
   assert.equal(Model.shortcuts(settings("Super+Control+Alt+E")).quickFix, "Super+Alt+R");
   assert.equal(Model.shortcuts(settings("Super+Control+Alt+Shift+E")).quickFix, "Super+Alt+R");
+  const reviewOnR = JSON.stringify({ linux_hotkeys: { review: "Super+Alt+R", quick_fix: "Super+Control+Alt+E" } });
+  assert.equal(Model.shortcuts(reviewOnR).quickFix, "Super+Alt+D", "never one key for both");
   assert.equal(Model.shortcuts(settings("Super+Control+Alt+P")).quickFix, "Super+Control+Alt+P");
 });
 

@@ -72,19 +72,16 @@ async fn attempt(services: &Services<'_>, capture: &Capture, text: &str) -> Repl
         }
         Err(_) => return copy_only(),
     };
-    // Code the app formatted is pasted as code again: a web editor makes paragraphs of plain text,
-    // so a code block would come back as ordinary lines. A field without code gets plain text only.
-    let code = supereditr_core::diff::carry_ranges(&capture.text, text, &capture.code);
-    let blocks = supereditr_core::diff::carry_ranges(&capture.text, text, &field.blocks);
-    let html =
-        if field.embedded && !code.is_empty() { supereditr_core::html::with_code(text, &code, &blocks) } else { None };
-    if !capture.code.is_empty() {
+    // Formatting the app reported goes back with the text: a web editor makes plain paragraphs of
+    // plain text, so a heading, a list, a code block, bold or a link would be lost. An editor that
+    // pastes plain text ignores the HTML, and a field without formatting gets none.
+    let formatting = field.rich.as_ref().filter(|rich| field.embedded && rich.formatted(&capture.text));
+    let html = formatting.and_then(|rich| supereditr_core::rich::html(&capture.text, rich, text));
+    if formatting.is_some() {
         trace(format_args!(
-            "paste {}: {} of {} code ranges go as {}",
+            "paste {}: the formatting goes as {}",
             capture.bundle_id,
-            code.len(),
-            capture.code.len(),
-            if html.is_some() { "HTML" } else { "plain text" }
+            if html.is_some() { "HTML" } else { "plain text: HTML can’t hold its spaces" }
         ));
     }
     if transaction.put_text(text, html.as_deref()).is_err() {
@@ -236,12 +233,22 @@ mod tests {
     }
 
     #[test]
-    fn a_code_block_in_a_web_editor_is_pasted_as_html_too() {
-        let text = "Their going\nnpm ci\nnpm test\nSee you soon.";
-        let mut editor = field(text);
+    fn formatting_in_a_web_editor_is_pasted_as_html_too() {
+        use supereditr_core::rich::{Object, Piece, assemble};
+        let block = |tag: &str, run: &str| {
+            Piece::Object(Object {
+                tag: tag.into(),
+                block: true,
+                pieces: vec![Piece::Text(run.into())],
+                ..Object::default()
+            })
+        };
+        let read =
+            assemble(&[block("h2", "Their going"), block("pre", "npm ci\nnpm test"), block("p", "See you soon.")]);
+        let mut editor = field(&read.text);
         editor.embedded = true;
-        editor.code = vec![(12, 27)];
-        editor.blocks = vec![(12, 27)];
+        editor.code = read.root.code();
+        editor.rich = Some(read.root);
         let world = World::new("chromium").with_field(editor).pasting();
         let capture = captured(&world);
         let fixed = "They’re going\nnpm ci\nnpm test\nSee you soon.";
@@ -249,7 +256,7 @@ mod tests {
         assert_eq!(
             world.pasted_html().as_deref(),
             Some(
-                "<meta charset=\"utf-8\"><p>They’re going</p><pre><code>npm ci\nnpm test</code></pre><p>See you soon.</p>"
+                "<meta charset=\"utf-8\"><h2>They’re going</h2><pre><code>npm ci\nnpm test</code></pre><p>See you soon.</p>"
             )
         );
         assert!(world.field_text().starts_with(fixed), "the plain text is the fix as it is");
@@ -257,9 +264,20 @@ mod tests {
     }
 
     #[test]
-    fn a_field_without_code_gets_plain_text_only() {
-        let mut paragraphs = field("Their going\n\nSee you soon.");
+    fn a_field_without_formatting_gets_plain_text_only() {
+        use supereditr_core::rich::{Object, Piece, assemble};
+        let paragraph = |run: &str| {
+            Piece::Object(Object {
+                tag: "p".into(),
+                block: true,
+                pieces: vec![Piece::Text(run.into())],
+                ..Object::default()
+            })
+        };
+        let read = assemble(&[paragraph("Their going"), paragraph("\n"), paragraph("See you soon.")]);
+        let mut paragraphs = field(&read.text);
         paragraphs.embedded = true;
+        paragraphs.rich = Some(read.root);
         let world = World::new("chromium").with_field(paragraphs).pasting();
         let capture = captured(&world);
         assert!(matches!(world.replace(&capture, "They’re going\n\nSee you soon."), ReplaceOutcome::Applied));

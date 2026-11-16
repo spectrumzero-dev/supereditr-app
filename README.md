@@ -19,9 +19,11 @@
 
 Select text in any Mac app and get fixes in about half a second. Accept them with one key. SuperEditr uses Apple Intelligence on your Mac, the AI you already pay for (Claude, OpenAI, Gemini), a local model, or nothing at all: a built-in offline checker handles English spelling and grammar on its own.
 
-SuperEditr is built for the Mac first: the shortcuts, settings and install steps below are the Mac ones. It also runs on Windows, and on Linux with [Omarchy](https://omarchy.org), with the same engine, styles and panel; [Other platforms](#other-platforms) covers installing it there and what differs.
+SuperEditr is built for the Mac first: the shortcuts and settings below are the Mac ones. It also runs on Windows, and on Linux with [Omarchy](https://omarchy.org), with the same engine, styles and panel; each platform has its own page, listed under [Other platforms](#other-platforms), with its install steps, its keys and what differs.
 
 ## How it works
+
+The keys in this section are the Mac's; the [Windows](docs/windows.md#shortcuts) and [Linux](docs/linux.md#shortcuts) pages list theirs.
 
 1. **Select text** you're editing in any app. A suggestion panel appears just below it, without taking focus, showing instant offline fixes and then the model's version as it streams in.
 2. **Press ⌥↩︎** to apply it, or **⌘E E** (hold ⌘, press E twice) to move into the panel and review with the keyboard:
@@ -56,19 +58,19 @@ SuperEditr opens when you log in, so it is running again after you restart your 
 
 ## Install
 
-On another platform, see [Other platforms](#other-platforms).
+### macOS
 
-On a Mac, SuperEditr requires macOS 13 or later. Apple Intelligence needs macOS 26 or later on Apple silicon.
+SuperEditr requires macOS 13 or later. Download `SuperEditr-<version>.dmg` from the [latest release](https://github.com/spectrumzero-dev/supereditr-app/releases/latest), drag SuperEditr to Applications, open it and allow Accessibility access when asked. [SuperEditr on macOS](docs/macos.md#install) has every step, including connecting a model.
 
-1. Open `SuperEditr-<version>.dmg` and drag SuperEditr to Applications.
-2. Open SuperEditr. Its icon (a pen nib finishing a stroke) appears in the menu bar, and the Get Started page opens.
-3. **Allow Accessibility access** when asked: System Settings → Privacy & Security → Accessibility → SuperEditr. SuperEditr only reads text you select and never reads password fields.
-4. **Connect a model** (optional): click **Find my AI accounts**, which opens Models and scans. SuperEditr finds Apple Intelligence, API keys exported in your shell profile, an OpenAI key saved by the Codex CLI, a signed-in Claude Code CLI or the copy of Claude Code that comes with the Claude desktop app, and Ollama or LM Studio running on your Mac. Click **Use** on one, or paste a key under Models. Keys are stored in your Keychain.
-5. Try the sample sentence on the Get Started page, then select text anywhere.
+### Windows
 
-Signed, notarized builds are published on the [Releases page](https://github.com/spectrumzero-dev/supereditr-app/releases) and update themselves. A DMG you build with `scripts/build.sh` is ad-hoc signed: right-click SuperEditr in Applications and choose **Open** the first time.
+Windows builds are early access, for Windows 11 on x64. Download `SuperEditr_<version>_x64-setup.exe` from the newest release that has it on [Releases](https://github.com/spectrumzero-dev/supereditr-app/releases) and run it. The installer isn't code-signed, so SmartScreen may warn you, and Smart App Control, where it's turned on, blocks it: [SuperEditr on Windows](docs/windows.md#install) says what to do about SmartScreen and how to check whether Smart App Control is on.
 
-### Choosing a model
+### Linux (Omarchy)
+
+SuperEditr runs on [Omarchy](https://omarchy.org) on x86-64; other Linux desktops aren't supported yet. Download the newest Linux release's `PKGBUILD` and run `makepkg -si`: [SuperEditr on Linux](docs/linux.md#install) has the commands and the setup step, and the [Omarchy bar widget](docs/linux.md#the-omarchy-bar-widget).
+
+## Choosing a model
 
 | Option | Speed | Cost | Notes |
 |---|---|---|---|
@@ -94,19 +96,13 @@ A selection that holds a secret SuperEditr recognizes is never reviewed: not by 
 
 ## Build from source
 
-On a Mac, the requirements are macOS 13+, Xcode command-line tools, Rust (stable, via `rustup`) and Node.js 22+. To build on another platform, see [Other platforms](#other-platforms).
+Every platform needs Rust (via `rustup`) and Node.js 22+. Each platform's page lists the rest of its requirements and how to build it there: [macOS](docs/macos.md#build-from-source), [Windows](docs/windows.md#build-from-source) and [Linux (Omarchy)](docs/linux.md#build-from-source). On every platform, one script runs the checks:
 
 ```bash
 ./scripts/check.sh
 ```
 
-```bash
-./scripts/build.sh
-```
-
-`check.sh` runs formatting, Clippy, the Rust tests (including provider wire-format tests against a local mock server), the UI type check and UI tests. `build.sh` writes `build/SuperEditr.app` and `build/SuperEditr-<version>.dmg`. Set `SUPEREDITR_SIGNING_IDENTITY` to an Apple Development identity so macOS keeps the Accessibility permission across rebuilds; without it the app is ad-hoc signed.
-
-`scripts/ui-smoke.sh` runs the live UI tests in `tests/ui/smoke.swift` against `build/SuperEditr.app` and saves screenshots to `build/ui-smoke`. It needs an unlocked display and Accessibility access, and it types into real apps such as TextEdit, so don't use the Mac while it runs. Where it can't run, it warns and skips.
+`check.sh` runs formatting, Clippy, the Rust tests (including provider wire-format tests against a local mock server), the UI type check and UI tests.
 
 `scripts/count-lines.sh` counts the app's own lines of code, leaving out blank lines, comments, tests, build scripts, config files and dependencies.
 
@@ -120,86 +116,11 @@ cargo run --release -p supereditr-cli -- check --provider anthropic --bench 5 "T
 
 ## Other platforms
 
-Everything above describes the Mac app. Each platform below runs the same engine, styles and panel; its section covers installing, building and what differs from the Mac.
+This README uses the Mac as its example. Each platform runs the same engine, styles and panel; its page covers installing, shortcuts, permissions or setup, building and what differs from the Mac:
 
-### Linux (Omarchy)
-
-SuperEditr also runs on [Omarchy](https://omarchy.org), the Arch Linux setup built on the Hyprland compositor, on x86-64. Other Linux desktops aren't supported yet: SuperEditr starts there, but its shortcuts and panel need Hyprland. Every feature is free on Linux.
-
-To install the newest Linux release, download its `PKGBUILD` and run `makepkg`, which checks the download against its SHA-256 and installs the `supereditr-bin` package:
-
-```bash
-mkdir -p supereditr && cd supereditr
-curl -fLO "https://raw.githubusercontent.com/spectrumzero-dev/supereditr-app/main/packaging/arch/{PKGBUILD,supereditr.install}"
-makepkg -si
-```
-
-Run the same commands again to install a new version. Then open SuperEditr and run Set up Omarchy, which lists each change before it makes it.
-
-#### The Omarchy bar widget
-
-The SuperEditr bar widget shows whether SuperEditr is running and which shortcuts it uses. Click it to review or quick-fix the selection, start SuperEditr or open Settings, or right-click it to open Settings. Install SuperEditr first, then add the widget:
-
-```bash
-omarchy plugin add https://github.com/spectrumzero-dev/supereditr-omarchy --enable
-```
-
-SuperEditr's own icon stays in the system tray. To keep only the widget, right-click the tray's arrow and choose Hide beside SuperEditr. To remove the widget:
-
-```bash
-omarchy plugin remove app.supereditr
-```
-
-The widget runs inside Omarchy's shell with your permissions. It reads `status.json` and `settings.json` in `~/.config/app.supereditr`, checks for a running `supereditr` process, and runs the `supereditr` command, which hands its action to the running app; it changes no settings and installs nothing else. Its source is `packaging/omarchy/`; each release that ships Linux publishes it to [supereditr-omarchy](https://github.com/spectrumzero-dev/supereditr-omarchy), the repository Omarchy installs it from.
-
-To build it from source instead, the requirements are Arch Linux on x86-64, Rust (via `rustup`), Node.js 22+, and the packages `base-devel webkit2gtk-4.1 gtk3 libayatana-appindicator at-spi2-core librsvg`.
-
-```bash
-./scripts/linux-release.sh
-cd build/arch && makepkg -si
-```
-
-`linux-release.sh` builds `build/supereditr-<version>-x86_64.tar.gz`, and puts it in `build/arch/` beside a copy of `packaging/arch/PKGBUILD` with its version and SHA-256, which installs it as the `supereditr-bin` package. `check.sh` runs the same checks as on macOS.
-
-How it differs from macOS:
-
-- The review shortcut is Super+Alt+E. On Hyprland, SuperEditr adds its binds and the panel's window rule while it runs and never edits `~/.config/hypr/`.
-- SuperEditr reads text through the AT-SPI accessibility bus. Where an app exposes no text, such as a terminal, it copies the selection and puts your clipboard back afterwards; it can't replace text there, so Ctrl+C in the panel copies the fix.
-- Alt+Enter replaces your text, and Ctrl+C copies the fix.
-- Settings → Set up Omarchy lists what it will change before it does: it adds `--force-renderer-accessibility` to the Chromium, Electron and VS Code flag files in `~/.config`, so web pages and Electron apps expose their text, and turns on opening at login. `supereditr uninstall-omarchy` takes out exactly what it added.
-- API keys are saved in the Secret Service keyring (GNOME Keyring on Omarchy), not in SuperEditr's settings. Omarchy's default keyring has no password, so any program you run can read them; Settings → Desktop setup says so, and Seahorse (Passwords and Keys) can set one.
-- There are no in-app updates: the package manager installs new versions, and SuperEditr never contacts the update server.
-- The diagnostic log is `~/.local/state/supereditr/capture.log`.
-
-`scripts/ui-smoke-linux.sh` runs the live Linux UI tests against SuperEditr in a desktop virtual machine on a Proxmox host, pressing real keys through the host; see the script's header for its options.
-
-### Windows
-
-SuperEditr runs on Windows 11 on x64 PCs.
-
-Windows builds are early access. To install one, download `SuperEditr_<version>_x64-setup.exe` from the newest release that has it on [Releases](https://github.com/spectrumzero-dev/supereditr-app/releases) and run it. It installs for your user only, in `%LOCALAPPDATA%\SuperEditr`, without an administrator prompt, and installs Microsoft Edge WebView2 first if it's missing. The installer isn't code-signed, so SmartScreen may show "Windows protected your PC": choose More info, then Run anyway. Smart App Control, where it's turned on, blocks unsigned apps and has no exception for a single app, so SuperEditr won't install there; Windows Security › App & browser control › Smart App Control settings shows whether it's on. To remove SuperEditr, use Settings › Apps › Installed apps; tick "Delete the application data" to also delete its settings, its log and the API keys it saved.
-
-To build it from source, the requirements are Windows 11 on x64, Visual Studio 2022 Build Tools with "Desktop development with C++" (MSVC and the Windows 11 SDK), Rust (via `rustup`), Node.js 22+ and Git for Windows. In Git Bash:
-
-```bash
-./scripts/check.sh
-./ui/node_modules/.bin/tauri build --bundles nsis
-```
-
-The installer is written to `target/release/bundle/nsis/`.
-
-How it differs from macOS:
-
-- The review shortcut is Ctrl+Shift+F2, the same key on common keyboard layouts; quick fix starts unbound. Settings → Shortcuts records others by the key Windows reports, so they follow your keyboard layout. Double presses aren't available, and a review starts only from the shortcut: suggestions don't appear on their own.
-- The panel takes the keyboard for the review and gives it back to your app when it closes. Alt+Enter (or Enter) replaces your text, Tab steps through changes, Ctrl+C copies the fix and Esc closes it.
-- SuperEditr reads text through UI Automation and writes a fix with a checked paste: just before pasting it checks that the same field and selection are still there, afterwards it checks the text changed as expected, and it puts your clipboard back. When it can't confirm a step, nothing is written, or the panel stays open with the fix to copy. Terminals are copy-only; so are remote-desktop and virtual-machine windows, whose paste goes to another computer, and LibreOffice. Password fields and apps running as administrator are refused. VS Code exposes its editor's text only with `editor.accessibilitySupport` set to `on`.
-- Windows needs no permission for SuperEditr to read the text you select.
-- API keys are saved in Windows Credential Manager, not in SuperEditr's settings.
-- Opening at login is a value under your user's Run key, which Task Manager's Startup apps can also turn off.
-- Release builds download an update when they find one and install it when you're not using SuperEditr (no review, panel or SuperEditr window open, and no typing for a minute), when you choose Restart to Update, or when you quit. The installer starts SuperEditr again afterwards.
-- The diagnostic log is `%LOCALAPPDATA%\SuperEditr\Logs\capture.log`.
-
-`scripts/ui-smoke-windows.sh` runs the live Windows UI tests on a disposable Windows test machine over SSH; see the script's header for its options.
+- [macOS](docs/macos.md)
+- [Windows](docs/windows.md)
+- [Linux (Omarchy)](docs/linux.md), including [the Omarchy bar widget](docs/linux.md#the-omarchy-bar-widget)
 
 ## Architecture
 

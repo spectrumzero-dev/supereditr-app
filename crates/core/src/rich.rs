@@ -326,10 +326,24 @@ pub struct Step {
 /// there, check it, and paste over it: words to add or remove take one character beside them along,
 /// which is written back.
 ///
+/// Text added between an inline element and the text around it goes in the text around it, so a
+/// comma after a link isn't part of the link. A write never touches either end of a link: editors
+/// differ in whether text pasted there stays in the link.
+///
 /// None when an edit doesn't lie inside one stretch of one element's text, so it can't be selected
-/// there, or when two writes would touch.
-pub fn steps(original: &str, runs: &[Run], edits: &[crate::edits::Edit]) -> Option<Vec<Step>> {
+/// there, when a write would touch the end of a link, or when two writes would touch.
+pub fn steps(original: &str, root: &Node, runs: &[Run], edits: &[crate::edits::Edit]) -> Option<Vec<Step>> {
     let chars: Vec<char> = original.chars().collect();
+    // How many inline elements a run is inside, and whether one of them is a link.
+    let nesting = |run: &Run| {
+        let (mut node, mut inline, mut link) = (root, 0, false);
+        while let Some(child) = node.children.iter().find(|child| child.start <= run.start && run.end <= child.end) {
+            inline += usize::from(!child.kind.is_block());
+            link |= matches!(child.kind, Kind::Link(_));
+            node = child;
+        }
+        (inline, link)
+    };
     let mut steps = Vec::with_capacity(edits.len());
     // Where the write before this one (later in the text) starts.
     let mut floor = usize::MAX;
@@ -340,11 +354,16 @@ pub fn steps(original: &str, runs: &[Run], edits: &[crate::edits::Edit]) -> Opti
         let run = if end > start {
             runs.iter().find(|run| run.start <= start && end <= run.end)?
         } else {
-            let before = |run: &&Run| run.start < start && start <= run.end;
-            let after = |run: &&Run| run.start <= start && start < run.end;
-            match with_before {
-                true => runs.iter().find(before).or_else(|| runs.iter().find(after))?,
-                false => runs.iter().find(after).or_else(|| runs.iter().find(before))?,
+            let before = runs.iter().find(|run| run.start < start && start <= run.end);
+            let after = runs.iter().find(|run| run.start <= start && start < run.end);
+            match (before, after) {
+                (Some(before), Some(after)) => match nesting(before).0.cmp(&nesting(after).0) {
+                    std::cmp::Ordering::Less => before,
+                    std::cmp::Ordering::Greater => after,
+                    std::cmp::Ordering::Equal if with_before => before,
+                    std::cmp::Ordering::Equal => after,
+                },
+                (before, after) => before.or(after)?,
             }
         };
         let mut new = edit.new.clone();
@@ -361,6 +380,9 @@ pub fn steps(original: &str, runs: &[Run], edits: &[crate::edits::Edit]) -> Opti
             } else {
                 return None;
             }
+        }
+        if nesting(run).1 && (start == run.start || end == run.end) {
+            return None;
         }
         if end > floor || end > chars.len() {
             return None;
@@ -826,7 +848,7 @@ mod tests {
         assert_eq!(rich.text, "Their going to love realy good news news.\nSee you soon");
         let fixed = "They’re going to love really good news.\nSee you soon.";
         let edits = crate::edits::plan(&rich.text, fixed, true, &[]).unwrap();
-        let steps = steps(&rich.text, &rich.runs, &edits).unwrap();
+        let steps = steps(&rich.text, &rich.root, &rich.runs, &edits).unwrap();
         let written: Vec<(usize, usize, usize, &str, &str)> =
             steps.iter().map(|s| (s.object, s.start, s.end, s.old.as_str(), s.new.as_str())).collect();
         // The selection ends in the second paragraph, one character longer.
@@ -849,16 +871,34 @@ mod tests {
     }
 
     #[test]
+    fn text_added_beside_a_link_goes_outside_it_and_a_links_ends_are_left_alone() {
+        let notes = Piece::Object(Object {
+            tag: "a".into(),
+            href: Some("https://example.com/notes".into()),
+            pieces: vec![run("the notes", 2, 0)],
+            ..Object::default()
+        });
+        let rich = assemble(&[run("Read ", 1, 0), notes, run(" and go.", 1, 6)]);
+        // A comma after the link: the space after it is written again with the comma.
+        let edits = crate::edits::plan(&rich.text, "Read the notes, and go.", true, &[]).unwrap();
+        let written = steps(&rich.text, &rich.root, &rich.runs, &edits).unwrap();
+        assert_eq!(written, [Step { object: 1, start: 6, end: 7, old: " ".into(), new: ", ".into() }]);
+        // A fix to the link's last word would touch its end.
+        let edits = crate::edits::plan(&rich.text, "Read the note and go.", true, &[]).unwrap();
+        assert_eq!(steps(&rich.text, &rich.root, &rich.runs, &edits), None);
+    }
+
+    #[test]
     fn a_change_that_no_single_element_holds_isnt_applied_in_place() {
         // "alot" is split between plain text and bold.
         let bold = Piece::Object(Object { tag: "strong".into(), pieces: vec![run("lot", 2, 0)], ..Object::default() });
         let rich = assemble(&[run("Thanks a", 1, 0), bold, run(" for it.", 1, 9)]);
         let edits = crate::edits::plan(&rich.text, "Thanks a lot for it.", true, &[]).unwrap();
-        assert_eq!(steps(&rich.text, &rich.runs, &edits), None);
+        assert_eq!(steps(&rich.text, &rich.root, &rich.runs, &edits), None);
         // Text read without its place can't be written in place either.
         let rich = assemble(&[text("Their going")]);
         let edits = crate::edits::plan(&rich.text, "They’re going", true, &[]).unwrap();
-        assert_eq!(steps(&rich.text, &rich.runs, &edits), None);
+        assert_eq!(steps(&rich.text, &rich.root, &rich.runs, &edits), None);
     }
 
     #[test]

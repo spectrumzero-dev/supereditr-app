@@ -28,6 +28,10 @@ const FOCUS_WAIT: Duration = Duration::from_millis(if cfg!(test) { 60 } else { 6
 /// about a new clipboard with an event of its own: a Ctrl+V straight after it can paste the
 /// clipboard before (in the smoke tests, about one paste in 75 pasted nothing that way).
 const CLIPBOARD_SETTLE: Duration = Duration::from_millis(if cfg!(test) { 0 } else { 60 });
+/// How long an editor gets to notice that its selection moved, before a paste over it. One editor
+/// (Slate) handles selection changes at most once in 100 ms, and pastes at its old caret until it
+/// has.
+const SELECTION_SETTLE: Duration = Duration::from_millis(if cfg!(test) { 0 } else { 200 });
 /// How long a paste gets to show up in the field.
 const PASTE_WAIT: Duration = Duration::from_millis(if cfg!(test) { 60 } else { 1000 });
 
@@ -139,7 +143,8 @@ fn steps(capture: &Capture, field: &super::atspi::Field, text: &str, proofread: 
         Ok(edits) => edits,
         Err(why) => return whole(&why),
     };
-    match supereditr_core::rich::steps(&capture.text, &field.runs, &edits) {
+    let root = field.rich.as_ref()?;
+    match supereditr_core::rich::steps(&capture.text, root, &field.runs, &edits) {
         Some(steps) if steps.iter().all(|step| step.object < field.objects.len()) => Some(steps),
         _ => whole(&"a change isn’t inside one element’s text"),
     }
@@ -218,13 +223,27 @@ async fn in_place(
                 }
             };
         }
-        if transaction.put_text(&step.new, None).is_err() {
-            return stopped("the clipboard didn’t take the fix");
-        }
+        // An editor can take a moment to notice its selection moved (one waits up to 100 ms), and
+        // until then pastes where it had it. So the selection gets time to settle, and must still
+        // be on the words right before the paste.
         if i == 0 {
             super::wait_for_shortcut_release();
         }
-        tokio::time::sleep(CLIPBOARD_SETTLE).await;
+        if transaction.put_text(&step.new, None).is_err() {
+            return stopped("the clipboard didn’t take the fix");
+        }
+        tokio::time::sleep(SELECTION_SETTLE).await;
+        if !services.fields.selected(id, start, end).await {
+            // The first paste never goes over anything but the words; later ones can't be undone
+            // by replacing everything, so they stop too.
+            return match i {
+                0 => {
+                    trace(format_args!("paste {}: nothing written: the selection moved again", capture.bundle_id));
+                    InPlace::Stopped(ReplaceOutcome::CopyOnly(PlatformError::Stale))
+                }
+                _ => stopped("the selection moved off the words to fix"),
+            };
+        }
         if services.desktop.send_shortcut(window, Shortcut::ctrl("V")).await.is_err() {
             return stopped("the paste couldn’t be sent");
         }
@@ -479,6 +498,19 @@ mod tests {
         assert!(world.keys_sent().is_empty());
         assert!(world.field_text().starts_with("Their going realy soon"));
         assert_eq!(world.clipboard.get("text/plain;charset=utf-8").unwrap(), b"Rhyan's own copy");
+    }
+
+    #[test]
+    fn a_selection_that_moves_off_the_words_isnt_pasted_over() {
+        let world = World::new("chromium")
+            .with_field(formatted("Their going realy soon", "npm ci"))
+            .pasting()
+            .moving_its_selection_back();
+        let capture = captured(&world);
+        let outcome = world.proofread(&capture, "They’re going really soon\nnpm ci");
+        assert!(matches!(outcome, ReplaceOutcome::CopyOnly(PlatformError::Stale)), "{outcome:?}");
+        assert!(world.keys_sent().is_empty());
+        assert!(world.field_text().starts_with("Their going realy soon"));
     }
 
     #[test]

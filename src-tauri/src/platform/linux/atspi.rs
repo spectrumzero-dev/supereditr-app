@@ -2,8 +2,9 @@
 //!
 //! AT-SPI is for reading only: the field, its role, whether it's editable, and the selection, and
 //! after a paste, whether the new text landed. SuperEditr never writes text through it (its
-//! edits break undo in GTK and Qt and do nothing in Firefox); the one change it makes is
-//! selecting the sentence before the caret, which is a selection, not an edit.
+//! edits break undo in GTK and Qt and do nothing in Firefox); the only changes it makes are to the
+//! selection: the sentence before the caret, and the words each change of a proofread applied in
+//! place replaces.
 //!
 //! Every call has a time limit, so a frozen app can't hold up a review. Offsets are in characters
 //! (Unicode scalar values), as AT-SPI counts them; macOS counts UTF-16 units.
@@ -155,6 +156,8 @@ pub trait Fields: Send + Sync {
     /// Selects characters `start..end` of an object's text, or puts the caret at `start` when they
     /// are equal, and waits for the app to say it has.
     async fn select(&self, id: &FieldId, start: i32, end: i32) -> Result<Moved, ReadError>;
+    /// Whether characters `start..end` of an object's text are what is selected in it now.
+    async fn selected(&self, id: &FieldId, start: i32, end: i32) -> bool;
 }
 
 /// Runs one AT-SPI call within [`CALL_LIMIT`]. A slow call is logged with where it was made, since
@@ -610,6 +613,15 @@ impl Fields for Atspi {
             }
             tokio::time::sleep(Duration::from_millis(15)).await;
         }
+    }
+
+    async fn selected(&self, id: &FieldId, start: i32, end: i32) -> bool {
+        let Ok(text) = self.text_proxy(id).await else { return false };
+        let now = match limit(text.get_n_selections()).await {
+            Ok(n) if n > 0 => limit(text.get_selection(0)).await.ok(),
+            _ => None,
+        };
+        now.is_some_and(|(from, to)| (from.min(to), from.max(to)) == (start, end))
     }
 
     async fn select_sentence(&self, field: &Field) -> Result<Option<Field>, ReadError> {

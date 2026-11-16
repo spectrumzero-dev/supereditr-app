@@ -388,7 +388,7 @@ chromium_cases() {
         ;;
     esac
     state="$(vm "cdp \"document.getElementById('$id-state').textContent\"")"
-    check "$id: the fixes land" "$(ok both has "$state" "$fixed" lacks "$state" "you you")" "${state:0:240}"
+    check "$id: the fixes land" "$(ok both has "$state" "$fixed" lacks "$state" "you you")" "${state:0:520}"
     check "$id: every structure is kept" "$(ok is "${state%%; text=*}" "$structure")" "was ${structure:0:160}; is ${state%%; text=*}"
     vm "shot 13-chromium-$id-applied"
   done

@@ -51,6 +51,8 @@ pub struct FakeFields {
     content: Mutex<String>,
     /// The app doesn't answer, as when it's frozen.
     frozen: std::sync::atomic::AtomicBool,
+    /// The app moves its selection as asked, then back to where it was a moment later.
+    selection_moves_back: Mutex<bool>,
     /// What the app says to every request to move its selection, when it doesn't move it.
     selection_answer: Mutex<Option<Moved>>,
 }
@@ -84,6 +86,12 @@ impl Fields for FakeFields {
         (field.start, field.end) = (start, end);
         field.selected = content.chars().skip(start as usize).take((end - start) as usize).collect();
         Ok(Moved::Yes)
+    }
+
+    async fn selected(&self, id: &FieldId, start: i32, end: i32) -> bool {
+        let moves = *self.selection_moves_back.lock().unwrap();
+        let fields = self.field.lock().unwrap();
+        !moves && fields.as_ref().is_some_and(|field| field.id == *id && (field.start, field.end) == (start, end))
     }
 
     async fn select_sentence(&self, _field: &Field) -> Result<Option<Field>, ReadError> {
@@ -251,6 +259,12 @@ impl World {
     /// The app stops answering AT-SPI, and copies nothing.
     pub fn frozen(self) -> Self {
         self.fields.frozen.store(true, std::sync::atomic::Ordering::Relaxed);
+        self
+    }
+
+    /// The app moves its selection as asked, and a moment later back to where it had it.
+    pub fn moving_its_selection_back(self) -> Self {
+        *self.fields.selection_moves_back.lock().unwrap() = true;
         self
     }
 

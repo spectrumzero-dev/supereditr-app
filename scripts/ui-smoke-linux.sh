@@ -351,8 +351,40 @@ chromium_cases() {
     vm "shot 11-chromium-$id-applied"
   done
 
+  # The formats document: a heading, bold, italics, a link, code, lists, a quote, a code block and a
+  # line break, with four typos. The fix replaces the whole selection and goes on the clipboard as
+  # HTML too, so an editor that pastes HTML holds the same structure after it as before. Chromium's
+  # own paste into an editable div merges what it pastes with the blocks around it, so there the
+  # structure is only noted.
+  local mark text structure
+  for id in formats-div formats-tiptap formats-lexical formats-quill; do
+    set_clipboard text
+    vm "d_focus $page; sleep 0.3; d_cursor_move \$(d_active | jq -r '.at[0] + 300') \$(d_active | jq -r '.at[1] + 200')" > /dev/null
+    selected="$(vm "cdp_select $id")"
+    [[ "$selected" == true ]] || note "$id: couldn't select the field ($selected)"
+    sleep 0.4
+    state="$(vm "cdp \"document.getElementById('$id-state').textContent\"")"
+    structure="${state%%; text=*}"
+    mark="$(vm log_mark)"
+    key meta_l-alt-e
+    text="$(vm "wait_panel_text '[0-9]+ changes?' 15")"
+    check "$id: the panel shows the fixes" "$(ok has "$text" "[0-9]+ changes?")" "${text:0:120}"
+    vm "shot 13-chromium-$id-review"
+    key alt-ret
+    REVIEW_RESULT="$(vm "wait_log $mark 'replace chromium: ' 6")"
+    vm 'wait_closed 3' || true
+    sleep 0.5
+    check "$id: Alt+Enter applies" "$(ok has "$REVIEW_RESULT" ": applied")" "${REVIEW_RESULT#* }; $(vm "log_since $mark | grep -m1 'paste chromium: ' | cut -d' ' -f2-")"
+    state="$(vm "cdp \"document.getElementById('$id-state').textContent\"")"
+    check "$id: the fixes land" "$(ok both has "$state" "fixed the .*Second step.*really good news" lacks "$state" "you you")" "${state:0:200}"
+    case "$id" in
+      formats-div) note "$id: the structure was ${structure:0:160} and is ${state%%; text=*}" ;;
+      *) check "$id: every structure is kept" "$(ok is "${state%%; text=*}" "$structure")" "was ${structure:0:160}; is ${state%%; text=*}" ;;
+    esac
+    vm "shot 13-chromium-$id-applied"
+  done
+
   # Refused: a password field, and a selection holding a key.
-  local mark text
   for id in password secret; do
     vm "d_focus $page; sleep 0.2; cdp_select $id" > /dev/null
     set_clipboard text

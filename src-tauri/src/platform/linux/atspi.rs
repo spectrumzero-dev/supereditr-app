@@ -20,6 +20,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use supereditr_core::rich::{self, Object, Piece};
 use zbus::proxy::CacheProperties;
 
 /// The longest one AT-SPI call may take. Apps usually answer in a few milliseconds, but on a busy
@@ -71,9 +72,9 @@ pub struct Field {
     pub window_bounds: Option<Rect>,
     /// Character ranges of `selected` the app shows as code (`<code>` in a web page).
     pub code: Vec<(usize, usize)>,
-    /// Character ranges of `selected` the app shows as code blocks (`<pre>`, or a `<code>` that is
-    /// a block itself).
-    pub blocks: Vec<(usize, usize)>,
+    /// What is formatted how in `selected`, when the field holds embedded objects: headings, lists,
+    /// code blocks, bold, links.
+    pub rich: Option<rich::Node>,
     /// The field's text holds embedded objects, as a web editor's paragraphs are, and `selected`
     /// is their text put together; `start` and `end` count each object as one character.
     pub embedded: bool,
@@ -287,9 +288,13 @@ impl Atspi {
                 let link = limit(hypertext.get_link(index)).await?;
                 let child = self.linked_object(link.name_as_str().unwrap_or(&id.bus), link.path_as_str()).await?;
                 let attributes = limit(self.accessible(&child.bus, &child.path).await?.get_attributes()).await?;
-                let block = attributes.get("display").is_some_and(|display| !display.starts_with("inline"));
-                let code = attributes.get("tag").is_some_and(|tag| tag == "code");
-                let pre = attributes.get("tag").is_some_and(|tag| tag == "pre") || (code && block);
+                let tag = attributes.get("tag").cloned().unwrap_or_default();
+                let display = attributes.get("display").map(String::as_str).unwrap_or("inline");
+                let block = !display.starts_with("inline");
+                let href = match tag.as_str() {
+                    "a" => self.link_uri(link.name_as_str().unwrap_or(&id.bus), link.path_as_str()).await,
+                    _ => None,
+                };
                 let text = self.text_proxy(&child).await?;
                 let count = limit(text.character_count()).await?;
                 let (from, to) = match limit(text.get_n_selections()).await {
@@ -297,8 +302,10 @@ impl Atspi {
                     _ => (0, count),
                 };
                 let (from, to) = (from.min(to).clamp(0, count), to.max(from).clamp(0, count));
+                // A list item's text starts with its bullet or number.
+                let marker = if display == "list-item" && from == 0 { self.marker_of(&child).await } else { None };
                 let inner = self.pieces(child, from, to, depth + 1, seen).await?;
-                pieces.push(Piece::Object { block, code, pre, pieces: inner });
+                pieces.push(Piece::Object(Object { tag, block, href, marker, pieces: inner }));
             }
             if !run.is_empty() {
                 pieces.push(Piece::Text(run));
@@ -307,12 +314,45 @@ impl Atspi {
         })
     }
 
-    /// The text between `start` and `end` with its embedded objects' text put together, and the
-    /// code and code blocks in it.
-    async fn embedded_text(&self, id: &FieldId, start: i32, end: i32) -> Result<Assembled, ReadError> {
+    /// Where a hyperlink goes, when it says.
+    async fn link_uri(&self, bus: &str, path: &str) -> Option<String> {
+        let connection = self.connection().await.ok()?.connection();
+        let link = HyperlinkProxy::builder(connection)
+            .destination(bus.to_string())
+            .ok()?
+            .path(path.to_string())
+            .ok()?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await
+            .ok()?;
+        limit(link.get_uri(0)).await.ok().filter(|uri| !uri.is_empty())
+    }
+
+    /// A list item's bullet or number, as its text starts with it ("• ", "1. "), when the app
+    /// reports one: its first child, which a browser gives the tag `::marker`.
+    async fn marker_of(&self, item: &FieldId) -> Option<String> {
+        let children = limit(self.accessible(&item.bus, &item.path).await.ok()?.get_children()).await.ok()?;
+        let first = children.first()?;
+        let id = FieldId {
+            bus: first.name_as_str().unwrap_or(&item.bus).to_string(),
+            path: first.path_as_str().to_string(),
+        };
+        let attributes = limit(self.accessible(&id.bus, &id.path).await.ok()?.get_attributes()).await.ok()?;
+        if attributes.get("tag").is_none_or(|tag| tag != "::marker") {
+            return None;
+        }
+        let text = self.text_proxy(&id).await.ok()?;
+        let count = limit(text.character_count()).await.ok()?;
+        limit(text.get_text(0, count)).await.ok()
+    }
+
+    /// The text between `start` and `end` with its embedded objects' text put together, and what
+    /// is formatted how in it.
+    async fn embedded_text(&self, id: &FieldId, start: i32, end: i32) -> Result<rich::Rich, ReadError> {
         let mut seen = 0;
         match tokio::time::timeout(EMBEDDED_LIMIT, self.pieces(id.clone(), start, end, 0, &mut seen)).await {
-            Ok(pieces) => Ok(assemble(&pieces?)),
+            Ok(pieces) => Ok(rich::assemble(&pieces?)),
             Err(_) => Err(ReadError::Timeout),
         }
     }
@@ -414,7 +454,7 @@ impl Atspi {
             bounds: None,
             window_bounds: None,
             code: Vec::new(),
-            blocks: Vec::new(),
+            rich: None,
             embedded: false,
         };
         if password {
@@ -437,12 +477,12 @@ impl Atspi {
         let selected = if end > start { limit(text.get_text(start, end)).await? } else { String::new() };
         // A web editor's paragraphs, links and code are embedded objects: read their text. If they
         // can't be read, the field stays partial, and a shortcut falls back to a copy-only read.
-        let (selected, code, blocks, embedded) = match selected.contains(OBJECT) {
+        let (selected, code, rich, embedded) = match selected.contains(OBJECT) {
             true => match self.embedded_text(id, start, end).await {
-                Ok((text, code, blocks)) => (text, code, blocks, true),
-                Err(_) => (selected, Vec::new(), Vec::new(), false),
+                Ok(read) => (read.text, read.root.code(), Some(read.root), true),
+                Err(_) => (selected, Vec::new(), None, false),
             },
-            false => (selected, Vec::new(), Vec::new(), false),
+            false => (selected, Vec::new(), None, false),
         };
         // Where the selection is; with nothing selected, where the caret is.
         let extents = |coordinates| {
@@ -458,7 +498,7 @@ impl Atspi {
         };
         let bounds = extents(CoordType::Screen).await;
         let window_bounds = if bounds.is_none() { extents(CoordType::Window).await } else { None };
-        Ok(Some(Field { start, end, selected, caret, bounds, window_bounds, code, blocks, embedded, ..blank }))
+        Ok(Some(Field { start, end, selected, caret, bounds, window_bounds, code, rich, embedded, ..blank }))
     }
 }
 
@@ -488,7 +528,7 @@ impl Fields for Atspi {
     async fn whole_text(&self, field: &Field) -> Result<String, ReadError> {
         let count = limit(self.text_proxy(&field.id).await?.character_count()).await?;
         if field.embedded {
-            return Ok(self.embedded_text(&field.id, 0, count).await?.0);
+            return Ok(self.embedded_text(&field.id, 0, count).await?.text);
         }
         self.text(&field.id, 0, count).await
     }
@@ -508,66 +548,6 @@ impl Fields for Atspi {
         }
         self.read(&field.id).await
     }
-}
-
-/// Part of an object's text: a run of its own, or an embedded object with its own pieces.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Piece {
-    Text(String),
-    /// `block`: on a line of its own. `code`: shown as code. `pre`: a code block.
-    Object {
-        block: bool,
-        code: bool,
-        pre: bool,
-        pieces: Vec<Piece>,
-    },
-}
-
-/// Text put together from pieces, the character ranges of code in it, and those of code blocks.
-pub type Assembled = (String, Vec<(usize, usize)>, Vec<(usize, usize)>);
-
-/// Puts the pieces' text together as the field shows it: each block (a paragraph, a list item) on a
-/// line of its own, an empty paragraph as an empty line, and inline objects (links, bold, code) in
-/// the line.
-pub fn assemble(pieces: &[Piece]) -> Assembled {
-    let mut text = String::new();
-    let mut chars = 0;
-    let mut code = Vec::new();
-    let mut blocks = Vec::new();
-    let mut after_block = false;
-    for (i, piece) in pieces.iter().enumerate() {
-        let (part, part_code, part_blocks, block, is_code, is_pre) = match piece {
-            Piece::Text(run) => (run.clone(), Vec::new(), Vec::new(), false, false, false),
-            Piece::Object { block, code, pre, pieces } => {
-                let (mut part, part_code, part_blocks) = assemble(pieces);
-                // An empty paragraph holds a line break, and a paragraph may end with one.
-                if *block && part.ends_with('\n') {
-                    part.pop();
-                }
-                (part, part_code, part_blocks, *block, *code, *pre)
-            }
-        };
-        if i > 0 && (block || after_block) {
-            text.push('\n');
-            chars += 1;
-        }
-        let length = part.chars().count();
-        // A code block is code whether or not a <code> wraps its text.
-        let all_code = part_code.iter().any(|&(from, to)| from == 0 && to >= length);
-        if length > 0 && (is_code || (is_pre && !all_code)) {
-            code.push((chars, chars + length));
-        }
-        code.extend(part_code.into_iter().map(|(from, to)| (chars + from, chars + to)));
-        if is_pre && length > 0 {
-            blocks.push((chars, chars + length));
-        } else {
-            blocks.extend(part_blocks.into_iter().map(|(from, to)| (chars + from, chars + to)));
-        }
-        text.push_str(&part);
-        chars += length;
-        after_block = block;
-    }
-    (text, code, blocks)
 }
 
 /// The byte range of a character range in `text`; `None` when it runs past the end.
@@ -641,84 +621,10 @@ mod tests {
             bounds: None,
             window_bounds: None,
             code: Vec::new(),
-            blocks: Vec::new(),
+            rich: None,
             embedded: false,
         };
         assert!(field.has_selection());
         assert!(field.partial());
-    }
-
-    fn text(run: &str) -> Piece {
-        Piece::Text(run.into())
-    }
-
-    fn object(block: bool, code: bool, pieces: Vec<Piece>) -> Piece {
-        Piece::Object { block, code, pre: false, pieces }
-    }
-
-    #[test]
-    fn a_web_editors_paragraphs_are_put_together_line_by_line_with_its_code() {
-        // Chromium's tree for a rich-text editor: three paragraphs, the middle one empty (a line
-        // break), and code, bold and a link inside the first.
-        let first = object(
-            true,
-            false,
-            vec![
-                object(false, true, vec![text("teh fix")]),
-                text(" first. Their going to love this "),
-                object(false, false, vec![text("today")]),
-                text(". Read "),
-                object(false, false, vec![text("the notes")]),
-                text(" and realy run "),
-                object(false, true, vec![text("their going to work")]),
-            ],
-        );
-        let pieces =
-            vec![first, object(true, false, vec![text("\n")]), object(true, false, vec![text("See you soon.")])];
-        let (text, code, blocks) = assemble(&pieces);
-        assert!(blocks.is_empty(), "inline code is no code block");
-        assert_eq!(
-            text,
-            "teh fix first. Their going to love this today. Read the notes and realy run their going to work\n\nSee you soon."
-        );
-        let spans: Vec<String> =
-            code.iter().map(|&(from, to)| text.chars().skip(from).take(to - from).collect()).collect();
-        assert_eq!(spans, ["teh fix", "their going to work"]);
-    }
-
-    #[test]
-    fn code_offsets_count_characters_and_empty_lines_survive_at_either_end() {
-        let pieces = vec![
-            object(true, false, vec![text("\n")]),
-            object(true, false, vec![text("Rhyan 👋🏽 ran "), object(false, true, vec![text("make teh")])]),
-            object(true, false, vec![]),
-        ];
-        let (text, code, _) = assemble(&pieces);
-        assert_eq!(text, "\nRhyan 👋🏽 ran make teh\n");
-        assert_eq!(code, [(14, 22)], "characters: the line break, \"Rhyan \", the emoji as two, \" ran \"");
-    }
-
-    #[test]
-    fn a_code_block_is_found_whatever_wraps_its_text() {
-        // A paragraph, then <pre><code> around blocks that hold the text, as one editor nests it,
-        // then a <code> that is a block itself, as another shows a code block.
-        let nested = Piece::Object {
-            block: true,
-            code: false,
-            pre: true,
-            pieces: vec![object(false, true, vec![object(true, false, vec![text("npm ci\nnpm test\n")])])],
-        };
-        let alone = Piece::Object { block: true, code: true, pre: true, pieces: vec![text("make")] };
-        // A <pre> that holds its text itself, with a word in bold.
-        let bare = Piece::Object {
-            block: true,
-            code: false,
-            pre: true,
-            pieces: vec![text("git "), object(false, false, vec![text("push")])],
-        };
-        let (text, code, blocks) = assemble(&[object(true, false, vec![text("Run it:")]), nested, alone, bare]);
-        assert_eq!(text, "Run it:\nnpm ci\nnpm test\nmake\ngit push");
-        assert_eq!(code, [(8, 23), (24, 28), (29, 37)]);
-        assert_eq!(blocks, code);
     }
 }

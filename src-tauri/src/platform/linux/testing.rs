@@ -36,7 +36,7 @@ pub fn field(selected: &str) -> Field {
         bounds: None,
         window_bounds: None,
         code: Vec::new(),
-        blocks: Vec::new(),
+        rich: None,
         embedded: false,
     }
 }

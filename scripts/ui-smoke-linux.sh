@@ -354,11 +354,16 @@ chromium_cases() {
   done
 
   # The formats document: a heading, bold, italics, a link, code, lists, a quote, a code block and a
-  # line break. With four typos it is fixed change by change, in every editor. With more typos than
-  # are applied that way (the "many" fields) the fix replaces the whole selection, and goes on the
-  # clipboard as HTML too, so an editor that pastes HTML still holds the same structure afterwards.
+  # line break, with typos.
+  # - "steps": a proofread of a few changes away from the edges of the link, bold and code is
+  #   pasted change by change, so every editor keeps every structure, whatever it does with HTML.
+  # - "formats": one fix is a comma right after the link, where editors differ in whether pasted
+  #   text joins the link, so the fix replaces the whole selection, with its formatting as HTML.
+  # - "many": more typos than are applied change by change, so the same.
+  # An editor that pastes HTML holds the same structure after a whole-selection fix as before.
   local text structure fixed
-  for id in formats-div formats-tiptap formats-lexical formats-slate formats-quill many-tiptap many-lexical many-quill; do
+  for id in steps-div steps-markdown steps-tiptap steps-lexical steps-slate steps-quill \
+    formats-tiptap formats-lexical formats-quill many-tiptap many-lexical many-quill; do
     set_clipboard text
     vm "d_focus $page; sleep 0.3; d_cursor_move \$(d_active | jq -r '.at[0] + 300') \$(d_active | jq -r '.at[1] + 200')" > /dev/null
     selected="$(vm "cdp_select $id")"
@@ -377,14 +382,13 @@ chromium_cases() {
     sleep 0.5
     how="$(vm "log_since $mark | grep 'paste chromium: ' | cut -d' ' -f2- | tr '\n' ';'")"
     check "$id: Alt+Enter applies" "$(ok has "$REVIEW_RESULT" ": applied")" "${REVIEW_RESULT#* }"
+    fixed="fixed the .*Second step.*really good news"
     case "$id" in
+      steps-*) check "$id: the proofread is applied in place" "$(ok has "$how" "applied in place: [0-9]+ edits")" "$how" ;;
+      formats-*) check "$id: the whole selection is replaced, with its formatting as HTML" "$(ok both has "$how" "the whole selection: " has "$how" "goes as HTML")" "$how" ;;
       many-*)
         check "$id: the whole selection is replaced, with its formatting as HTML" "$(ok both has "$how" "more than 8" has "$how" "goes as HTML")" "$how"
         fixed="fixed the .*yesterday.*tomorrow.*weird.*everything.*dependency.*really good news.*running"
-        ;;
-      *)
-        check "$id: the proofread is applied in place" "$(ok has "$how" "applied in place: [0-9]+ edits")" "$how"
-        fixed="fixed the .*Second step.*really good news"
         ;;
     esac
     state="$(vm "cdp \"document.getElementById('$id-state').textContent\"")"

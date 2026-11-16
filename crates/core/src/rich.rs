@@ -326,12 +326,13 @@ pub struct Step {
 /// there, check it, and paste over it: words to add or remove take one character beside them along,
 /// which is written back.
 ///
-/// Text added between an inline element and the text around it goes in the text around it, so a
-/// comma after a link isn't part of the link. A write never touches either end of a link: editors
-/// differ in whether text pasted there stays in the link.
+/// Editors differ in what they do with text pasted at the edge of an inline element: one makes
+/// text pasted right after a link or bold part of it, another moves text pasted over a link's last
+/// letter out of the link. So no write starts where an inline element ends, and none touches
+/// either end of a link from inside.
 ///
 /// None when an edit doesn't lie inside one stretch of one element's text, so it can't be selected
-/// there, when a write would touch the end of a link, or when two writes would touch.
+/// there, when a write would be at such an edge, or when two writes would touch.
 pub fn steps(original: &str, root: &Node, runs: &[Run], edits: &[crate::edits::Edit]) -> Option<Vec<Step>> {
     let chars: Vec<char> = original.chars().collect();
     // How many inline elements a run is inside, and whether one of them is a link.
@@ -344,6 +345,15 @@ pub fn steps(original: &str, root: &Node, runs: &[Run], edits: &[crate::edits::E
         }
         (inline, link)
     };
+    // Where each inline element ends.
+    fn inline_ends(node: &Node, ends: &mut Vec<usize>) {
+        if !node.kind.is_block() && node.end > node.start {
+            ends.push(node.end);
+        }
+        node.children.iter().for_each(|child| inline_ends(child, ends));
+    }
+    let mut ends = Vec::new();
+    inline_ends(root, &mut ends);
     let mut steps = Vec::with_capacity(edits.len());
     // Where the write before this one (later in the text) starts.
     let mut floor = usize::MAX;
@@ -381,7 +391,7 @@ pub fn steps(original: &str, root: &Node, runs: &[Run], edits: &[crate::edits::E
                 return None;
             }
         }
-        if nesting(run).1 && (start == run.start || end == run.end) {
+        if ends.contains(&start) || (nesting(run).1 && (start == run.start || end == run.end)) {
             return None;
         }
         if end > floor || end > chars.len() {
@@ -871,7 +881,7 @@ mod tests {
     }
 
     #[test]
-    fn text_added_beside_a_link_goes_outside_it_and_a_links_ends_are_left_alone() {
+    fn nothing_is_written_at_the_edge_of_a_link() {
         let notes = Piece::Object(Object {
             tag: "a".into(),
             href: Some("https://example.com/notes".into()),
@@ -879,10 +889,14 @@ mod tests {
             ..Object::default()
         });
         let rich = assemble(&[run("Read ", 1, 0), notes, run(" and go.", 1, 6)]);
-        // A comma after the link: the space after it is written again with the comma.
+        // A comma after the link would be pasted where the link ends: one editor would make it
+        // part of the link.
         let edits = crate::edits::plan(&rich.text, "Read the notes, and go.", true, &[]).unwrap();
+        assert_eq!(steps(&rich.text, &rich.root, &rich.runs, &edits), None);
+        // A word added before the link is written in the text before it.
+        let edits = crate::edits::plan(&rich.text, "Read all the notes and go.", true, &[]).unwrap();
         let written = steps(&rich.text, &rich.root, &rich.runs, &edits).unwrap();
-        assert_eq!(written, [Step { object: 1, start: 6, end: 7, old: " ".into(), new: ", ".into() }]);
+        assert_eq!(written, [Step { object: 1, start: 4, end: 5, old: " ".into(), new: " all ".into() }]);
         // A fix to the link's last word would touch its end.
         let edits = crate::edits::plan(&rich.text, "Read the note and go.", true, &[]).unwrap();
         assert_eq!(steps(&rich.text, &rich.root, &rich.runs, &edits), None);

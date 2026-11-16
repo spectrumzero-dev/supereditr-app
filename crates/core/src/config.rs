@@ -135,15 +135,16 @@ const QUICK_FIX_SHORTCUT: &str = "Control+Alt+Shift+E";
 #[cfg(not(any(target_os = "linux", windows)))]
 const OLD_REVIEW_SHORTCUT: &str = "Control+Alt+E";
 
-/// Single chords: a double press needs a keyboard tap, which Wayland doesn't allow. Both are free in
-/// Omarchy's own bindings (Super+Alt+Shift+E opens its email app).
+/// Single chords: a double press needs a keyboard tap, which Wayland doesn't allow. Side by side,
+/// and both free in Omarchy 4.0 and 4.5's own bindings (Super+Alt+Shift+E opens its email app).
 #[cfg(target_os = "linux")]
 const REVIEW_SHORTCUT: &str = "Super+Alt+E";
 #[cfg(target_os = "linux")]
-const QUICK_FIX_SHORTCUT: &str = "Super+Control+Alt+Shift+E";
-/// The first quick-fix default, replaced because Omarchy 4.5 binds it to its world clock.
+const QUICK_FIX_SHORTCUT: &str = "Super+Alt+R";
+/// Earlier quick-fix defaults: Super+Ctrl+Alt+E, which Omarchy 4.5 binds to its world clock, and
+/// Super+Ctrl+Alt+Shift+E, which replaced it briefly and was too many keys.
 #[cfg(target_os = "linux")]
-const OLD_QUICK_FIX_SHORTCUT: &str = "Super+Control+Alt+E";
+const OLD_QUICK_FIX_SHORTCUTS: [&str; 2] = ["Super+Control+Alt+E", "Super+Control+Alt+Shift+E"];
 
 /// A chord, since a double press needs a keyboard hook. Ctrl+Shift+F2 has the same key and label on
 /// common layouts and is free in Windows and common apps, unlike the Windows key (the shell's),
@@ -275,7 +276,7 @@ impl Config {
             config.hotkeys.review = REVIEW_SHORTCUT.into();
         }
         #[cfg(target_os = "linux")]
-        if config.hotkeys.quick_fix == OLD_QUICK_FIX_SHORTCUT {
+        if OLD_QUICK_FIX_SHORTCUTS.contains(&config.hotkeys.quick_fix.as_str()) {
             config.hotkeys.quick_fix = QUICK_FIX_SHORTCUT.into();
         }
         config
@@ -533,7 +534,7 @@ mod tests {
         assert!(is_terminal("FOOT"));
         assert!(!is_terminal("1Password"));
         assert_eq!(config.hotkeys.review, "Super+Alt+E");
-        assert_eq!(config.hotkeys.quick_fix, "Super+Control+Alt+Shift+E");
+        assert_eq!(config.hotkeys.quick_fix, "Super+Alt+R");
         assert!(!config.auto_popup, "no automatic suggestions on Linux");
     }
 
@@ -546,14 +547,15 @@ mod tests {
         let saved = |quick_fix: &str| {
             std::fs::write(
                 &path,
-                format!(r#"{{"linux_hotkeys": {{"review": "Super+Alt+R", "quick_fix": "{quick_fix}"}}}}"#),
+                format!(r#"{{"linux_hotkeys": {{"review": "Super+Alt+W", "quick_fix": "{quick_fix}"}}}}"#),
             )
             .unwrap();
             Config::load(&path).hotkeys
         };
         let moved = saved("Super+Control+Alt+E");
-        assert_eq!(moved.quick_fix, "Super+Control+Alt+Shift+E", "Omarchy 4.5 binds the old default");
-        assert_eq!(moved.review, "Super+Alt+R", "the review shortcut is left as it is");
+        assert_eq!(moved.quick_fix, "Super+Alt+R", "Omarchy 4.5 binds the first default");
+        assert_eq!(moved.review, "Super+Alt+W", "the review shortcut is left as it is");
+        assert_eq!(saved("Super+Control+Alt+Shift+E").quick_fix, "Super+Alt+R", "the brief second default moves too");
         assert_eq!(saved("Super+Control+Alt+P").quick_fix, "Super+Control+Alt+P", "a chosen key stays");
         assert_eq!(saved("").quick_fix, "", "a quick fix turned off stays off");
         std::fs::remove_dir_all(dir).unwrap();

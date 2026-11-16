@@ -5,9 +5,9 @@ var INSTALL_URL = "https://supereditr.app/#omarchy"
 
 // SuperEditr's Linux defaults, used while its settings name no shortcuts (crates/core/src/config.rs).
 var DEFAULT_REVIEW = "Super+Alt+E"
-var DEFAULT_QUICK_FIX = "Super+Control+Alt+Shift+E"
-// The first quick-fix default, which SuperEditr moves to the new one because Omarchy 4.5 binds it.
-var OLD_QUICK_FIX = "Super+Control+Alt+E"
+var DEFAULT_QUICK_FIX = "Super+Alt+R"
+// Earlier quick-fix defaults, which SuperEditr moves to the current one (Omarchy 4.5 binds the first).
+var OLD_QUICK_FIX = ["Super+Control+Alt+E", "Super+Control+Alt+Shift+E"]
 
 // Nerd Font icons, which Omarchy's bar font includes.
 var GLYPHS = { review: 0xF04C6, quickFix: 0xF140B, settings: 0xF0493, start: 0xF040A, install: 0xF01DA }
@@ -60,7 +60,7 @@ function shortcuts(settingsText, statusText) {
   var quickFix = own && typeof own.quick_fix === "string" ? own.quick_fix : DEFAULT_QUICK_FIX
   return {
     review: own && typeof own.review === "string" ? own.review : DEFAULT_REVIEW,
-    quickFix: quickFix === OLD_QUICK_FIX ? DEFAULT_QUICK_FIX : quickFix
+    quickFix: OLD_QUICK_FIX.indexOf(quickFix) !== -1 ? DEFAULT_QUICK_FIX : quickFix
   }
 }
 

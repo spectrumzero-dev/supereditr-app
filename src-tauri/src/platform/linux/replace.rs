@@ -80,7 +80,7 @@ async fn attempt(services: &Services<'_>, capture: &Capture, text: &str) -> Repl
         if field.embedded && !code.is_empty() { supereditr_core::html::with_code(text, &code, &blocks) } else { None };
     if !capture.code.is_empty() {
         trace(format_args!(
-            "replace {}: {} of {} code ranges pasted as {}",
+            "paste {}: {} of {} code ranges go as {}",
             capture.bundle_id,
             code.len(),
             capture.code.len(),

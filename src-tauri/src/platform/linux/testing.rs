@@ -2,7 +2,7 @@
 //! window act as an app would: the copy key copies its selection, and Ctrl+V pastes the clipboard
 //! over it.
 
-use super::atspi::{Field, FieldId, Fields, ReadError};
+use super::atspi::{Field, FieldId, Fields, Moved, ReadError};
 use super::capture::{self, Services};
 use super::clipboard::fake::FakeClipboard;
 use super::desktop::{Capabilities, Desktop, DesktopError, SetupCheck, Shortcut, Subscription, WindowRef};
@@ -51,8 +51,8 @@ pub struct FakeFields {
     content: Mutex<String>,
     /// The app doesn't answer, as when it's frozen.
     frozen: std::sync::atomic::AtomicBool,
-    /// The app doesn't let its selection be moved.
-    fixed_selection: std::sync::atomic::AtomicBool,
+    /// What the app says to every request to move its selection, when it doesn't move it.
+    selection_answer: Mutex<Option<Moved>>,
 }
 
 #[async_trait]
@@ -72,18 +72,18 @@ impl Fields for FakeFields {
         Ok(self.content.lock().unwrap().clone())
     }
 
-    async fn select(&self, id: &FieldId, start: i32, end: i32) -> Result<bool, ReadError> {
+    async fn select(&self, id: &FieldId, start: i32, end: i32) -> Result<Moved, ReadError> {
+        if let Some(answer) = *self.selection_answer.lock().unwrap() {
+            return Ok(answer);
+        }
         let content = self.content.lock().unwrap().clone();
         let mut fields = self.field.lock().unwrap();
-        let Some(field) = fields
-            .as_mut()
-            .filter(|field| field.id == *id && !self.fixed_selection.load(std::sync::atomic::Ordering::Relaxed))
-        else {
-            return Ok(false);
+        let Some(field) = fields.as_mut().filter(|field| field.id == *id) else {
+            return Ok(Moved::Refused);
         };
         (field.start, field.end) = (start, end);
         field.selected = content.chars().skip(start as usize).take((end - start) as usize).collect();
-        Ok(true)
+        Ok(Moved::Yes)
     }
 
     async fn select_sentence(&self, _field: &Field) -> Result<Option<Field>, ReadError> {
@@ -254,9 +254,9 @@ impl World {
         self
     }
 
-    /// The app doesn't let SuperEditr move its selection.
-    pub fn with_a_fixed_selection(self) -> Self {
-        self.fields.fixed_selection.store(true, std::sync::atomic::Ordering::Relaxed);
+    /// The app doesn't move its selection when asked, and answers `answer`.
+    pub fn answering_a_selection(self, answer: Moved) -> Self {
+        *self.fields.selection_answer.lock().unwrap() = Some(answer);
         self
     }
 

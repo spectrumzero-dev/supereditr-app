@@ -377,6 +377,20 @@ pub fn steps(original: &str, runs: &[Run], edits: &[crate::edits::Edit]) -> Opti
     Some(steps)
 }
 
+/// Where the selection ends once `steps` are written: the element that holds its last stretch of
+/// text, and the offset in that element's own text. Every write before that point in the element
+/// moves it, whichever stretch the write was in.
+pub fn end_after(runs: &[Run], steps: &[Step]) -> Option<(usize, usize)> {
+    let last = runs.iter().max_by_key(|run| run.end)?;
+    let end = last.offset + (last.end - last.start);
+    let moved = |step: &&Step| step.object == last.object && step.end <= end;
+    let (added, removed) = steps
+        .iter()
+        .filter(moved)
+        .fold((0, 0), |(added, removed), step| (added + step.new.chars().count(), removed + (step.end - step.start)));
+    Some((last.object, (end + added).saturating_sub(removed)))
+}
+
 /// `revised`, a revision of `original`, as HTML for pasting, with the formatting `root` gives
 /// `original`: text the revision changed keeps the formatting of what it replaced.
 ///
@@ -815,6 +829,12 @@ mod tests {
         let steps = steps(&rich.text, &rich.runs, &edits).unwrap();
         let written: Vec<(usize, usize, usize, &str, &str)> =
             steps.iter().map(|s| (s.object, s.start, s.end, s.old.as_str(), s.new.as_str())).collect();
+        // The selection ends in the second paragraph, one character longer.
+        assert_eq!(end_after(&rich.runs, &steps), Some((3, 13)));
+        // Ending in the first paragraph's element, after its bold: "Their" grew by two there and
+        // " news" went, while the fix inside the bold is in another element.
+        let first = &rich.runs[..3];
+        assert_eq!(end_after(first, &steps[1..]), Some((1, 21 + 11 + 2 - 5)));
         assert_eq!(
             written,
             [

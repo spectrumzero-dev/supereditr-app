@@ -128,6 +128,17 @@ impl From<atspi::AtspiError> for ReadError {
     }
 }
 
+/// What an app did when asked to move its selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Moved {
+    /// The selection is where it was asked to be.
+    Yes,
+    /// The app said no: the selection is where it was.
+    Refused,
+    /// The app took the request but hasn't shown the new selection in time. It may still move.
+    Unconfirmed,
+}
+
 /// Reading fields. [`Atspi`] is the real one; tests use a fake.
 #[async_trait]
 pub trait Fields: Send + Sync {
@@ -142,9 +153,8 @@ pub trait Fields: Send + Sync {
     /// sentence there.
     async fn select_sentence(&self, field: &Field) -> Result<Option<Field>, ReadError>;
     /// Selects characters `start..end` of an object's text, or puts the caret at `start` when they
-    /// are equal, and waits for the app to say it has. False when the app doesn't move its
-    /// selection.
-    async fn select(&self, id: &FieldId, start: i32, end: i32) -> Result<bool, ReadError>;
+    /// are equal, and waits for the app to say it has.
+    async fn select(&self, id: &FieldId, start: i32, end: i32) -> Result<Moved, ReadError>;
 }
 
 /// Runs one AT-SPI call within [`CALL_LIMIT`]. A slow call is logged with where it was made, since
@@ -573,17 +583,17 @@ impl Fields for Atspi {
         self.text(&field.id, 0, count).await
     }
 
-    async fn select(&self, id: &FieldId, start: i32, end: i32) -> Result<bool, ReadError> {
+    async fn select(&self, id: &FieldId, start: i32, end: i32) -> Result<Moved, ReadError> {
         let text = self.text_proxy(id).await?;
         if start == end {
-            return limit(text.set_caret_offset(start)).await;
+            return Ok(if limit(text.set_caret_offset(start)).await? { Moved::Yes } else { Moved::Refused });
         }
         let set = match limit(text.get_n_selections()).await? {
             0 => limit(text.add_selection(start, end)).await?,
             _ => limit(text.set_selection(0, start, end)).await?,
         };
         if !set {
-            return Ok(false);
+            return Ok(Moved::Refused);
         }
         // The app moves its selection a moment after it's asked to.
         let began = Instant::now();
@@ -593,10 +603,10 @@ impl Fields for Atspi {
                 _ => None,
             };
             if now.is_some_and(|(from, to)| (from.min(to), from.max(to)) == (start, end)) {
-                return Ok(true);
+                return Ok(Moved::Yes);
             }
             if began.elapsed() > SELECT_WAIT {
-                return Ok(false);
+                return Ok(Moved::Unconfirmed);
             }
             tokio::time::sleep(Duration::from_millis(15)).await;
         }

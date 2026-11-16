@@ -13,6 +13,7 @@
 //!
 //! Corrections are never written through AT-SPI's editable-text calls, which break undo.
 
+use super::atspi::Moved;
 use super::capture::Services;
 use super::clipboard::{ClipboardError, Limits, Restore, Transaction};
 use super::desktop::{Desktop, Shortcut, WindowRef};
@@ -194,18 +195,27 @@ async fn in_place(
         let id = &field.objects[step.object];
         let (start, end) = range(step);
         let in_front = services.desktop.front_window().is_ok_and(|front| front.handle == window.handle);
-        if !in_front || !services.fields.select(id, start, end).await.unwrap_or(false) {
+        let moved = match in_front {
+            true => services.fields.select(id, start, end).await.unwrap_or(Moved::Unconfirmed),
+            false => Moved::Refused,
+        };
+        if moved != Moved::Yes {
             if i > 0 {
                 return stopped("the words to fix couldn’t be selected");
             }
-            // Nothing is written yet: with the selection as captured, or put back, all of it can
-            // be replaced.
+            // Nothing is written yet. An app that refused still has the selection as captured, and
+            // all of it can be replaced. One that didn't answer in time may move its selection
+            // yet, so nothing more is written.
             let captured =
                 |now: &super::atspi::Field| now.id == field.id && (now.start, now.end) == (field.start, field.end);
-            let kept = services.fields.focused(window.pid).await.ok().flatten().is_some_and(|now| captured(&now));
-            return match kept || services.fields.select(&field.id, field.start, field.end).await.unwrap_or(false) {
+            let kept = moved == Moved::Refused
+                && services.fields.focused(window.pid).await.ok().flatten().is_some_and(|now| captured(&now));
+            return match kept {
                 true => untouched("the app doesn’t let SuperEditr move the selection"),
-                false => InPlace::Stopped(ReplaceOutcome::CopyOnly(PlatformError::Stale)),
+                false => {
+                    trace(format_args!("paste {}: nothing written: the selection may have moved", capture.bundle_id));
+                    InPlace::Stopped(ReplaceOutcome::CopyOnly(PlatformError::Stale))
+                }
             };
         }
         if transaction.put_text(&step.new, None).is_err() {
@@ -231,16 +241,10 @@ async fn in_place(
         }
     }
     // The caret after the fixed text, where replacing the whole selection leaves it.
-    if let Some(last) = field.runs.iter().max_by_key(|run| run.end) {
-        let grown: i32 = steps
-            .iter()
-            .filter(|step| step.object == last.object && step.start >= last.offset)
-            .map(|step| step.new.chars().count() as i32 - step.old.chars().count() as i32)
-            .sum();
-        let end = (last.offset + last.end - last.start) as i32 + grown;
-        if let Some(id) = field.objects.get(last.object) {
-            let _ = services.fields.select(id, end, end).await;
-        }
+    if let Some((object, end)) = supereditr_core::rich::end_after(&field.runs, steps)
+        && let Some(id) = field.objects.get(object)
+    {
+        let _ = services.fields.select(id, end as i32, end as i32).await;
     }
     trace(format_args!(
         "paste {}: applied in place: {} edits in {} ms",
@@ -454,11 +458,27 @@ mod tests {
         let world = World::new("chromium")
             .with_field(formatted("Their going realy soon", "npm ci"))
             .pasting()
-            .with_a_fixed_selection();
+            .answering_a_selection(Moved::Refused);
         let capture = captured(&world);
         assert!(matches!(world.proofread(&capture, fixed), ReplaceOutcome::Applied));
         assert_eq!(world.keys_sent(), ["CTRL V"], "one paste of everything");
         assert!(world.field_text().starts_with(fixed), "{}", world.field_text());
+    }
+
+    #[test]
+    fn a_selection_that_may_still_move_is_never_pasted_over() {
+        // The app took the request to select the first words but hasn't shown it in time: the
+        // selection may move at any moment, so neither the words nor the whole text is pasted.
+        let world = World::new("chromium")
+            .with_field(formatted("Their going realy soon", "npm ci"))
+            .pasting()
+            .answering_a_selection(Moved::Unconfirmed);
+        let capture = captured(&world);
+        let outcome = world.proofread(&capture, "They’re going really soon\nnpm ci");
+        assert!(matches!(outcome, ReplaceOutcome::CopyOnly(PlatformError::Stale)), "{outcome:?}");
+        assert!(world.keys_sent().is_empty());
+        assert!(world.field_text().starts_with("Their going realy soon"));
+        assert_eq!(world.clipboard.get("text/plain;charset=utf-8").unwrap(), b"Rhyan's own copy");
     }
 
     #[test]

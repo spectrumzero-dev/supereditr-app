@@ -41,8 +41,10 @@ pub enum Kind {
         ordered: bool,
     },
     /// A list item. One list can hold bullets and numbers: each item's own marker says which.
+    /// `number` is the number its marker shows, when it shows one.
     Item {
         ordered: bool,
+        number: Option<u32>,
     },
     CodeBlock,
     /// Any other block.
@@ -78,7 +80,7 @@ impl Kind {
             "blockquote" => Self::Quote,
             "ul" => Self::List { ordered: false },
             "ol" => Self::List { ordered: true },
-            "li" => Self::Item { ordered: false },
+            "li" => Self::Item { ordered: false, number: None },
             "pre" => Self::CodeBlock,
             "code" if object.block => Self::CodeBlock,
             "code" => Self::Code,
@@ -148,9 +150,21 @@ impl Node {
         self.children.iter().for_each(|child| child.collect_code(ranges));
     }
 
-    /// Whether anything here is formatted in a way a plain-text paste would lose.
-    pub fn formatted(&self) -> bool {
-        self.kind.is_formatting() || self.children.iter().any(Node::formatted)
+    /// Whether anything here is formatted in a way a plain-text paste would lose. `text` is the
+    /// text the node covers part of: a line break inside a paragraph counts, since pasted plain
+    /// text would start a new paragraph there.
+    pub fn formatted(&self, text: &str) -> bool {
+        let chars: Vec<char> = text.chars().collect();
+        self.formatted_in(&chars)
+    }
+
+    fn formatted_in(&self, chars: &[char]) -> bool {
+        if self.kind.is_formatting() || self.children.iter().any(|child| child.formatted_in(chars)) {
+            return true;
+        }
+        let leaf = matches!(self.kind, Kind::Paragraph | Kind::Block)
+            && !self.children.iter().any(|child| child.kind.is_block());
+        leaf && (self.start..self.end.min(chars.len())).any(|i| chars[i] == '\n')
     }
 
     fn clamp(&mut self, end: usize) {
@@ -236,11 +250,12 @@ fn build(pieces: &[Piece], marker: Option<&str>, text: &mut String, chars: &mut 
             for child in &mut children {
                 let marker =
                     child.children.first().filter(|first| first.kind == Kind::Marker && first.start == child.start);
-                let numbered = marker.map(|marker| {
-                    text.chars().skip(marker.start).take(marker.end - marker.start).any(char::is_alphanumeric)
-                });
-                if let Kind::Item { ordered: item } = &mut child.kind {
-                    *item = numbered.unwrap_or(ordered);
+                let marker: Option<String> =
+                    marker.map(|marker| text.chars().skip(marker.start).take(marker.end - marker.start).collect());
+                if let Kind::Item { ordered: item, number } = &mut child.kind {
+                    *item = marker.as_ref().map_or(ordered, |marker| marker.chars().any(char::is_alphanumeric));
+                    let digits: String = marker.iter().flat_map(|m| m.chars()).filter(char::is_ascii_digit).collect();
+                    *number = digits.parse().ok().filter(|_| *item);
                 }
             }
         }
@@ -255,7 +270,7 @@ fn build(pieces: &[Piece], marker: Option<&str>, text: &mut String, chars: &mut 
 /// None when the selection has no formatting to keep, or when HTML can't hold the text exactly:
 /// outside a code block, HTML collapses runs of spaces and drops them at the ends of a line.
 pub fn html(original: &str, root: &Node, revised: &str) -> Option<String> {
-    if !root.formatted() {
+    if !root.formatted(original) {
         return None;
     }
     let length = original.chars().count();
@@ -438,20 +453,23 @@ impl Writer<'_> {
             && node.children.iter().any(|child| child.kind.is_block());
         let (mut cursor, mut after_block) = (from, false);
         let mut list: Option<bool> = None;
-        let list_tag = |ordered: bool, open: bool| match (ordered, open) {
-            (false, true) => "<ul>",
-            (false, false) => "</ul>",
-            (true, true) => "<ol>",
-            (true, false) => "</ol>",
-        };
+        let list_end = |ordered: bool| if ordered { "</ol>" } else { "</ul>" };
         for child in &node.children {
             if let Kind::List { ordered } = node.kind {
-                let ordered = if let Kind::Item { ordered } = child.kind { ordered } else { list.unwrap_or(ordered) };
+                let (ordered, number) = match child.kind {
+                    Kind::Item { ordered, number } => (ordered, number),
+                    _ => (list.unwrap_or(ordered), None),
+                };
                 if list != Some(ordered) {
                     if let Some(open) = list {
-                        self.html.push_str(list_tag(open, false));
+                        self.html.push_str(list_end(open));
                     }
-                    self.html.push_str(list_tag(ordered, true));
+                    // A numbered list that doesn't start at 1 keeps its first number.
+                    match (ordered, number) {
+                        (true, Some(number)) if number != 1 => self.html.push_str(&format!("<ol start=\"{number}\">")),
+                        (true, _) => self.html.push_str("<ol>"),
+                        (false, _) => self.html.push_str("<ul>"),
+                    }
                     list = Some(ordered);
                 }
             }
@@ -469,7 +487,7 @@ impl Writer<'_> {
         }
         self.text(cursor, to, after_block, false, wrap);
         if let Some(open) = list {
-            self.html.push_str(list_tag(open, false));
+            self.html.push_str(list_end(open));
         }
         if block {
             // An empty paragraph needs a line break to be a line.
@@ -646,6 +664,24 @@ mod tests {
                  <ol><li>First step</li><li>Second step</li></ol><blockquote><p>Quoted line with really good news.</p></blockquote>\
                  <p>Line one<br>Line two after a <em>break</em>.</p>"
             )
+        );
+    }
+
+    #[test]
+    fn a_numbered_list_keeps_the_number_it_starts_at() {
+        let pieces = [block("ol", vec![item("3. ", vec![text("Third step")]), item("4. ", vec![text("Forth step")])])];
+        assert_eq!(
+            pasted(&pieces, |text| text.replace("Forth", "Fourth")).unwrap(),
+            "<ol start=\"3\"><li>Third step</li><li>Fourth step</li></ol>"
+        );
+    }
+
+    #[test]
+    fn a_line_break_inside_a_paragraph_is_formatting_enough() {
+        let pieces = [block("p", vec![text("Line one"), text("\n"), text("Line too")]), block("p", vec![text("Bye.")])];
+        assert_eq!(
+            pasted(&pieces, |text| text.replace("too", "two")).unwrap(),
+            "<p>Line one<br>Line two</p><p>Bye.</p>"
         );
     }
 

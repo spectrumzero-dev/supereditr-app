@@ -75,7 +75,7 @@ async fn attempt(services: &Services<'_>, capture: &Capture, text: &str) -> Repl
     // Formatting the app reported goes back with the text: a web editor makes plain paragraphs of
     // plain text, so a heading, a list, a code block, bold or a link would be lost. An editor that
     // pastes plain text ignores the HTML, and a field without formatting gets none.
-    let formatting = field.rich.as_ref().filter(|rich| field.embedded && rich.formatted());
+    let formatting = field.rich.as_ref().filter(|rich| field.embedded && rich.formatted(&capture.text));
     let html = formatting.and_then(|rich| supereditr_core::rich::html(&capture.text, rich, text));
     if formatting.is_some() {
         trace(format_args!(

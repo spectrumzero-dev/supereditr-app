@@ -128,6 +128,7 @@ This README uses the Mac as its example. Each platform runs the same engine, sty
 |---|---|---|
 | Engine | `crates/core` | Providers (Apple Intelligence, Anthropic, OpenAI, Gemini, Ollama, OpenAI-compatible, Claude CLI), prompts and styles, word diffing, the Harper offline checker, guardrails, settings, account detection. Platform-independent. |
 | CLI | `crates/cli` | Terminal front end for the engine. |
+| AI edit eval | `crates/eval` | Runs the engine's AI edits over a fixed corpus, scores them and flags regressions against a baseline. See its [README](crates/eval/README.md). |
 | Desktop shell | `src-tauri` | Tauri 2 app: menu-bar item, global shortcuts, overlay panel, settings window, keychain. |
 | macOS layer | `src-tauri/src/platform/macos.rs` | Accessibility capture and replacement, clipboard transactions, keyboard-layout-aware ⌘C/⌘V, selection watcher. |
 | Linux layer | `src-tauri/src/platform/linux` | AT-SPI capture and replacement, clipboard transactions, the Hyprland and portal shortcuts and panel placement, Set up Omarchy. |

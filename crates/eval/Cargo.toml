@@ -1,0 +1,17 @@
+[package]
+name = "supereditr-eval"
+description = "Runs SuperEditr's AI edits over a fixed corpus and scores the results against a baseline."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "supereditr-eval"
+path = "src/main.rs"
+
+[dependencies]
+supereditr-core.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true

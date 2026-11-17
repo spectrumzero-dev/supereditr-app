@@ -6983,6 +6983,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "supereditr-eval"
+version = "0.1.9"
+dependencies = [
+ "serde",
+ "serde_json",
+ "supereditr-core",
+ "tokio",
+]
+
+[[package]]
 name = "swift-rs"
 version = "1.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

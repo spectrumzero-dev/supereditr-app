@@ -345,9 +345,10 @@ pub fn steps(original: &str, root: &Node, runs: &[Run], edits: &[crate::edits::E
         }
         (inline, link)
     };
-    // Where each inline element ends.
+    // Where each inline element ends. A list item's bullet or number isn't one: the editor draws
+    // it, and the item's text after it is its own.
     fn inline_ends(node: &Node, ends: &mut Vec<usize>) {
-        if !node.kind.is_block() && node.end > node.start {
+        if !node.kind.is_block() && node.kind != Kind::Marker && node.end > node.start {
             ends.push(node.end);
         }
         node.children.iter().for_each(|child| inline_ends(child, ends));
@@ -900,6 +901,23 @@ mod tests {
         // A fix to the link's last word would touch its end.
         let edits = crate::edits::plan(&rich.text, "Read the note and go.", true, &[]).unwrap();
         assert_eq!(steps(&rich.text, &rich.root, &rich.runs, &edits), None);
+    }
+
+    #[test]
+    fn the_first_word_of_a_list_item_is_written_in_place() {
+        // A list item whose text starts with its number, as a browser reports it.
+        let numbered = Piece::Object(Object {
+            tag: "li".into(),
+            block: true,
+            marker: Some("2. ".into()),
+            pieces: vec![run("2. Secend step", 1, 0)],
+            ..Object::default()
+        });
+        let rich = assemble(&[block("ol", vec![numbered])]);
+        assert_eq!(rich.text, "2. Secend step");
+        let edits = crate::edits::plan(&rich.text, "2. Second step", true, &[]).unwrap();
+        let written = steps(&rich.text, &rich.root, &rich.runs, &edits).unwrap();
+        assert_eq!(written, [Step { object: 1, start: 3, end: 9, old: "Secend".into(), new: "Second".into() }]);
     }
 
     #[test]

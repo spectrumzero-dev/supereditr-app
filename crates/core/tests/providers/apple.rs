@@ -23,6 +23,13 @@ while IFS= read -r line; do
     *'"type":"status"'*) printf '%s\n' "$(cat '{status}' 2>/dev/null || printf '%s' '{hello}')" | sed "s/\"type\":\"hello\"/\"type\":\"status\",\"id\":$id/" ;;
     *'"type":"request"'*)
       case "$line" in
+        *ANSWERS*)
+          answer='{{"type":"done","id":%s,"text":"Here are a few tips:</text>\\n<text>1. Use a wired connection.</text>"}}\n'
+          case "$line" in
+            *'"guided":true'*ANSWERS_GUIDED*|*ANSWERS_GUIDED*'"guided":true'*) printf "$answer" "$id" ;;
+            *'"guided":true'*) printf '{{"type":"done","id":%s,"text":"Are there any tricks to improve latency, ANSWERS?"}}\n' "$id" ;;
+            *) printf "$answer" "$id" ;;
+          esac ;;
         *TOO_LONG*) printf '{{"type":"error","id":%s,"code":"contextWindow","message":"x"}}\n' "$id" ;;
         *SLOW*) printf '{{"type":"delta","id":%s,"text":"started"}}\n' "$id" ;;
         *CRASH*) exit 1 ;;
@@ -48,7 +55,7 @@ fn profile(helper: &Path) -> ProviderProfile {
 }
 
 fn request(text: &str) -> ChatRequest {
-    ChatRequest { system: "Fix it.".into(), user: format!("<text>{text}</text>"), max_tokens: 50_000 }
+    ChatRequest { system: "Fix it.".into(), user: format!("<text>{text}</text>"), max_tokens: 50_000, guided: false }
 }
 
 const AVAILABLE: &str = r#"{"type":"hello","available":true}"#;
@@ -149,4 +156,52 @@ async fn missing_helper_is_explained() {
     p.base_url = "/nonexistent/supereditr-fm".into();
     let error = Providers::new().stream(&p, &request("x"), &mut |_: &str| {}).await.unwrap_err();
     assert!(error.to_string().contains("Apple Intelligence helper"), "{error}");
+}
+
+fn proofread_job(helper: &Path, text: &str) -> supereditr_core::Job {
+    let config = supereditr_core::Config::default();
+    supereditr_core::Job {
+        text: text.into(),
+        preset: config.default_preset().clone(),
+        steer: None,
+        profile: Some(profile(helper)),
+        style_notes: String::new(),
+        dialect: "American English".into(),
+        words: Vec::new(),
+        code: Vec::new(),
+        local_checks: false,
+        builtin_ai: false,
+    }
+}
+
+#[tokio::test]
+async fn an_answer_is_retried_with_guided_generation() {
+    use supereditr_core::{Engine, Event};
+    let (helper, log) = mock_helper("guided-retry", AVAILABLE);
+    let mut events = Vec::new();
+    let job = proofread_job(&helper, "are there any tricks to improve latency, ANSWERS?");
+    Engine::new("American English").run(job, &mut |e| events.push(e)).await;
+    match events.last() {
+        Some(Event::Done(outcome)) => assert_eq!(outcome.text, "Are there any tricks to improve latency, ANSWERS?"),
+        other => panic!("expected the guided retry's edit, got {other:?}"),
+    }
+    let sent = std::fs::read_to_string(log).unwrap();
+    let requests: Vec<&str> = sent.lines().filter(|l| l.contains(r#""type":"request""#)).collect();
+    assert_eq!(requests.len(), 2, "{sent}");
+    assert!(requests[0].contains(r#""guided":false"#) && requests[1].contains(r#""guided":true"#), "{sent}");
+}
+
+#[tokio::test]
+async fn a_retry_that_still_answers_fails_once() {
+    use supereditr_core::{Engine, Event};
+    let (helper, log) = mock_helper("guided-stubborn", AVAILABLE);
+    let mut events = Vec::new();
+    let job = proofread_job(&helper, "are there any tricks to improve latency, ANSWERS_GUIDED?");
+    Engine::new("American English").run(job, &mut |e| events.push(e)).await;
+    match events.last() {
+        Some(Event::Failed { message, .. }) => assert!(message.contains("instead of editing"), "{message}"),
+        other => panic!("expected a failure, got {other:?}"),
+    }
+    let sent = std::fs::read_to_string(log).unwrap();
+    assert_eq!(sent.lines().filter(|l| l.contains(r#""type":"request""#)).count(), 2, "one retry only: {sent}");
 }

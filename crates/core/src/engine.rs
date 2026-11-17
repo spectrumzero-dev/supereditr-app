@@ -289,7 +289,7 @@ impl Engine {
 
         let detected = lang::detect(&job.text);
         let language = detected.as_ref().filter(|d| d.reliable && d.code != "eng").map(|d| d.name);
-        let request = prompts::build(&PromptInput {
+        let mut request = prompts::build(&PromptInput {
             text: &job.text,
             preset: &job.preset,
             steer: job.steer.as_deref(),
@@ -336,6 +336,24 @@ impl Engine {
                     Some(format!("{} couldn’t answer: {}", profile.kind.display_name(), reason.trim_end_matches('.')));
                 profile = builtin;
                 source = source_name(&profile, true);
+                continue;
+            }
+            // Apple's on-device model can answer a selected question instead of proofreading it.
+            // It gets one retry with guided generation, which asks for the edited text as a
+            // structured result and tends to keep it on task. Guided output is slower and handles line
+            // breaks worse, so it is never the first try; the checks below still apply to it.
+            if let Ok(full) = &result
+                && profile.kind == ProviderKind::AppleIntelligence
+                && !request.guided
+                && prompts::answers_instead_of_editing(
+                    &original,
+                    full,
+                    &prompts::clean_output(&original, full),
+                    is_proofread,
+                )
+            {
+                request.guided = true;
+                raw.clear();
                 continue;
             }
             break result;

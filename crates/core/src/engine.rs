@@ -348,12 +348,16 @@ impl Engine {
             }
             on_event(Event::Failed { message, local_only: can_check_locally });
         };
-        match result.map(|full| prompts::clean_output(&original, &full)) {
+        match result.map(|full| (prompts::clean_output(&original, &full), full)) {
             // Checked after cleanup, so a reply of only wrapper tags can't erase the selection.
-            Ok(text) if text.trim().is_empty() && !original.trim().is_empty() => {
+            Ok((text, _)) if text.trim().is_empty() && !original.trim().is_empty() => {
                 fail("The model returned no text. Try again.".into(), on_event)
             }
-            Ok(text) => {
+            Ok((text, full)) if prompts::answers_instead_of_editing(&original, &full, &text, is_proofread) => fail(
+                format!("{} answered the text instead of editing it. Try another AI.", source_name(&profile, false)),
+                on_event,
+            ),
+            Ok((text, _)) => {
                 // A small model can miss rule-level mistakes ("Their going" on some Macs' Apple
                 // model). The offline checker's confident fixes (wrong-word rules, near-miss typos,
                 // never guesses at unknown words) run over its result as a final pass, and the panel

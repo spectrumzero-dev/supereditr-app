@@ -159,12 +159,34 @@ fn cut_at_end_marker<'a>(original: &str, text: &'a str) -> &'a str {
         .map_or(text, |idx| &text[..idx])
 }
 
+/// Cuts the reply at the `</text>` that closes the edit, the first beyond those the selection
+/// itself contains. Whatever a model writes after it is not part of the edited text.
+fn cut_at_closing_tag<'a>(original: &str, text: &'a str) -> &'a str {
+    text.match_indices("</text>").nth(original.matches("</text>").count()).map_or(text, |(idx, _)| &text[..idx])
+}
+
+/// Whether a reply answers the text, or carries on writing, instead of editing it. A small model
+/// can treat a selected question as one put to it (Proofread on "are there any tricks to improve
+/// latency?" came back as a list of tips), and the result is not an edit the author can review.
+///
+/// Two signs: the reply opens a second `<text>` block of its own, copying the prompt's wrapper for
+/// each part of an answer; or, for a plain proofread, it is far longer than any correction of the
+/// selection could be.
+pub fn answers_instead_of_editing(original: &str, raw: &str, cleaned: &str, proofread: bool) -> bool {
+    let raw = cut_at_end_marker(original, raw);
+    if raw.matches("<text>").count() > original.matches("<text>").count() + 1 {
+        return true;
+    }
+    let before = original.trim().chars().count();
+    proofread && cleaned.trim().chars().count() > before + before / 2 + 80
+}
+
 /// Removes wrappers models sometimes add and restores the selection's own leading and trailing
 /// whitespace, so a replacement never swallows a newline or space.
 pub fn clean_output(original: &str, raw: &str) -> String {
-    let mut text = cut_at_end_marker(original, raw).trim();
+    let mut text = cut_at_end_marker(original, raw).trim_start();
     text = text.strip_prefix("<text>").unwrap_or(text);
-    text = text.strip_suffix("</text>").unwrap_or(text);
+    text = cut_at_closing_tag(original, text).trim();
     let original_core = original.trim();
     if text.starts_with("```")
         && !original_core.starts_with("```")
@@ -192,9 +214,7 @@ pub fn clean_partial(original: &str, raw: &str) -> String {
         text = "";
     }
     text = text.strip_prefix("<text>").unwrap_or(text);
-    if let Some(idx) = text.find("</text>") {
-        text = &text[..idx];
-    }
+    text = cut_at_closing_tag(original, text);
     let leading = &original[..original.len() - original.trim_start().len()];
     format!("{leading}{}", text.trim_start())
 }
@@ -282,6 +302,61 @@ mod tests {
         assert_eq!(clean_partial("x", "<te"), "");
         assert_eq!(clean_partial("x", "<text>Hel"), "Hel");
         assert_eq!(clean_partial(" x", "Hel"), " Hel");
+    }
+
+    /// What Apple's on-device model returned for Proofread on a selected question: it restated the
+    /// question, then answered it in `<text>` blocks of its own.
+    const ANSWERED: &str = "There are several techniques to improve latency or perceived latency without \
+        compromising on performance or doing anything overly hacky. Here are a few suggestions:</text>\n\n\
+        <text>1. Optimize Network Connections:</text>\n<text>Ensure your internet connection is stable and \
+        fast. Consider using a wired connection if possible.</text>\n\n<text>2. Minimize Background \
+        Processes:</text>\n<text>Close unnecessary applications that might be consuming resources.</text>";
+    const QUESTION: &str = "are there any other tricks or techniques we can take (without compromising and \
+        doing really hacky thing) to improve the latency or perceived latency?";
+
+    #[test]
+    fn clean_output_stops_at_the_closing_tag() {
+        let cleaned = clean_output(QUESTION, ANSWERED);
+        assert!(!cleaned.contains("<text>") && !cleaned.contains("</text>"), "{cleaned}");
+        assert!(cleaned.ends_with("Here are a few suggestions:"), "{cleaned}");
+        assert_eq!(clean_output("teh text", "<text>the text</text>\n\nI fixed one typo."), "the text");
+        assert_eq!(clean_partial(QUESTION, ANSWERED), cleaned);
+    }
+
+    #[test]
+    fn clean_output_keeps_tags_the_selection_already_has() {
+        let original = "Wrap it in <text> and </text> tags.";
+        assert_eq!(clean_output(original, &format!("<text>{original}</text>")), original);
+        assert_eq!(clean_output(original, original), original);
+        assert_eq!(clean_partial(original, &format!("<text>{original}</text>")), original);
+    }
+
+    #[test]
+    fn an_answer_is_not_an_edit() {
+        let cleaned = clean_output(QUESTION, ANSWERED);
+        assert!(answers_instead_of_editing(QUESTION, ANSWERED, &cleaned, true));
+        assert!(answers_instead_of_editing(QUESTION, ANSWERED, &cleaned, false), "extra blocks on any preset");
+        let untagged = format!("{QUESTION}\n\n{}", "Here are some tips: use a wired connection. ".repeat(4));
+        assert!(answers_instead_of_editing(QUESTION, &untagged, &untagged, true));
+        assert!(!answers_instead_of_editing(QUESTION, &untagged, &untagged, false), "rewrites may grow");
+    }
+
+    #[test]
+    fn real_edits_are_edits() {
+        let fixed = "Are there any other tricks or techniques we can use (without compromising or doing \
+            anything really hacky) to improve the latency or perceived latency?";
+        let raw = format!("<text>{fixed}</text>");
+        assert!(!answers_instead_of_editing(QUESTION, &raw, &clean_output(QUESTION, &raw), true));
+        // A short selection can grow a lot in relative terms and still be a correction.
+        assert!(!answers_instead_of_editing(
+            "u r gr8 thx",
+            "<text>You are great, thanks!</text>",
+            "You are great, thanks!",
+            true
+        ));
+        let original = "Wrap it in <text> and </text> tags.";
+        let raw = format!("<text>{original}</text>");
+        assert!(!answers_instead_of_editing(original, &raw, original, true));
     }
 
     #[test]

@@ -501,6 +501,36 @@ async fn engine_rejects_a_wrapped_empty_revision() {
     assert!(matches!(events.last(), Some(Event::Failed { .. })), "{events:?}");
 }
 
+#[tokio::test]
+async fn engine_rejects_an_answer_to_the_selection() {
+    // Proofread on a selected question, answered in `<text>` blocks the way Apple's model did.
+    let reply =
+        "Here are a few tips:</text>\\n<text>1. Use a wired connection.</text>\\n<text>2. Close other apps.</text>";
+    let body = format!(
+        "data: {{\"choices\":[{{\"delta\":{{\"content\":\"{reply}\"}},\"finish_reason\":\"stop\"}}]}}\n\ndata: [DONE]\n\n"
+    );
+    let (url, _) = mock_server(vec![(200, "text/event-stream", body)]).await;
+    let config = supereditr_core::Config::default();
+    let job = Job {
+        text: "Are there any tricks to improve latency?".into(),
+        preset: config.default_preset().clone(),
+        steer: None,
+        profile: Some(profile(ProviderKind::OpenAiCompatible, &url, "local-model")),
+        style_notes: String::new(),
+        dialect: "American English".into(),
+        words: Vec::new(),
+        code: Vec::new(),
+        local_checks: false,
+        builtin_ai: false,
+    };
+    let mut events = Vec::new();
+    Engine::new("American English").run(job, &mut |e| events.push(e)).await;
+    match events.last() {
+        Some(Event::Failed { message, .. }) => assert!(message.contains("instead of editing"), "{message}"),
+        other => panic!("expected a failure, got {other:?}"),
+    }
+}
+
 /// A stand-in for the `claude` binary that prints the given stream-json lines and exit code. It's a
 /// shell script, so it and its test are Unix only.
 #[cfg(unix)]

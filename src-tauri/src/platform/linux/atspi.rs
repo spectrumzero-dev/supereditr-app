@@ -2,8 +2,9 @@
 //!
 //! AT-SPI is for reading only: the field, its role, whether it's editable, and the selection, and
 //! after a paste, whether the new text landed. SuperEditr never writes text through it (its
-//! edits break undo in GTK and Qt and do nothing in Firefox); the one change it makes is
-//! selecting the sentence before the caret, which is a selection, not an edit.
+//! edits break undo in GTK and Qt and do nothing in Firefox); the only changes it makes are to the
+//! selection: the sentence before the caret, and the words each change of a proofread applied in
+//! place replaces.
 //!
 //! Every call has a time limit, so a frozen app can't hold up a review. Offsets are in characters
 //! (Unicode scalar values), as AT-SPI counts them; macOS counts UTF-16 units.
@@ -40,6 +41,8 @@ const SENTENCE_REACH: i32 = 4000;
 const MAX_OBJECTS: usize = 2000;
 const MAX_DEPTH: usize = 12;
 const EMBEDDED_LIMIT: Duration = Duration::from_millis(1500);
+/// How long an app gets to move its selection where SuperEditr asked.
+const SELECT_WAIT: Duration = Duration::from_millis(400);
 /// The character that stands for an embedded object in its parent's text.
 const OBJECT: char = '\u{FFFC}';
 
@@ -75,6 +78,10 @@ pub struct Field {
     /// What is formatted how in `selected`, when the field holds embedded objects: headings, lists,
     /// code blocks, bold, links.
     pub rich: Option<rich::Node>,
+    /// Where each stretch of `selected` is held: characters of the text of one of `objects`. A
+    /// proofread applied in place selects the words it changes there.
+    pub runs: Vec<rich::Run>,
+    pub objects: Vec<FieldId>,
     /// The field's text holds embedded objects, as a web editor's paragraphs are, and `selected`
     /// is their text put together; `start` and `end` count each object as one character.
     pub embedded: bool,
@@ -122,6 +129,17 @@ impl From<atspi::AtspiError> for ReadError {
     }
 }
 
+/// What an app did when asked to move its selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Moved {
+    /// The selection is where it was asked to be.
+    Yes,
+    /// The app said no: the selection is where it was.
+    Refused,
+    /// The app took the request but hasn't shown the new selection in time. It may still move.
+    Unconfirmed,
+}
+
 /// Reading fields. [`Atspi`] is the real one; tests use a fake.
 #[async_trait]
 pub trait Fields: Send + Sync {
@@ -135,6 +153,18 @@ pub trait Fields: Send + Sync {
     /// Selects the sentence before the caret and reads the field again; `None` when there's no
     /// sentence there.
     async fn select_sentence(&self, field: &Field) -> Result<Option<Field>, ReadError>;
+    /// Selects characters `start..end` of an object's text, or puts the caret at `start` when they
+    /// are equal, and waits for the app to say it has.
+    async fn select(&self, id: &FieldId, start: i32, end: i32) -> Result<Moved, ReadError>;
+    /// Whether characters `start..end` of an object's text are what is selected in it now.
+    async fn selected(&self, id: &FieldId, start: i32, end: i32) -> bool;
+    /// Asks apps to report changes to text, selections and carets while `on`, so [`Fields::changed`]
+    /// wakes as soon as one happens. Apps send nothing when nobody asks, so it is on only while a
+    /// replacement waits for one.
+    async fn report_changes(&self, on: bool);
+    /// Waits until an app reports a change to text, a selection or a caret, or `wait` runs out:
+    /// whichever comes first, so a wait is never longer than checking every `wait`.
+    async fn changed(&self, wait: Duration);
 }
 
 /// Runs one AT-SPI call within [`CALL_LIMIT`]. A slow call is logged with where it was made, since
@@ -166,6 +196,9 @@ pub struct Atspi {
     last_focus: Mutex<HashMap<String, FieldId>>,
     /// Each app's bus name and process.
     pids: Mutex<HashMap<String, i32>>,
+    /// Woken when an app reports a change to text, a selection or a caret, while SuperEditr asks
+    /// for those reports ([`Fields::report_changes`]).
+    text_events: tokio::sync::Notify,
 }
 
 impl Atspi {
@@ -192,7 +225,18 @@ impl Atspi {
         connection.register_event::<StateChangedEvent>().await?;
         let mut events = std::pin::pin!(connection.event_stream());
         while let Some(event) = events.next().await {
-            let Ok(Event::Object(ObjectEvents::StateChanged(changed))) = event else { continue };
+            let changed = match event {
+                Ok(Event::Object(ObjectEvents::StateChanged(changed))) => changed,
+                Ok(Event::Object(
+                    ObjectEvents::TextChanged(_)
+                    | ObjectEvents::TextSelectionChanged(_)
+                    | ObjectEvents::TextCaretMoved(_),
+                )) => {
+                    self.text_events.notify_one();
+                    continue;
+                }
+                _ => continue,
+            };
             if changed.state != State::Focused || !changed.enabled {
                 continue;
             }
@@ -257,25 +301,35 @@ impl Atspi {
         end: i32,
         depth: usize,
         seen: &'a mut usize,
+        objects: &'a mut Vec<FieldId>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<Piece>, ReadError>> + Send + 'a>> {
         Box::pin(async move {
             if depth > MAX_DEPTH {
                 return Err(ReadError::Failed("embedded objects nest too deep".into()));
             }
+            // Each run of this object's own text is kept with where it is, so a proofread can
+            // select its words here.
+            let object = objects.len();
+            objects.push(id.clone());
+            let first = start.max(0) as usize;
             let raw = limit(self.text_proxy(&id).await?.get_text(start, end)).await?;
             if !raw.contains(OBJECT) {
-                return Ok(vec![Piece::Text(raw)]);
+                return Ok(vec![Piece::Run { text: raw, object, offset: first }]);
             }
             let hypertext = self.hypertext_proxy(&id).await?;
             let mut pieces = Vec::new();
             let mut run = String::new();
+            let mut run_from = 0;
             for (i, c) in raw.chars().enumerate() {
                 if c != OBJECT {
+                    if run.is_empty() {
+                        run_from = first + i;
+                    }
                     run.push(c);
                     continue;
                 }
                 if !run.is_empty() {
-                    pieces.push(Piece::Text(std::mem::take(&mut run)));
+                    pieces.push(Piece::Run { text: std::mem::take(&mut run), object, offset: run_from });
                 }
                 *seen += 1;
                 if *seen > MAX_OBJECTS {
@@ -304,11 +358,11 @@ impl Atspi {
                 let (from, to) = (from.min(to).clamp(0, count), to.max(from).clamp(0, count));
                 // A list item's text starts with its bullet or number.
                 let marker = if display == "list-item" && from == 0 { self.marker_of(&child).await } else { None };
-                let inner = self.pieces(child, from, to, depth + 1, seen).await?;
+                let inner = self.pieces(child, from, to, depth + 1, seen, objects).await?;
                 pieces.push(Piece::Object(Object { tag, block, href, marker, pieces: inner }));
             }
             if !run.is_empty() {
-                pieces.push(Piece::Text(run));
+                pieces.push(Piece::Run { text: run, object, offset: run_from });
             }
             Ok(pieces)
         })
@@ -349,10 +403,11 @@ impl Atspi {
 
     /// The text between `start` and `end` with its embedded objects' text put together, and what
     /// is formatted how in it.
-    async fn embedded_text(&self, id: &FieldId, start: i32, end: i32) -> Result<rich::Rich, ReadError> {
-        let mut seen = 0;
-        match tokio::time::timeout(EMBEDDED_LIMIT, self.pieces(id.clone(), start, end, 0, &mut seen)).await {
-            Ok(pieces) => Ok(rich::assemble(&pieces?)),
+    async fn embedded_text(&self, id: &FieldId, start: i32, end: i32) -> Result<(rich::Rich, Vec<FieldId>), ReadError> {
+        let (mut seen, mut objects) = (0, Vec::new());
+        let pieces = self.pieces(id.clone(), start, end, 0, &mut seen, &mut objects);
+        match tokio::time::timeout(EMBEDDED_LIMIT, pieces).await {
+            Ok(pieces) => Ok((rich::assemble(&pieces?), objects)),
             Err(_) => Err(ReadError::Timeout),
         }
     }
@@ -455,6 +510,8 @@ impl Atspi {
             window_bounds: None,
             code: Vec::new(),
             rich: None,
+            runs: Vec::new(),
+            objects: Vec::new(),
             embedded: false,
         };
         if password {
@@ -477,9 +534,13 @@ impl Atspi {
         let selected = if end > start { limit(text.get_text(start, end)).await? } else { String::new() };
         // A web editor's paragraphs, links and code are embedded objects: read their text. If they
         // can't be read, the field stays partial, and a shortcut falls back to a copy-only read.
+        let (mut runs, mut objects) = (Vec::new(), Vec::new());
         let (selected, code, rich, embedded) = match selected.contains(OBJECT) {
             true => match self.embedded_text(id, start, end).await {
-                Ok(read) => (read.text, read.root.code(), Some(read.root), true),
+                Ok((read, held)) => {
+                    (runs, objects) = (read.runs, held);
+                    (read.text, read.root.code(), Some(read.root), true)
+                }
                 Err(_) => (selected, Vec::new(), None, false),
             },
             false => (selected, Vec::new(), None, false),
@@ -498,7 +559,20 @@ impl Atspi {
         };
         let bounds = extents(CoordType::Screen).await;
         let window_bounds = if bounds.is_none() { extents(CoordType::Window).await } else { None };
-        Ok(Some(Field { start, end, selected, caret, bounds, window_bounds, code, rich, embedded, ..blank }))
+        Ok(Some(Field {
+            start,
+            end,
+            selected,
+            caret,
+            bounds,
+            window_bounds,
+            code,
+            rich,
+            runs,
+            objects,
+            embedded,
+            ..blank
+        }))
     }
 }
 
@@ -528,9 +602,73 @@ impl Fields for Atspi {
     async fn whole_text(&self, field: &Field) -> Result<String, ReadError> {
         let count = limit(self.text_proxy(&field.id).await?.character_count()).await?;
         if field.embedded {
-            return Ok(self.embedded_text(&field.id, 0, count).await?.text);
+            return Ok(self.embedded_text(&field.id, 0, count).await?.0.text);
         }
         self.text(&field.id, 0, count).await
+    }
+
+    async fn select(&self, id: &FieldId, start: i32, end: i32) -> Result<Moved, ReadError> {
+        let text = self.text_proxy(id).await?;
+        if start == end {
+            return Ok(if limit(text.set_caret_offset(start)).await? { Moved::Yes } else { Moved::Refused });
+        }
+        let set = match limit(text.get_n_selections()).await? {
+            0 => limit(text.add_selection(start, end)).await?,
+            _ => limit(text.set_selection(0, start, end)).await?,
+        };
+        if !set {
+            return Ok(Moved::Refused);
+        }
+        // The app moves its selection a moment after it's asked to.
+        let began = Instant::now();
+        loop {
+            let now = match limit(text.get_n_selections()).await {
+                Ok(n) if n > 0 => limit(text.get_selection(0)).await.ok(),
+                _ => None,
+            };
+            if now.is_some_and(|(from, to)| (from.min(to), from.max(to)) == (start, end)) {
+                return Ok(Moved::Yes);
+            }
+            if began.elapsed() > SELECT_WAIT {
+                return Ok(Moved::Unconfirmed);
+            }
+            Fields::changed(self, Duration::from_millis(15)).await;
+        }
+    }
+
+    async fn selected(&self, id: &FieldId, start: i32, end: i32) -> bool {
+        let Ok(text) = self.text_proxy(id).await else { return false };
+        let now = match limit(text.get_n_selections()).await {
+            Ok(n) if n > 0 => limit(text.get_selection(0)).await.ok(),
+            _ => None,
+        };
+        now.is_some_and(|(from, to)| (from.min(to), from.max(to)) == (start, end))
+    }
+
+    async fn report_changes(&self, on: bool) {
+        use atspi::events::object::{TextCaretMovedEvent, TextChangedEvent, TextSelectionChangedEvent};
+        let Ok(connection) = self.connection().await else { return };
+        let calls = async {
+            if on {
+                connection.register_event::<TextChangedEvent>().await?;
+                connection.register_event::<TextSelectionChangedEvent>().await?;
+                connection.register_event::<TextCaretMovedEvent>().await
+            } else {
+                connection.deregister_event::<TextChangedEvent>().await?;
+                connection.deregister_event::<TextSelectionChangedEvent>().await?;
+                connection.deregister_event::<TextCaretMovedEvent>().await
+            }
+        };
+        // Without the reports, a wait checks again every few milliseconds, as it would anyway.
+        match tokio::time::timeout(CALL_LIMIT, calls).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => super::trace(format_args!("AT-SPI change reports {on}: {error}")),
+            Err(_) => super::trace(format_args!("AT-SPI change reports {on}: timed out")),
+        }
+    }
+
+    async fn changed(&self, wait: Duration) {
+        let _ = tokio::time::timeout(wait, self.text_events.notified()).await;
     }
 
     async fn select_sentence(&self, field: &Field) -> Result<Option<Field>, ReadError> {
@@ -622,6 +760,8 @@ mod tests {
             window_bounds: None,
             code: Vec::new(),
             rich: None,
+            runs: Vec::new(),
+            objects: Vec::new(),
             embedded: false,
         };
         assert!(field.has_selection());

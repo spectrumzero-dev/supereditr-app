@@ -2,7 +2,7 @@
 //! window act as an app would: the copy key copies its selection, and Ctrl+V pastes the clipboard
 //! over it.
 
-use super::atspi::{Field, FieldId, Fields, ReadError};
+use super::atspi::{Field, FieldId, Fields, Moved, ReadError};
 use super::capture::{self, Services};
 use super::clipboard::fake::FakeClipboard;
 use super::desktop::{Capabilities, Desktop, DesktopError, SetupCheck, Shortcut, Subscription, WindowRef};
@@ -10,6 +10,7 @@ use super::{Capture, replace};
 use crate::platform::{PlatformError, Rect, ReplaceOutcome};
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 pub fn window(app_id: &str) -> WindowRef {
     WindowRef {
@@ -37,6 +38,8 @@ pub fn field(selected: &str) -> Field {
         window_bounds: None,
         code: Vec::new(),
         rich: None,
+        runs: Vec::new(),
+        objects: Vec::new(),
         embedded: false,
     }
 }
@@ -49,6 +52,12 @@ pub struct FakeFields {
     content: Mutex<String>,
     /// The app doesn't answer, as when it's frozen.
     frozen: std::sync::atomic::AtomicBool,
+    /// Each time SuperEditr asked apps to report changes (true) or to stop (false).
+    reporting: Mutex<Vec<bool>>,
+    /// The app moves its selection as asked, then back to where it was a moment later.
+    selection_moves_back: Mutex<bool>,
+    /// What the app says to every request to move its selection, when it doesn't move it.
+    selection_answer: Mutex<Option<Moved>>,
 }
 
 #[async_trait]
@@ -66,6 +75,34 @@ impl Fields for FakeFields {
 
     async fn whole_text(&self, _field: &Field) -> Result<String, ReadError> {
         Ok(self.content.lock().unwrap().clone())
+    }
+
+    async fn select(&self, id: &FieldId, start: i32, end: i32) -> Result<Moved, ReadError> {
+        if let Some(answer) = *self.selection_answer.lock().unwrap() {
+            return Ok(answer);
+        }
+        let content = self.content.lock().unwrap().clone();
+        let mut fields = self.field.lock().unwrap();
+        let Some(field) = fields.as_mut().filter(|field| field.id == *id) else {
+            return Ok(Moved::Refused);
+        };
+        (field.start, field.end) = (start, end);
+        field.selected = content.chars().skip(start as usize).take((end - start) as usize).collect();
+        Ok(Moved::Yes)
+    }
+
+    async fn selected(&self, id: &FieldId, start: i32, end: i32) -> bool {
+        let moves = *self.selection_moves_back.lock().unwrap();
+        let fields = self.field.lock().unwrap();
+        !moves && fields.as_ref().is_some_and(|field| field.id == *id && (field.start, field.end) == (start, end))
+    }
+
+    async fn report_changes(&self, on: bool) {
+        self.reporting.lock().unwrap().push(on);
+    }
+
+    async fn changed(&self, wait: Duration) {
+        tokio::time::sleep(wait.min(Duration::from_millis(2))).await;
     }
 
     async fn select_sentence(&self, _field: &Field) -> Result<Option<Field>, ReadError> {
@@ -236,6 +273,23 @@ impl World {
         self
     }
 
+    /// Each time SuperEditr asked apps to report changes (true) or to stop (false).
+    pub fn change_reports(&self) -> Vec<bool> {
+        self.fields.reporting.lock().unwrap().clone()
+    }
+
+    /// The app moves its selection as asked, and a moment later back to where it had it.
+    pub fn moving_its_selection_back(self) -> Self {
+        *self.fields.selection_moves_back.lock().unwrap() = true;
+        self
+    }
+
+    /// The app doesn't move its selection when asked, and answers `answer`.
+    pub fn answering_a_selection(self, answer: Moved) -> Self {
+        *self.fields.selection_answer.lock().unwrap() = Some(answer);
+        self
+    }
+
     pub fn on_fallback(mut self) -> Self {
         self.desktop.fallback = true;
         self
@@ -249,8 +303,14 @@ impl World {
         tauri::async_runtime::block_on(capture::capture(&self.services(), allow_copy, select_sentence))
     }
 
+    /// Replaces the selection with a rewrite of it.
     pub fn replace(&self, capture: &Capture, text: &str) -> ReplaceOutcome {
-        tauri::async_runtime::block_on(replace::replace(&self.services(), capture, text))
+        tauri::async_runtime::block_on(replace::replace(&self.services(), capture, text, false))
+    }
+
+    /// Replaces the selection with a proofread of it.
+    pub fn proofread(&self, capture: &Capture, text: &str) -> ReplaceOutcome {
+        tauri::async_runtime::block_on(replace::replace(&self.services(), capture, text, true))
     }
 
     pub fn keys_sent(&self) -> Vec<String> {

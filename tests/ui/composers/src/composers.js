@@ -72,6 +72,22 @@ const FORMATS = [
   "<p>See you you soon.</p>",
 ].join("");
 
+// The formats document with more typos than a proofread applies change by change, so the fix
+// replaces the whole selection and the formatting must come back with it.
+const MANY = FORMATS.replace("Apples", "Apples yestreday")
+  .replace("Pears", "Pears tomorow")
+  .replace("Ripe ones", "Ripe wierd ones")
+  .replace("Plums", "Plums for everthing")
+  .replace("First step", "First dependancy step")
+  .replace("after a break", "after a runing break");
+
+// The formats document without a fix at the edge of a link (the checker adds a comma after "notes"
+// in FORMATS), so a proofread of it can be applied change by change, and with a second typo in the
+// quote, so two changes in one stretch of text are one write.
+const STEPS = FORMATS.replace("text, the <a", "text and the <a")
+  .replace("</a> and <code>", "</a> with <code>")
+  .replace("realy good news.", "realy good news for teh team.");
+
 /** The formats document's structure: how many of each kind of block and mark, and the text of the
  * code, so a fix that loses or adds one shows. */
 function structure(root) {
@@ -248,6 +264,19 @@ field("formats-tiptap", "Formats: TipTap", tiptap, FORMATS);
 field("formats-lexical", "Formats: Lexical", lexical, FORMATS);
 field("formats-slate", "Formats: Slate", slate, FORMATS);
 field("formats-quill", "Formats: Quill", quill, FORMATS);
+
+// The document a proofread fixes change by change, in every editor.
+field("steps-div", "Steps: editable div", editableDiv, STEPS);
+field("steps-markdown", "Steps: Markdown composer", markdownComposer, STEPS);
+field("steps-tiptap", "Steps: TipTap", tiptap, STEPS);
+field("steps-lexical", "Steps: Lexical", lexical, STEPS);
+field("steps-slate", "Steps: Slate", slate, STEPS);
+field("steps-quill", "Steps: Quill", quill, STEPS);
+
+// The same document with too many typos to fix one by one, in the editors that paste HTML.
+field("many-tiptap", "Many typos: TipTap", tiptap, MANY);
+field("many-lexical", "Many typos: Lexical", lexical, MANY);
+field("many-quill", "Many typos: Quill", quill, MANY);
 
 const style = document.createElement("style");
 style.textContent = quillCSS + `

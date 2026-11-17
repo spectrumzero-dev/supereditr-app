@@ -134,6 +134,9 @@ pub struct ChatRequest {
     pub system: String,
     pub user: String,
     pub max_tokens: u32,
+    /// Asks for the edited text as a structured result instead of free text. Only Apple
+    /// Intelligence supports it, and only for a retry: see `Engine::run`.
+    pub guided: bool,
 }
 
 #[derive(Debug, thiserror::Error)]

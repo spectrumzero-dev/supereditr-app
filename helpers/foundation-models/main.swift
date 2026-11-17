@@ -4,10 +4,14 @@
 // exchanging one JSON object per line:
 //
 //   stdout, at start:  {"type":"hello","available":true}  or  {"available":false,"reason":"..."}
-//   stdin:   {"type":"request","id":1,"system":"...","user":"...","maxTokens":512}
+//   stdin:   {"type":"request","id":1,"system":"...","user":"...","maxTokens":512,"guided":false}
 //            {"type":"cancel","id":1}   {"type":"prewarm"}   {"type":"status","id":2}
 //   stdout:  {"type":"delta","id":1,"text":"..."}   {"type":"done","id":1,"text":"<full text>"}
 //            {"type":"error","id":1,"code":"...","message":"..."}   {"type":"status","id":2,...}
+//
+// A guided request asks for the edited text as a structured result (Apple's guided generation),
+// which tends to keep the model from answering the text instead of editing it. It is slower and
+// handles formatting worse than free text, so the engine uses it only to retry a reply that answered.
 //
 // The helper exits when stdin closes, so it never outlives SuperEditr. It is built for macOS 13
 // with FoundationModels weak-linked; on older systems it reports "osTooOld" instead of crashing.
@@ -98,28 +102,52 @@ func errorCode(_ error: Error) -> String {
 }
 
 @available(macOS 26.0, *)
-func respond(id: Int, system: String, user: String, maxTokens: Int) async {
+@Generable
+struct Edited {
+    @Guide(description: "The user's text with the task applied, and nothing else")
+    var text: String
+}
+
+/// Streams a snapshot's growing text as deltas, skipping a snapshot that revised earlier output.
+final class Deltas {
+    let id: Int
+    var sent = ""
+    init(id: Int) { self.id = id }
+
+    func update(_ content: String) {
+        if content.hasPrefix(sent) {
+            let delta = String(content.dropFirst(sent.count))
+            if !delta.isEmpty {
+                output.send(["type": "delta", "id": id, "text": delta])
+            }
+        }
+        sent = content
+    }
+}
+
+@available(macOS 26.0, *)
+func respond(id: Int, system: String, user: String, maxTokens: Int, guided: Bool) async {
     defer { tasks.finish(id) }
     // Permissive guardrails are Apple's setting for transforming text the user wrote, which avoids
     // refusals on ordinary drafts that merely mention sensitive topics.
     let model = SystemLanguageModel(useCase: .general, guardrails: .permissiveContentTransformations)
     let session = LanguageModelSession(model: model, instructions: system)
     let options = GenerationOptions(samplingMode: .greedy, maximumResponseTokens: maxTokens)
-    var sent = ""
+    let deltas = Deltas(id: id)
     do {
-        for try await snapshot in session.streamResponse(to: user, options: options) {
-            if Task.isCancelled { return }
-            let content = snapshot.content
-            if content.hasPrefix(sent) {
-                let delta = String(content.dropFirst(sent.count))
-                if !delta.isEmpty {
-                    output.send(["type": "delta", "id": id, "text": delta])
-                }
+        if guided {
+            for try await snapshot in session.streamResponse(to: user, generating: Edited.self, options: options) {
+                if Task.isCancelled { return }
+                deltas.update(snapshot.content.text ?? "")
             }
-            sent = content
+        } else {
+            for try await snapshot in session.streamResponse(to: user, options: options) {
+                if Task.isCancelled { return }
+                deltas.update(snapshot.content)
+            }
         }
         if !Task.isCancelled {
-            output.send(["type": "done", "id": id, "text": sent])
+            output.send(["type": "done", "id": id, "text": deltas.sent])
         }
     } catch {
         if Task.isCancelled || error is CancellationError { return }
@@ -158,6 +186,7 @@ func handle(_ line: String) {
         let system = message["system"] as? String ?? ""
         let user = message["user"] as? String ?? ""
         let maxTokens = message["maxTokens"] as? Int ?? 1024
+        let guided = message["guided"] as? Bool ?? false
         #if canImport(FoundationModels)
         if #available(macOS 26.0, *) {
             let status = availability()
@@ -165,7 +194,7 @@ func handle(_ line: String) {
                 output.send(["type": "error", "id": id, "code": status["reason"] as? String ?? "unavailable", "message": "unavailable"])
                 return
             }
-            tasks.add(id, Task { await respond(id: id, system: system, user: user, maxTokens: maxTokens) })
+            tasks.add(id, Task { await respond(id: id, system: system, user: user, maxTokens: maxTokens, guided: guided) })
             return
         }
         #endif

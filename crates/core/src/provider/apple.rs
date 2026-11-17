@@ -242,6 +242,7 @@ pub(super) async fn stream(
         "system": request.system,
         "user": request.user,
         "maxTokens": request.max_tokens.min(MAX_RESPONSE_TOKENS),
+        "guided": request.guided,
     }));
     let mut output = String::new();
     loop {

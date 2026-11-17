@@ -472,6 +472,7 @@ pub async fn test_provider(state: State<'_, AppState>, profile_id: String) -> Cm
         system: "Fix the spelling and grammar of the text in <text> tags. Reply with the corrected text only.".into(),
         user: "<text>This are a quick tset.</text>".into(),
         max_tokens: 64,
+        guided: false,
     };
     let started = Instant::now();
     let mut first = None;

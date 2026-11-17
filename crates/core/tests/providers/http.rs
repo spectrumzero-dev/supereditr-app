@@ -53,7 +53,12 @@ async fn mock_server(responses: Vec<(u16, &'static str, String)>) -> (String, Ar
 }
 
 fn request() -> ChatRequest {
-    ChatRequest { system: "sys".into(), user: "<text>This are teh draft.</text>".into(), max_tokens: 100 }
+    ChatRequest {
+        system: "sys".into(),
+        user: "<text>This are teh draft.</text>".into(),
+        max_tokens: 100,
+        guided: false,
+    }
 }
 
 fn profile(kind: ProviderKind, base_url: &str, model: &str) -> ProviderProfile {

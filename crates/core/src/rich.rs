@@ -324,7 +324,9 @@ pub struct Step {
 /// `edits` (from [`crate::edits::plan`], last first) as writes into the elements that hold the
 /// text, in the same order. Each write replaces text with text, so the platform can select what is
 /// there, check it, and paste over it: words to add or remove take one character beside them along,
-/// which is written back.
+/// which is written back. The changes in one stretch of text are one write, from the first to the
+/// last: a stretch has one formatting throughout, so the words between them are written back as
+/// they were, and each write costs the user a moment.
 ///
 /// Editors differ in what they do with text pasted at the edge of an inline element: one makes
 /// text pasted right after a link or bold part of it, another moves text pasted over a link's last
@@ -355,7 +357,8 @@ pub fn steps(original: &str, root: &Node, runs: &[Run], edits: &[crate::edits::E
     }
     let mut ends = Vec::new();
     inline_ends(root, &mut ends);
-    let mut steps = Vec::with_capacity(edits.len());
+    // Each change: its stretch, and the characters of the selection it replaces with `new`.
+    let mut changes: Vec<(usize, usize, usize, String)> = Vec::with_capacity(edits.len());
     // Where the write before this one (later in the text) starts.
     let mut floor = usize::MAX;
     for edit in edits {
@@ -363,12 +366,12 @@ pub fn steps(original: &str, root: &Node, runs: &[Run], edits: &[crate::edits::E
         // Text added goes with its anchor: after the text before it, or before the text after it.
         let with_before = edit.anchor.as_ref().is_none_or(|anchor| !anchor.after);
         let run = if end > start {
-            runs.iter().find(|run| run.start <= start && end <= run.end)?
+            runs.iter().position(|run| run.start <= start && end <= run.end)?
         } else {
-            let before = runs.iter().find(|run| run.start < start && start <= run.end);
-            let after = runs.iter().find(|run| run.start <= start && start < run.end);
+            let before = runs.iter().position(|run| run.start < start && start <= run.end);
+            let after = runs.iter().position(|run| run.start <= start && start < run.end);
             match (before, after) {
-                (Some(before), Some(after)) => match nesting(before).0.cmp(&nesting(after).0) {
+                (Some(before), Some(after)) => match nesting(&runs[before]).0.cmp(&nesting(&runs[after]).0) {
                     std::cmp::Ordering::Less => before,
                     std::cmp::Ordering::Greater => after,
                     std::cmp::Ordering::Equal if with_before => before,
@@ -377,6 +380,7 @@ pub fn steps(original: &str, root: &Node, runs: &[Run], edits: &[crate::edits::E
                 (before, after) => before.or(after)?,
             }
         };
+        let (index, run) = (run, &runs[run]);
         let mut new = edit.new.clone();
         if end == start || new.is_empty() {
             let usable = |at: usize| chars.get(at).is_some_and(|c| *c != '\n' && !crate::diff::is_invisible(*c));
@@ -399,6 +403,27 @@ pub fn steps(original: &str, root: &Node, runs: &[Run], edits: &[crate::edits::E
             return None;
         }
         floor = start;
+        changes.push((index, start, end, new));
+    }
+    // Changes in a row in one stretch become one write; they come last first.
+    let mut steps: Vec<Step> = Vec::with_capacity(changes.len());
+    let mut i = 0;
+    while i < changes.len() {
+        let index = changes[i].0;
+        let mut j = i;
+        while j + 1 < changes.len() && changes[j + 1].0 == index {
+            j += 1;
+        }
+        let (start, end) = (changes[j].1, changes[i].2);
+        let mut new = String::new();
+        let mut at = start;
+        for (_, from, to, text) in changes[i..=j].iter().rev() {
+            new.extend(&chars[at..*from]);
+            new.push_str(text);
+            at = *to;
+        }
+        new.extend(&chars[at..end]);
+        let run = &runs[index];
         steps.push(Step {
             object: run.object,
             start: run.offset + start - run.start,
@@ -406,6 +431,7 @@ pub fn steps(original: &str, root: &Node, runs: &[Run], edits: &[crate::edits::E
             old: chars[start..end].iter().collect(),
             new,
         });
+        i = j + 1;
     }
     Some(steps)
 }
@@ -901,6 +927,30 @@ mod tests {
         // A fix to the link's last word would touch its end.
         let edits = crate::edits::plan(&rich.text, "Read the note and go.", true, &[]).unwrap();
         assert_eq!(steps(&rich.text, &rich.root, &rich.runs, &edits), None);
+    }
+
+    #[test]
+    fn the_changes_in_one_stretch_of_text_are_one_write() {
+        let bold =
+            Piece::Object(Object { tag: "strong".into(), pieces: vec![run("realy", 2, 0)], ..Object::default() });
+        let rich = assemble(&[run("Their going to love teh news, ", 1, 0), bold, run(" good.", 1, 31)]);
+        let fixed = "They’re going to love the news, really good.";
+        let edits = crate::edits::plan(&rich.text, fixed, true, &[]).unwrap();
+        assert_eq!(edits.len(), 3);
+        let written = steps(&rich.text, &rich.root, &rich.runs, &edits).unwrap();
+        assert_eq!(
+            written,
+            [
+                Step { object: 2, start: 0, end: 5, old: "realy".into(), new: "really".into() },
+                Step {
+                    object: 1,
+                    start: 0,
+                    end: 23,
+                    old: "Their going to love teh".into(),
+                    new: "They’re going to love the".into(),
+                },
+            ]
+        );
     }
 
     #[test]

@@ -10,6 +10,7 @@ use super::{Capture, replace};
 use crate::platform::{PlatformError, Rect, ReplaceOutcome};
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 pub fn window(app_id: &str) -> WindowRef {
     WindowRef {
@@ -51,6 +52,8 @@ pub struct FakeFields {
     content: Mutex<String>,
     /// The app doesn't answer, as when it's frozen.
     frozen: std::sync::atomic::AtomicBool,
+    /// Each time SuperEditr asked apps to report changes (true) or to stop (false).
+    reporting: Mutex<Vec<bool>>,
     /// The app moves its selection as asked, then back to where it was a moment later.
     selection_moves_back: Mutex<bool>,
     /// What the app says to every request to move its selection, when it doesn't move it.
@@ -92,6 +95,14 @@ impl Fields for FakeFields {
         let moves = *self.selection_moves_back.lock().unwrap();
         let fields = self.field.lock().unwrap();
         !moves && fields.as_ref().is_some_and(|field| field.id == *id && (field.start, field.end) == (start, end))
+    }
+
+    async fn report_changes(&self, on: bool) {
+        self.reporting.lock().unwrap().push(on);
+    }
+
+    async fn changed(&self, wait: Duration) {
+        tokio::time::sleep(wait.min(Duration::from_millis(2))).await;
     }
 
     async fn select_sentence(&self, _field: &Field) -> Result<Option<Field>, ReadError> {
@@ -260,6 +271,11 @@ impl World {
     pub fn frozen(self) -> Self {
         self.fields.frozen.store(true, std::sync::atomic::Ordering::Relaxed);
         self
+    }
+
+    /// Each time SuperEditr asked apps to report changes (true) or to stop (false).
+    pub fn change_reports(&self) -> Vec<bool> {
+        self.fields.reporting.lock().unwrap().clone()
     }
 
     /// The app moves its selection as asked, and a moment later back to where it had it.

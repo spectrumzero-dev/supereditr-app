@@ -344,7 +344,7 @@ chromium_cases() {
         # fixes, so every editor keeps its code, bold, link and paragraphs, whatever it does with
         # pasted HTML.
         how="$(vm "log_since $mark | grep 'paste chromium: ' | cut -d' ' -f2- | tr '\n' ';'")"
-        check "$id: the proofread is applied in place" "$(ok has "$how" "applied in place: 2 edits")" "$how"
+        check "$id: the proofread is applied in place" "$(ok has "$how" "applied in place: 2 changes in 2 writes")" "$how"
         check "$id: the code, bold, link and paragraphs are as they were" "$(ok has "$state" "typo=0; code=teh fix\|their going to work; bold=today; links=the notes; paragraphs=3; empty=1")" "${state:0:140}"
         ;;
     esac
@@ -355,8 +355,10 @@ chromium_cases() {
 
   # The formats document: a heading, bold, italics, a link, code, lists, a quote, a code block and a
   # line break, with typos.
-  # - "steps": a proofread of a few changes away from the edges of the link, bold and code is
-  #   pasted change by change, so every editor keeps every structure, whatever it does with HTML.
+  # - "steps": a proofread of five changes away from the edges of the link, bold and code, two of
+  #   them in the quote, is pasted in four writes, so every editor keeps every structure, whatever
+  #   it does with HTML. Quill shows its code block as plain text, so its proofread also fixes the
+  #   code: more writes than are made in place, so its fix replaces the whole selection.
   # - "formats": one fix is a comma right after the link, where editors differ in whether pasted
   #   text joins the link, so the fix replaces the whole selection, with its formatting as HTML.
   # - "many": more typos than are applied change by change, so the same.
@@ -383,8 +385,10 @@ chromium_cases() {
     how="$(vm "log_since $mark | grep 'paste chromium: ' | cut -d' ' -f2- | tr '\n' ';'")"
     check "$id: Alt+Enter applies" "$(ok has "$REVIEW_RESULT" ": applied")" "${REVIEW_RESULT#* }"
     fixed="fixed the .*Second step.*really good news"
+    [[ "$id" == steps-* ]] && fixed="$fixed for the team"
     case "$id" in
-      steps-*) check "$id: the proofread is applied in place" "$(ok has "$how" "applied in place: [0-9]+ edits")" "$how" ;;
+      steps-quill) check "$id: more than four writes replace the whole selection, with its formatting as HTML" "$(ok both has "$how" "take [0-9]+ writes, more than 4" has "$how" "goes as HTML")" "$how" ;;
+      steps-*) check "$id: the proofread is applied in place, the quote's two changes in one write" "$(ok has "$how" "applied in place: 5 changes in 4 writes")" "$how" ;;
       formats-*) check "$id: the whole selection is replaced, with its formatting as HTML" "$(ok both has "$how" "the whole selection: " has "$how" "goes as HTML")" "$how" ;;
       many-*)
         check "$id: the whole selection is replaced, with its formatting as HTML" "$(ok both has "$how" "more than 8" has "$how" "goes as HTML")" "$how"

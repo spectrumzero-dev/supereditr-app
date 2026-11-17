@@ -158,6 +158,13 @@ pub trait Fields: Send + Sync {
     async fn select(&self, id: &FieldId, start: i32, end: i32) -> Result<Moved, ReadError>;
     /// Whether characters `start..end` of an object's text are what is selected in it now.
     async fn selected(&self, id: &FieldId, start: i32, end: i32) -> bool;
+    /// Asks apps to report changes to text, selections and carets while `on`, so [`Fields::changed`]
+    /// wakes as soon as one happens. Apps send nothing when nobody asks, so it is on only while a
+    /// replacement waits for one.
+    async fn report_changes(&self, on: bool);
+    /// Waits until an app reports a change to text, a selection or a caret, or `wait` runs out:
+    /// whichever comes first, so a wait is never longer than checking every `wait`.
+    async fn changed(&self, wait: Duration);
 }
 
 /// Runs one AT-SPI call within [`CALL_LIMIT`]. A slow call is logged with where it was made, since
@@ -189,6 +196,9 @@ pub struct Atspi {
     last_focus: Mutex<HashMap<String, FieldId>>,
     /// Each app's bus name and process.
     pids: Mutex<HashMap<String, i32>>,
+    /// Woken when an app reports a change to text, a selection or a caret, while SuperEditr asks
+    /// for those reports ([`Fields::report_changes`]).
+    text_events: tokio::sync::Notify,
 }
 
 impl Atspi {
@@ -215,7 +225,18 @@ impl Atspi {
         connection.register_event::<StateChangedEvent>().await?;
         let mut events = std::pin::pin!(connection.event_stream());
         while let Some(event) = events.next().await {
-            let Ok(Event::Object(ObjectEvents::StateChanged(changed))) = event else { continue };
+            let changed = match event {
+                Ok(Event::Object(ObjectEvents::StateChanged(changed))) => changed,
+                Ok(Event::Object(
+                    ObjectEvents::TextChanged(_)
+                    | ObjectEvents::TextSelectionChanged(_)
+                    | ObjectEvents::TextCaretMoved(_),
+                )) => {
+                    self.text_events.notify_one();
+                    continue;
+                }
+                _ => continue,
+            };
             if changed.state != State::Focused || !changed.enabled {
                 continue;
             }
@@ -611,7 +632,7 @@ impl Fields for Atspi {
             if began.elapsed() > SELECT_WAIT {
                 return Ok(Moved::Unconfirmed);
             }
-            tokio::time::sleep(Duration::from_millis(15)).await;
+            Fields::changed(self, Duration::from_millis(15)).await;
         }
     }
 
@@ -622,6 +643,32 @@ impl Fields for Atspi {
             _ => None,
         };
         now.is_some_and(|(from, to)| (from.min(to), from.max(to)) == (start, end))
+    }
+
+    async fn report_changes(&self, on: bool) {
+        use atspi::events::object::{TextCaretMovedEvent, TextChangedEvent, TextSelectionChangedEvent};
+        let Ok(connection) = self.connection().await else { return };
+        let calls = async {
+            if on {
+                connection.register_event::<TextChangedEvent>().await?;
+                connection.register_event::<TextSelectionChangedEvent>().await?;
+                connection.register_event::<TextCaretMovedEvent>().await
+            } else {
+                connection.deregister_event::<TextChangedEvent>().await?;
+                connection.deregister_event::<TextSelectionChangedEvent>().await?;
+                connection.deregister_event::<TextCaretMovedEvent>().await
+            }
+        };
+        // Without the reports, a wait checks again every few milliseconds, as it would anyway.
+        match tokio::time::timeout(CALL_LIMIT, calls).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => super::trace(format_args!("AT-SPI change reports {on}: {error}")),
+            Err(_) => super::trace(format_args!("AT-SPI change reports {on}: timed out")),
+        }
+    }
+
+    async fn changed(&self, wait: Duration) {
+        let _ = tokio::time::timeout(wait, self.text_events.notified()).await;
     }
 
     async fn select_sentence(&self, field: &Field) -> Result<Option<Field>, ReadError> {

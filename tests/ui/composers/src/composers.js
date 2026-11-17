@@ -82,8 +82,11 @@ const MANY = FORMATS.replace("Apples", "Apples yestreday")
   .replace("after a break", "after a runing break");
 
 // The formats document without a fix at the edge of a link (the checker adds a comma after "notes"
-// in FORMATS), so a proofread of it can be applied change by change.
-const STEPS = FORMATS.replace("text, the <a", "text and the <a").replace("</a> and <code>", "</a> with <code>");
+// in FORMATS), so a proofread of it can be applied change by change, and with a second typo in the
+// quote, so two changes in one stretch of text are one write.
+const STEPS = FORMATS.replace("text, the <a", "text and the <a")
+  .replace("</a> and <code>", "</a> with <code>")
+  .replace("realy good news.", "realy good news for teh team.");
 
 /** The formats document's structure: how many of each kind of block and mark, and the text of the
  * code, so a fix that loses or adds one shows. */

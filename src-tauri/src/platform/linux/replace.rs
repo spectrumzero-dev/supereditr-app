@@ -28,6 +28,9 @@ const FOCUS_WAIT: Duration = Duration::from_millis(if cfg!(test) { 60 } else { 6
 /// about a new clipboard with an event of its own: a Ctrl+V straight after it can paste the
 /// clipboard before (in the smoke tests, about one paste in 75 pasted nothing that way).
 const CLIPBOARD_SETTLE: Duration = Duration::from_millis(if cfg!(test) { 0 } else { 60 });
+/// The most writes a proofread applied in place takes. Each costs about a quarter of a second, so
+/// more replaces the whole selection, which is one paste.
+const MAX_WRITES: usize = 4;
 /// How long an editor gets to notice that its selection moved, before a paste over it. One editor
 /// (Slate) handles selection changes at most once in 100 ms, and pastes at its old caret until it
 /// has.
@@ -37,7 +40,16 @@ const PASTE_WAIT: Duration = Duration::from_millis(if cfg!(test) { 60 } else { 1
 
 pub async fn replace(services: &Services<'_>, capture: &Capture, text: &str, proofread: bool) -> ReplaceOutcome {
     let started = Instant::now();
+    // While a replacement runs, the app reports its text and selection changes, so each wait for one
+    // ends the moment it happens.
+    let reported = capture.source == Source::Atspi && capture.editable;
+    if reported {
+        services.fields.report_changes(true).await;
+    }
     let outcome = attempt(services, capture, text, proofread).await;
+    if reported {
+        services.fields.report_changes(false).await;
+    }
     let said = match &outcome {
         ReplaceOutcome::Applied => "applied".to_string(),
         ReplaceOutcome::CopyOnly(why) => format!("copy-only ({why})"),
@@ -86,8 +98,8 @@ async fn attempt(services: &Services<'_>, capture: &Capture, text: &str, proofre
     let formatting = field.rich.as_ref().filter(|rich| field.embedded && rich.formatted(&capture.text));
     let html = formatting.and_then(|rich| supereditr_core::rich::html(&capture.text, rich, text));
     let steps = formatting.and_then(|_| steps(capture, field, text, proofread));
-    if let Some(steps) = &steps {
-        match in_place(services, capture, window, field, steps, &transaction).await {
+    if let Some((steps, changes)) = &steps {
+        match in_place(services, capture, window, field, steps, *changes, &transaction).await {
             InPlace::Untouched => {}
             InPlace::Stopped(outcome) => {
                 transaction.restore();
@@ -133,7 +145,10 @@ async fn attempt(services: &Services<'_>, capture: &Capture, text: &str, proofre
 
 /// The writes that apply `text` in place, when it is a proofread of a few local changes and each
 /// lies in text the read placed. None says to replace the whole selection.
-fn steps(capture: &Capture, field: &super::atspi::Field, text: &str, proofread: bool) -> Option<Vec<Step>> {
+/// The writes that apply `text` in place, and how many changes they make, when it is a proofread
+/// of a few local changes that lie in text the read placed and take at most [`MAX_WRITES`] writes.
+/// None says to replace the whole selection.
+fn steps(capture: &Capture, field: &super::atspi::Field, text: &str, proofread: bool) -> Option<(Vec<Step>, usize)> {
     let whole = |why: &dyn std::fmt::Display| {
         trace(format_args!("paste {}: the whole selection: {why}", capture.bundle_id));
         None
@@ -145,8 +160,14 @@ fn steps(capture: &Capture, field: &super::atspi::Field, text: &str, proofread: 
     };
     let root = field.rich.as_ref()?;
     match supereditr_core::rich::steps(&capture.text, root, &field.runs, &edits) {
-        Some(steps) if steps.iter().all(|step| step.object < field.objects.len()) => Some(steps),
-        _ => whole(&"a change isn’t inside one element’s text"),
+        Some(steps) if steps.iter().any(|step| step.object >= field.objects.len()) => {
+            whole(&"a change isn’t inside one element’s text")
+        }
+        Some(steps) if steps.len() > MAX_WRITES => {
+            whole(&format_args!("{} changes take {} writes, more than {MAX_WRITES}", edits.len(), steps.len()))
+        }
+        Some(steps) => Some((steps, edits.len())),
+        None => whole(&"a change isn’t inside one element’s text"),
     }
 }
 
@@ -168,6 +189,7 @@ async fn in_place(
     window: &WindowRef,
     field: &super::atspi::Field,
     steps: &[Step],
+    changes: usize,
     transaction: &Transaction<'_>,
 ) -> InPlace {
     let started = Instant::now();
@@ -256,7 +278,7 @@ async fn in_place(
             if pasted.elapsed() >= PASTE_WAIT {
                 return stopped("a change didn’t land");
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            services.fields.changed(Duration::from_millis(20)).await;
         }
     }
     // The caret after the fixed text, where replacing the whole selection leaves it.
@@ -266,7 +288,7 @@ async fn in_place(
         let _ = services.fields.select(id, end as i32, end as i32).await;
     }
     trace(format_args!(
-        "paste {}: applied in place: {} edits in {} ms",
+        "paste {}: applied in place: {changes} changes in {} writes in {} ms",
         capture.bundle_id,
         steps.len(),
         started.elapsed().as_millis()
@@ -312,7 +334,7 @@ async fn landed(services: &Services<'_>, field: &super::atspi::Field, text: &str
         if started.elapsed() >= PASTE_WAIT {
             return false;
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        services.fields.changed(Duration::from_millis(20)).await;
     }
 }
 
@@ -459,10 +481,51 @@ mod tests {
         let capture = captured(&world);
         let fixed = "They’re going really soon\nnpm ci";
         assert!(matches!(world.proofread(&capture, fixed), ReplaceOutcome::Applied));
-        assert_eq!(world.keys_sent(), ["CTRL V", "CTRL V"], "one paste for each change");
+        assert_eq!(world.keys_sent(), ["CTRL V"], "one paste for the stretch that holds both changes");
         assert_eq!(world.pasted_html(), None, "only the changed words are pasted, as plain text");
         assert!(world.field_text().starts_with(fixed), "{}", world.field_text());
         assert_eq!(world.clipboard.get("text/plain;charset=utf-8").unwrap(), b"Rhyan's own copy");
+    }
+
+    #[test]
+    fn more_than_four_writes_replace_the_whole_selection_in_one_paste() {
+        use supereditr_core::rich::{Object, Piece, assemble};
+        // A heading and five paragraphs, each with a typo: five writes.
+        let lines = ["Notes", "teh one", "teh two", "teh three", "teh four", "teh five"];
+        let mut offset = 0;
+        let pieces: Vec<Piece> = lines
+            .iter()
+            .enumerate()
+            .map(|(i, line)| {
+                let pieces = vec![Piece::Run { text: (*line).into(), object: 0, offset }];
+                offset += line.chars().count() + 1;
+                Piece::Object(Object {
+                    tag: if i == 0 { "h2" } else { "p" }.into(),
+                    block: true,
+                    pieces,
+                    ..Object::default()
+                })
+            })
+            .collect();
+        let read = assemble(&pieces);
+        let mut editor = field(&read.text);
+        editor.embedded = true;
+        editor.rich = Some(read.root);
+        editor.runs = read.runs;
+        editor.objects = vec![editor.id.clone()];
+        let world = World::new("chromium").with_field(editor).pasting();
+        let capture = captured(&world);
+        let fixed = read.text.replace("teh", "the");
+        assert!(matches!(world.proofread(&capture, &fixed), ReplaceOutcome::Applied));
+        assert_eq!(world.keys_sent(), ["CTRL V"], "one paste of everything");
+        assert!(world.pasted_html().is_some_and(|html| html.contains("<h2>Notes</h2><p>the one</p>")));
+
+        // Fewer are written in place, and apps report their changes only while it runs.
+        let world = World::new("chromium").with_field(formatted("Their going realy soon", "npm ci")).pasting();
+        let capture = captured(&world);
+        assert!(matches!(world.proofread(&capture, "They’re going really soon\nnpm ci"), ReplaceOutcome::Applied));
+        assert_eq!(world.keys_sent(), ["CTRL V"], "two changes in one stretch of text are one write");
+        assert_eq!(world.change_reports(), [true, false], "apps report changes only while it runs");
     }
 
     #[test]

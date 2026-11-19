@@ -67,8 +67,10 @@ export function keyAction(state: KeyState, e: KeyPress, forwarded = false): KeyO
     if (forwarded && !mod && (e.key === "Backspace" || e.key.length === 1)) return { action: { type: "typeSteering", key: e.key }, preventDefault: false };
     return null;
   }
-  if (mod && /^[1-9]$/.test(e.key)) {
-    const preset = state.presets[Number(e.key) - 1];
+  // A digit picks the style whose chip shows it; a style past the last chip has no key.
+  const digit = /^[1-9]$/.test(e.key) && Number(e.key) <= CHIPS ? Number(e.key) : null;
+  if (mod && digit) {
+    const preset = state.presets[digit - 1];
     return handled(preset ? { type: "runPreset", presetId: preset.id } : null);
   }
   switch (e.key) {
@@ -91,13 +93,16 @@ export function keyAction(state: KeyState, e: KeyPress, forwarded = false): KeyO
     case "/":
       return handled({ type: "startSteering" });
   }
-  if (mod && e.key === "c") return handled({ type: "copy" });
-  if (e.key === "r") return handled({ type: "retry" });
-  if (!mod && e.key === "a" && state.keepOffer) return handled({ type: "keep", word: state.keepOffer });
+  // Caps lock names a letter in upper case; the key is the same one. With Shift held it is another
+  // chord, and not the panel's, whichever case caps lock gives it.
+  const letter = e.shiftKey ? "" : e.key.toLowerCase();
+  if (mod && letter === "c") return handled({ type: "copy" });
+  if (letter === "r") return handled({ type: "retry" });
+  if (!mod && letter === "a" && state.keepOffer) return handled({ type: "keep", word: state.keepOffer });
   if (mod && e.key === ",") return handled({ type: "openSettings" });
-  if (!mod && /^[1-9]$/.test(e.key)) {
-    const preset = state.presets[Number(e.key) - 1];
-    // Not marked handled: a plain digit was never prevented, unlike ⌘1–⌘9.
+  if (!mod && digit) {
+    const preset = state.presets[digit - 1];
+    // Not marked handled: a plain digit was never prevented, unlike ⌘ and a digit.
     if (preset) return { action: { type: "runPreset", presetId: preset.id }, preventDefault: false };
   }
   return null;
@@ -121,7 +126,9 @@ export interface ViewState {
   anyway: boolean;
 }
 
-/** The panel shows only as many style chips as fit; see `PanelView.chips`. */
+/** The panel shows only as many style chips as fit, and digits pick only those; see
+ * `PanelView.chips`. `PANEL_SHORTCUTS` in src-tauri/src/review_keys.rs takes the same digits from
+ * the app. */
 export const CHIPS = 7;
 
 export interface Chip {

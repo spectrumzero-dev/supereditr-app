@@ -21,6 +21,7 @@ use super::desktop::{Desktop, Shortcut, WindowRef};
 use super::{Capture, Source, trace};
 use crate::platform::{PlatformError, ReplaceOutcome, log_lines};
 use std::time::{Duration, Instant};
+use supereditr_core::policy::{self, Selection};
 use supereditr_core::rich::Step;
 
 /// How long the desktop gets to bring the window back to the front.
@@ -72,11 +73,15 @@ async fn attempt(services: &Services<'_>, capture: &Capture, text: &str, proofre
         trace(format_args!("replace {}: the window didn’t come back to the front", capture.bundle_id));
         return copy_only();
     }
+    // The same field with the same selection offsets and text. AT-SPI's read has no text around the
+    // selection to compare.
     match services.fields.focused(window.pid).await {
         Ok(Some(now))
-            if now.id == field.id
-                && (now.start, now.end) == (field.start, field.end)
-                && now.selected == field.selected => {}
+            if policy::selection_unchanged(
+                now.id == field.id && (now.start, now.end) == (field.start, field.end),
+                Selection::text(field.selected.as_str()),
+                Selection::text(now.selected.as_str()),
+            ) => {}
         Ok(_) => return ReplaceOutcome::CopyOnly(PlatformError::Stale),
         Err(_) => return copy_only(),
     }
@@ -158,7 +163,7 @@ fn steps(capture: &Capture, field: &super::atspi::Field, text: &str, proofread: 
         trace(format_args!("{}", log_lines::PastedWhole { app: &capture.bundle_id, why }));
         None
     };
-    let edits = match supereditr_core::edits::plan(&capture.text, text, proofread, &capture.code) {
+    let edits = match supereditr_core::edits::plan(&capture.text, text, proofread, &capture.protected()) {
         Ok(edits) if edits.is_empty() => return None,
         Ok(edits) => edits,
         Err(why) => return whole(&why),

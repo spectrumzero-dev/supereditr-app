@@ -23,14 +23,14 @@ pub struct RunningCommand(Option<(String, Instant)>);
 
 impl Drop for RunningCommand {
     fn drop(&mut self) {
-        *RUNNING.lock().unwrap() = self.0.take();
+        *crate::platform::lock(&RUNNING) = self.0.take();
     }
 }
 
 /// Marks a command as running on the main thread. Commands that aren't async run there, inside the
 /// invoke handler.
 pub fn running_command(name: &str) -> RunningCommand {
-    RunningCommand(RUNNING.lock().unwrap().replace((name.to_string(), Instant::now())))
+    RunningCommand(crate::platform::lock(&RUNNING).replace((name.to_string(), Instant::now())))
 }
 
 /// What the watchdog reports.
@@ -109,7 +109,7 @@ pub fn start(app: &AppHandle) {
             let last = Duration::from_millis(answered.load(Ordering::Acquire));
             match watch.look(last, started.elapsed()) {
                 Some(Event::Stuck(silent)) => {
-                    let command = match &*RUNNING.lock().unwrap() {
+                    let command = match &*crate::platform::lock(&RUNNING) {
                         Some((name, since)) => {
                             format!("running the command {name} for {:.1} s", since.elapsed().as_secs_f64())
                         }

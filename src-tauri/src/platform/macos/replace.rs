@@ -17,6 +17,7 @@ use core_graphics::event::{CGEvent, CGEventFlags};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use std::ffi::c_void;
 use std::time::Duration;
+use supereditr_core::policy::{self, Selection};
 
 // --- Replacing ---------------------------------------------------------------------------------
 
@@ -110,9 +111,13 @@ pub(super) fn replace_with<D: Desktop, P: Pasteboard>(
     paste(services, capture, field, text)
 }
 
-/// True while the captured selection is still exactly what the user selected.
+/// True while the captured selection is still exactly what the user selected. Accessibility reads
+/// the selected text alone, without the text around it, and the range is checked separately where
+/// one is needed.
 fn selection_unchanged(capture: &Capture, field: &dyn Field) -> bool {
-    field.selection().as_deref() == Some(capture.text.as_str())
+    field.selection().is_some_and(|now| {
+        policy::selection_unchanged(true, Selection::text(capture.text.as_str()), Selection::text(now.as_str()))
+    })
 }
 
 /// True while the app `pid` is in front with focus in `element` or inside it.

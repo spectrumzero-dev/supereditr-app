@@ -118,6 +118,7 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
         }
         return LRESULT(0);
     }
+    // SAFETY: passes on, unchanged, the message Windows gave this window procedure.
     unsafe { DefWindowProcW(window, message, wparam, lparam) }
 }
 
@@ -131,6 +132,7 @@ unsafe extern "system" fn foreground_changed(
     _time: u32,
 ) {
     let mut pid = 0;
+    // SAFETY: `pid` is a live local; a window destroyed meanwhile makes the call fail, leaving it 0.
     unsafe { GetWindowThreadProcessId(window, Some(&mut pid)) };
     if let Some(events) = EVENTS.get() {
         let _ = events.send(Event::Foreground(pid));
@@ -150,8 +152,11 @@ pub fn start(on_event: impl Fn(Event) + Send + 'static) {
         }
     });
     let (requests, queue) = channel::<Request>();
-    *REQUESTS.lock().unwrap() = Some(requests);
+    *crate::platform::lock(&REQUESTS) = Some(requests);
     let (ready, wait) = channel();
+    // SAFETY: the class and window names are static wide strings, `procedure` and
+    // `foreground_changed` are `'static` functions with the callbacks' signatures, the out-of-context
+    // hook needs no module, and `message` is a live local the loop fills and reads.
     let _ = std::thread::Builder::new().name("shortcuts".into()).spawn(move || unsafe {
         let instance = GetModuleHandleW(None).unwrap_or_default();
         let class = WNDCLASSW {
@@ -206,6 +211,7 @@ pub fn start(on_event: impl Fn(Event) + Send + 'static) {
 fn handle(window: HWND, request: Request) {
     match request {
         Request::Register(id, chord, reply) => {
+            // SAFETY: takes its arguments by value; `window` is this thread's own window.
             let result = unsafe { RegisterHotKey(Some(window), id, chord.modifiers(), u32::from(chord.vk)) };
             let _ = reply.send(result.map_err(|error| {
                 if error.code() == ERROR_HOTKEY_ALREADY_REGISTERED.to_hresult() {
@@ -216,17 +222,19 @@ fn handle(window: HWND, request: Request) {
             }));
         }
         Request::Unregister(id) => {
+            // SAFETY: takes its arguments by value; `window` is this thread's own window.
             let _ = unsafe { UnregisterHotKey(Some(window), id) };
         }
     }
 }
 
 fn send(request: Request) -> bool {
-    let Some(requests) = REQUESTS.lock().unwrap().clone() else { return false };
+    let Some(requests) = crate::platform::lock(&REQUESTS).clone() else { return false };
     if requests.send(request).is_err() {
         return false;
     }
     let window = HWND(window() as *mut _);
+    // SAFETY: takes its arguments by value, and the message carries no pointers.
     unsafe { PostMessageW(Some(window), WAKE, WPARAM(0), LPARAM(0)) }.is_ok()
 }
 

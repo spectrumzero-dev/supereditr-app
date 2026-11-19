@@ -38,6 +38,7 @@ fn key(vk: VIRTUAL_KEY, up: bool) -> INPUT {
 }
 
 fn send(inputs: &[INPUT]) -> bool {
+    // SAFETY: the slice passes its own length, and `cbsize` is the size of the `INPUT`s in it.
     let sent = unsafe { SendInput(inputs, std::mem::size_of::<INPUT>() as i32) };
     LAST_SENT.store(since_start(), Ordering::SeqCst);
     sent as usize == inputs.len()
@@ -99,6 +100,7 @@ pub fn watch_copy_keys() -> InputWatch {
 }
 
 pub fn held(vk: VIRTUAL_KEY) -> bool {
+    // SAFETY: takes and returns plain integers.
     (unsafe { GetAsyncKeyState(i32::from(vk.0)) }) < 0
 }
 

@@ -8,6 +8,7 @@
 //! the apps in `NO_PASTE` stay copy-only.
 
 use supereditr_core::config::is_terminal;
+use supereditr_core::policy::{Os, is_chromium_browser, is_password_manager};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Profile {
@@ -44,17 +45,10 @@ const NO_PASTE: &[&str] = &[
     "soffice.bin",
 ];
 
-const PASSWORD_MANAGERS: &[&str] = &["1Password.exe", "Bitwarden.exe", "KeePassXC.exe", "KeePass.exe", "NordPass.exe"];
-
 const CODE_EDITORS: &[&str] = &["Code.exe", "Code - Insiders.exe", "VSCodium.exe", "Cursor.exe", "Windsurf.exe"];
 
-/// Chromium, Electron and WebView2 apps.
-const CHROMIUM: &[&str] = &[
-    "chrome.exe",
-    "msedge.exe",
-    "brave.exe",
-    "vivaldi.exe",
-    "opera.exe",
+/// Electron and WebView2 apps, which behave as the Chromium browsers do.
+const CHROMIUM_APPS: &[&str] = &[
     "Code.exe",
     "Discord.exe",
     "Slack.exe",
@@ -79,13 +73,13 @@ fn listed(list: &[&str], image: &str) -> bool {
 /// The profile of the program `image` whose window has class `window_class`.
 pub fn profile(image: &str, window_class: &str) -> Profile {
     let terminal = is_terminal(image) || listed(TERMINAL_WINDOWS, window_class);
-    let password_manager = listed(PASSWORD_MANAGERS, image);
+    let password_manager = is_password_manager(Os::Windows, image);
     Profile {
         pastes: !listed(NO_PASTE, image) && !terminal && !password_manager,
         terminal,
         password_manager,
         code_editor: listed(CODE_EDITORS, image),
-        chromium: listed(CHROMIUM, image),
+        chromium: is_chromium_browser(Os::Windows, image) || listed(CHROMIUM_APPS, image),
         gecko: image.eq_ignore_ascii_case("firefox.exe"),
     }
 }
@@ -170,6 +164,15 @@ mod tests {
         assert!(terminal_element("xterm-helper-textarea"), "VS Code's terminal panel");
         assert!(terminal_element("TermControl"));
         assert!(!terminal_element("native-edit-context"), "VS Code's editor");
+    }
+
+    #[test]
+    fn chromium_browsers_and_apps_built_on_chromium_are_chromium() {
+        for app in ["chrome.exe", "MSEDGE.EXE", "brave.exe", "Code.exe", "msedgewebview2.exe", "claude.exe"] {
+            assert!(profile(app, "").chromium, "{app}");
+        }
+        assert!(!profile("firefox.exe", "").chromium);
+        assert!(!profile("notepad.exe", "").chromium);
     }
 
     #[test]

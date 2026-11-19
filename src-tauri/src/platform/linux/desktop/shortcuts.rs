@@ -36,6 +36,10 @@ struct State {
 pub struct HyprlandShortcuts {
     hyprland: Arc<HyprlandDesktop>,
     state: Mutex<State>,
+    /// Held while the binds change, so two changes don't interleave. `state` is held only to read
+    /// and write it, never while Hyprland answers, so the setup page and the portal's activations
+    /// don't wait on the compositor.
+    applying: Mutex<()>,
     /// When the shortcut held down now was pressed, from the portal's `Activated` until its
     /// `Deactivated`.
     pressed: Mutex<Option<Instant>>,
@@ -53,6 +57,7 @@ impl HyprlandShortcuts {
                 refused: Vec::new(),
                 on_fire: None,
             }),
+            applying: Mutex::new(()),
             pressed: Mutex::new(None),
             released: Condvar::new(),
         })
@@ -67,9 +72,9 @@ impl HyprlandShortcuts {
                 let (Ok(activations), Ok(deactivations)) =
                     (portal.receive_activated().await, portal.receive_deactivated().await)
                 else {
-                    return self.use_route(Route::Exec);
+                    return self.use_route_off_runtime(Route::Exec).await;
                 };
-                self.use_route(Route::Portal);
+                self.use_route_off_runtime(Route::Portal).await;
                 let mut activations = std::pin::pin!(activations);
                 let mut deactivations = std::pin::pin!(deactivations);
                 loop {
@@ -100,13 +105,20 @@ impl HyprlandShortcuts {
             }
             Ok(Err(error)) => {
                 crate::platform::trace(format_args!("GlobalShortcuts portal unavailable ({error}); binding commands"));
-                self.use_route(Route::Exec);
+                self.use_route_off_runtime(Route::Exec).await;
             }
             Err(_) => {
                 crate::platform::trace(format_args!("GlobalShortcuts portal didn’t answer; binding commands"));
-                self.use_route(Route::Exec);
+                self.use_route_off_runtime(Route::Exec).await;
             }
         }
+    }
+
+    /// `use_route` on a blocking thread: binding asks Hyprland one request at a time, each waiting
+    /// up to its time limit, which mustn't hold up a worker of the async runtime.
+    async fn use_route_off_runtime(self: &Arc<Self>, route: Route) {
+        let shortcuts = Arc::clone(self);
+        let _ = tauri::async_runtime::spawn_blocking(move || shortcuts.use_route(route)).await;
     }
 
     /// Waits until the user lets go of the shortcut just pressed, but no longer than `limit` after
@@ -195,8 +207,11 @@ impl HyprlandShortcuts {
     }
 
     fn apply(&self, wanted: &[Binding]) -> Vec<String> {
-        let mut state = self.state.lock().unwrap();
-        let route = state.route;
+        let _one_at_a_time = crate::platform::lock(&self.applying);
+        let (route, bound_before) = {
+            let state = self.state.lock().unwrap();
+            (state.route, state.bound.clone())
+        };
         if route == Route::Pending {
             return Vec::new();
         }
@@ -221,7 +236,7 @@ impl HyprlandShortcuts {
             add.push(lua::bind(&binding.shortcut, action, binding.action.description()));
             bound.push(binding.clone());
         }
-        let (before, given_away) = self.still_ours(&state.bound);
+        let (before, given_away) = self.still_ours(&bound_before);
         for (binding, what) in given_away {
             if !wanted.iter().any(|w| w.shortcut == binding.shortcut) {
                 problems.push(format!(
@@ -232,6 +247,7 @@ impl HyprlandShortcuts {
         }
         let remove = unbinds(&before, &bound);
         problems.extend(self.hyprland.set_binds(&remove, add));
+        let mut state = self.state.lock().unwrap();
         state.bound = bound;
         state.refused = refused;
         problems
@@ -290,8 +306,9 @@ impl ShortcutBackend for HyprlandShortcuts {
     }
 
     fn uninstall(&self) {
-        let mut state = self.state.lock().unwrap();
-        let (ours, _) = self.still_ours(&std::mem::take(&mut state.bound));
+        let _one_at_a_time = crate::platform::lock(&self.applying);
+        let bound = std::mem::take(&mut self.state.lock().unwrap().bound);
+        let (ours, _) = self.still_ours(&bound);
         let unbinds: Vec<String> = ours.iter().map(|b| lua::unbind(&b.shortcut)).collect();
         self.hyprland.remove_all(&unbinds);
     }
@@ -387,6 +404,36 @@ mod tests {
         let commands = commands.lock().unwrap();
         assert!(!commands.iter().any(|c| c == r#"eval hl.unbind("SUPER + ALT + E")"#), "{commands:?}");
         assert!(commands.iter().any(|c| c == r#"eval hl.unbind("SUPER + CTRL + ALT + E")"#), "{commands:?}");
+    }
+
+    #[test]
+    fn the_state_is_free_while_hyprland_answers() {
+        use std::sync::OnceLock;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static WATCHED: OnceLock<Arc<HyprlandShortcuts>> = OnceLock::new();
+        static ANSWERED: AtomicUsize = AtomicUsize::new(0);
+        static WHILE_HELD: AtomicUsize = AtomicUsize::new(0);
+        // Each request checks, from the fake Hyprland's thread, whether the state is held.
+        fn answer(command: &str) -> String {
+            if let Some(shortcuts) = WATCHED.get() {
+                ANSWERED.fetch_add(1, Ordering::SeqCst);
+                if shortcuts.state.try_lock().is_err() {
+                    WHILE_HELD.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+            answer_with_binds(command)
+        }
+        let (desktop, _) = super::super::hyprland::tests::fake_hyprland(answer);
+        let shortcuts = WATCHED.get_or_init(|| HyprlandShortcuts::new(Arc::new(desktop)));
+        {
+            let mut state = shortcuts.state.lock().unwrap();
+            state.route = Route::Exec;
+            state.bound = vec![binding(Action::Review, "Super+Alt+E")];
+        }
+        shortcuts.install(&[binding(Action::Review, "Super+Alt+R")]);
+        shortcuts.uninstall();
+        assert!(ANSWERED.load(Ordering::SeqCst) > 0);
+        assert_eq!(WHILE_HELD.load(Ordering::SeqCst), 0);
     }
 
     #[test]

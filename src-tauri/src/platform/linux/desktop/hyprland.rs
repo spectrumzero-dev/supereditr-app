@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -67,32 +67,25 @@ impl HyprlandDesktop {
 
     /// Sends one command and returns Hyprland's answer.
     fn request(&self, command: &str) -> Result<String, DesktopError> {
-        let failed = |error: std::io::Error| match error.kind() {
-            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => DesktopError::Timeout,
-            _ => DesktopError::Failed(format!("Hyprland’s socket: {error}")),
-        };
-        let mut socket = UnixStream::connect(&self.commands).map_err(failed)?;
-        socket.set_read_timeout(Some(REQUEST_LIMIT)).map_err(failed)?;
-        socket.set_write_timeout(Some(REQUEST_LIMIT)).map_err(failed)?;
-        socket.write_all(command.as_bytes()).map_err(failed)?;
-        let started = Instant::now();
-        let mut answer = Vec::new();
-        let mut buffer = [0; 16384];
-        loop {
-            match socket.read(&mut buffer).map_err(failed)? {
-                0 => break,
-                n => answer.extend_from_slice(&buffer[..n]),
-            }
-            if started.elapsed() > REQUEST_LIMIT {
-                return Err(DesktopError::Timeout);
-            }
-        }
-        Ok(String::from_utf8_lossy(&answer).into_owned())
+        request(&self.commands, command)
+    }
+
+    /// `request` on a blocking thread, for the async methods: it waits on the socket for up to
+    /// `REQUEST_LIMIT`, which mustn't hold up a worker of the async runtime.
+    async fn request_off_runtime(&self, command: String) -> Result<String, DesktopError> {
+        let socket = self.commands.clone();
+        tauri::async_runtime::spawn_blocking(move || request(&socket, &command))
+            .await
+            .unwrap_or_else(|error| Err(DesktopError::Failed(error.to_string())))
+    }
+
+    /// `dispatch` on a blocking thread, for the async methods.
+    async fn dispatch_off_runtime(&self, lua: &str) -> Result<(), DesktopError> {
+        answer_ok(self.request_off_runtime(format!("dispatch {lua}")).await?)
     }
 
     fn json(&self, what: &str) -> Result<Value, DesktopError> {
-        let answer = self.request(&format!("j/{what}"))?;
-        serde_json::from_str(&answer).map_err(|_| DesktopError::Failed(format!("Hyprland’s {what}: {answer}")))
+        parse_json(what, self.request(&format!("j/{what}"))?)
     }
 
     /// Runs a dispatcher, such as `hl.dsp.focus({ … })`.
@@ -196,13 +189,53 @@ impl HyprlandDesktop {
 
     /// Whether SuperEditr's panel is the focused window.
     pub fn overlay_focused(&self) -> bool {
-        self.front_window().is_ok_and(|window| window.pid == std::process::id() as i32 && window.title == OVERLAY_TITLE)
+        self.front_window().is_ok_and(|window| is_own_overlay(&window))
     }
 
     /// Where Hyprland has SuperEditr's panel, once it is on screen.
     pub fn overlay_rect(&self) -> Option<Rect> {
         panel_rect(&self.json("clients").ok()?, std::process::id() as i32)
     }
+}
+
+/// Sends one command to the socket at `commands` and returns Hyprland's answer.
+fn request(commands: &Path, command: &str) -> Result<String, DesktopError> {
+    let failed = |error: std::io::Error| match error.kind() {
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => DesktopError::Timeout,
+        _ => DesktopError::Failed(format!("Hyprland’s socket: {error}")),
+    };
+    let mut socket = UnixStream::connect(commands).map_err(failed)?;
+    socket.set_read_timeout(Some(REQUEST_LIMIT)).map_err(failed)?;
+    socket.set_write_timeout(Some(REQUEST_LIMIT)).map_err(failed)?;
+    socket.write_all(command.as_bytes()).map_err(failed)?;
+    let started = Instant::now();
+    let mut answer = Vec::new();
+    let mut buffer = [0; 16384];
+    loop {
+        match socket.read(&mut buffer).map_err(failed)? {
+            0 => break,
+            n => answer.extend_from_slice(&buffer[..n]),
+        }
+        if started.elapsed() > REQUEST_LIMIT {
+            return Err(DesktopError::Timeout);
+        }
+    }
+    Ok(String::from_utf8_lossy(&answer).into_owned())
+}
+
+/// Hyprland's answer to `j/{what}`.
+fn parse_json(what: &str, answer: String) -> Result<Value, DesktopError> {
+    serde_json::from_str(&answer).map_err(|_| DesktopError::Failed(format!("Hyprland’s {what}: {answer}")))
+}
+
+/// The window in front, from Hyprland's `activewindow`.
+fn front_from(active: &Value) -> Result<WindowRef, DesktopError> {
+    parse_window(active).ok_or_else(|| DesktopError::Failed("no window is in front".into()))
+}
+
+/// Whether `window` is SuperEditr's panel.
+fn is_own_overlay(window: &WindowRef) -> bool {
+    window.pid == std::process::id() as i32 && window.title == OVERLAY_TITLE
 }
 
 /// The panel's window among `clients`: the one `pid` owns, once Hyprland has mapped it.
@@ -290,7 +323,7 @@ impl Desktop for HyprlandDesktop {
     }
 
     fn front_window(&self) -> Result<WindowRef, DesktopError> {
-        parse_window(&self.json("activewindow")?).ok_or_else(|| DesktopError::Failed("no window is in front".into()))
+        front_from(&self.json("activewindow")?)
     }
 
     fn watch_front_window(&self, on_change: Box<dyn Fn(WindowRef) + Send + Sync>) -> Subscription {
@@ -333,15 +366,17 @@ impl Desktop for HyprlandDesktop {
     }
 
     async fn focus(&self, window: &WindowRef) -> Result<(), DesktopError> {
-        self.dispatch(&lua::focus(&lua::window(window)))
+        self.dispatch_off_runtime(&lua::focus(&lua::window(window))).await
     }
 
     async fn focus_overlay(&self) -> Result<(), DesktopError> {
         // The panel may not be mapped yet just after it's shown: try until it has focus.
         let started = Instant::now();
         loop {
-            let _ = self.dispatch(&lua::focus_overlay());
-            if self.overlay_focused() {
+            let _ = self.dispatch_off_runtime(&lua::focus_overlay()).await;
+            let active = self.request_off_runtime("j/activewindow".into()).await;
+            let front = active.and_then(|answer| parse_json("activewindow", answer)).and_then(|json| front_from(&json));
+            if front.is_ok_and(|window| is_own_overlay(&window)) {
                 return Ok(());
             }
             if started.elapsed() > Duration::from_millis(500) {
@@ -352,7 +387,7 @@ impl Desktop for HyprlandDesktop {
     }
 
     async fn send_shortcut(&self, window: &WindowRef, keys: Shortcut) -> Result<(), DesktopError> {
-        self.dispatch(&lua::send_shortcut(&keys, &lua::window(window)))
+        self.dispatch_off_runtime(&lua::send_shortcut(&keys, &lua::window(window))).await
     }
 
     fn setup_status(&self) -> Vec<SetupCheck> {
@@ -565,6 +600,36 @@ pub(crate) mod tests {
         let at = Rect { x: 590.0, y: 415.0, width: 548.0, height: 210.0 };
         desktop.place_overlay(at, false).unwrap();
         assert_eq!(commands.lock().unwrap()[1], format!("eval {}", lua::overlay_rule(at)));
+    }
+
+    #[test]
+    fn the_async_calls_send_their_commands_in_order() {
+        // The panel is in front once asked for focus.
+        fn answer(command: &str) -> String {
+            if command == "j/activewindow" {
+                ACTIVE_0_56
+                    .replace("11592", &std::process::id().to_string())
+                    .replace("SuperEditr Settings", OVERLAY_TITLE)
+            } else {
+                "ok".into()
+            }
+        }
+        let (desktop, commands) = fake_hyprland(answer);
+        let foot = parse_window(&serde_json::from_str(ACTIVE_0_57).unwrap()).unwrap();
+        tauri::async_runtime::block_on(async {
+            desktop.focus(&foot).await.unwrap();
+            desktop.send_shortcut(&foot, Shortcut::ctrl("V")).await.unwrap();
+            desktop.focus_overlay().await.unwrap();
+        });
+        assert_eq!(
+            *commands.lock().unwrap(),
+            [
+                format!("dispatch {}", lua::focus(&lua::window(&foot))),
+                format!("dispatch {}", lua::send_shortcut(&Shortcut::ctrl("V"), &lua::window(&foot))),
+                format!("dispatch {}", lua::focus_overlay()),
+                "j/activewindow".to_string(),
+            ]
+        );
     }
 
     #[test]

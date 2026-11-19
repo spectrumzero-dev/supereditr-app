@@ -69,6 +69,8 @@ impl Drop for WindowWatch {
         // Never waits for the thread: its own event handler may be what's dropping the watch.
         let ended = self.ended.lock().unwrap_or_else(PoisonError::into_inner);
         if !*ended {
+            // SAFETY: the message carries no pointers; while `ended` is false the id is still the
+            // watch's thread.
             let _ = unsafe { PostThreadMessageW(self.thread, WM_QUIT, WPARAM(0), LPARAM(0)) };
         }
     }
@@ -87,6 +89,8 @@ fn to_rect(r: RECT) -> Rect {
 /// includes the invisible resize border; only its moves count, and they're the same.
 fn frame(handle: isize) -> Option<Rect> {
     let hwnd = window::hwnd(handle);
+    // SAFETY: the handle is passed by value and a stale one makes the calls fail; `rect` is a live
+    // local.
     unsafe {
         if !IsWindow(Some(hwnd)).as_bool() || IsIconic(hwnd).as_bool() {
             return None;
@@ -100,6 +104,7 @@ fn frame(handle: isize) -> Option<Rect> {
 /// Whether the primary mouse button is down. `GetAsyncKeyState` reads the physical buttons, so
 /// with the buttons swapped in Settings the primary one is the right.
 pub fn mouse_button_down() -> bool {
+    // SAFETY: both calls take and return plain integers.
     let swapped = unsafe { GetSystemMetrics(SM_SWAPBUTTON) } != 0;
     let button = if swapped { VK_RBUTTON } else { VK_LBUTTON };
     (unsafe { GetAsyncKeyState(i32::from(button.0)) } as u16) & 0x8000 != 0
@@ -113,11 +118,13 @@ pub fn pressed_on_window(pid: i32, frame: Rect) -> bool {
         return false;
     }
     let Some(cursor) = window::cursor() else { return false };
+    // SAFETY: both take their arguments by value; no window there gives a null handle.
     let root = unsafe { GetAncestor(WindowFromPoint(cursor), GA_ROOT) };
     if root.0.is_null() {
         return false;
     }
     let mut owner = 0;
+    // SAFETY: `owner` is a live local; a window destroyed meanwhile makes the call fail.
     unsafe { GetWindowThreadProcessId(root, Some(&mut owner)) };
     let Some(found) = self::frame(root.0 as isize) else { return false };
     let same = |a: f64, b: f64| (a - b).abs() <= 2.0;
@@ -162,6 +169,7 @@ pub fn watch_window(
     let target: WindowRef = capture.window.filter(|&w| window::alive(w))?;
     let hwnd = window::hwnd(target.hwnd);
     let start = frame(target.hwnd)?;
+    // SAFETY: no output pointer is passed; a window destroyed meanwhile makes it return 0.
     let thread = unsafe { GetWindowThreadProcessId(hwnd, None) };
     let (ready, wait) = std::sync::mpsc::channel();
     let handle = target.hwnd;
@@ -194,6 +202,7 @@ fn watch(
     let hwnd = window::hwnd(handle);
     let mut message = MSG::default();
     // Makes this thread's message queue, so the watch's WM_QUIT can't arrive before it exists.
+    // SAFETY: `message` is a live local.
     let _ = unsafe { PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE) };
     let ranges = [
         (EVENT_SYSTEM_MOVESIZESTART, EVENT_SYSTEM_MOVESIZEEND),
@@ -203,6 +212,8 @@ fn watch(
     ];
     let hooks: Vec<HWINEVENTHOOK> = ranges
         .iter()
+        // SAFETY: `window_event` is a `'static` function with the hook procedure's signature, and an
+        // out-of-context hook needs no module; it's called on this thread as it pumps messages.
         .map(|&(min, max)| unsafe {
             SetWinEventHook(min, max, None, Some(window_event), pid, thread, WINEVENT_OUTOFCONTEXT)
         })
@@ -210,6 +221,7 @@ fn watch(
     let unhook = |hooks: &[HWINEVENTHOOK]| {
         for &hook in hooks {
             if !hook.is_invalid() {
+                // SAFETY: each hook is one this thread set, and the hooks are unhooked once.
                 let _ = unsafe { UnhookWinEvent(hook) };
             }
         }
@@ -221,17 +233,20 @@ fn watch(
         return;
     }
     let mut settled = RECT::default();
+    // SAFETY: `settled` is a live local; a stale handle makes the call fail.
     let _ = unsafe { GetWindowRect(hwnd, &mut settled) };
     // Only this thread calls it; `Rc` keeps it callable without holding the state borrowed.
     let on_change: OnChange = Rc::from(on_change as Box<dyn Fn(WindowChange)>);
     WATCHED.with_borrow_mut(|watched| {
         *watched = Some(Watched { hwnd, on_change, sizing: false, moving: None, started: None, settled, gone: false })
     });
+    // SAFETY: takes no arguments.
     let _ = ready.send(Some(unsafe { GetCurrentThreadId() }));
 
     'run: loop {
         let waiting = WATCHED.with_borrow(|w| w.as_ref().is_some_and(|w| w.moving.is_some() && !w.sizing));
         if waiting {
+            // SAFETY: no handles are waited on, and `message` is a live local the calls fill and read.
             unsafe {
                 MsgWaitForMultipleObjectsEx(None, SETTLE_CHECK.as_millis() as u32, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
                 while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
@@ -249,6 +264,7 @@ fn watch(
                 settle("no move for 150 ms");
             }
         } else {
+            // SAFETY: `message` is a live local the calls fill and read.
             unsafe {
                 if !GetMessageW(&mut message, None, 0, 0).as_bool() {
                     break;
@@ -272,6 +288,7 @@ fn settle(how: &str) {
         w.moving = None;
         let started = w.started.take();
         let mut now = RECT::default();
+        // SAFETY: `now` is a live local; a stale handle makes either call fail.
         unsafe { GetWindowRect(w.hwnd, &mut now) }.ok()?;
         if unsafe { IsIconic(w.hwnd) }.as_bool() || now == w.settled {
             return None;
@@ -314,6 +331,7 @@ unsafe extern "system" fn window_event(
             }
             EVENT_OBJECT_LOCATIONCHANGE if itself => {
                 let mut now = RECT::default();
+                // SAFETY: `now` is a live local; a stale handle makes either call fail.
                 if unsafe { GetWindowRect(hwnd, &mut now) }.is_err() || unsafe { IsIconic(hwnd) }.as_bool() {
                     return None;
                 }
@@ -347,6 +365,7 @@ unsafe extern "system" fn window_event(
             }
             on_change(change);
             // A move under way, or the window gone: the loop has to look again.
+            // SAFETY: posts to this thread a message that carries no pointers.
             let _ = unsafe { PostThreadMessageW(GetCurrentThreadId(), WAKE, WPARAM(0), LPARAM(0)) };
         }
         Some(None) => settle("its move ended"),

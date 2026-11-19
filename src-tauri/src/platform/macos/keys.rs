@@ -94,7 +94,7 @@ pub fn refresh_keyboard_layout() {
                     command_keys.push((code, key));
                 }
             }
-            *COMMAND_KEYS.lock().unwrap() = command_keys;
+            *crate::platform::lock(&COMMAND_KEYS) = command_keys;
         }
         CFRelease(source as CFTypeRef);
     }
@@ -188,7 +188,7 @@ const KEY_CODES: [(&str, u16); 36] = [
 
 /// Replaces the double-press shortcuts the tap watches for.
 pub fn set_double_presses(chords: Vec<Chord>) {
-    *DOUBLE_CHORDS.lock().unwrap() = chords;
+    *crate::platform::lock(&DOUBLE_CHORDS) = chords;
 }
 
 /// Lets every key through, for example while Settings records a new shortcut.
@@ -282,7 +282,7 @@ fn review_key(event: &CGEvent, code: u16, all: bool) -> Option<crate::review_key
     let shortcut = || {
         // ⌘ alone is named by what the key types with ⌘ held. The event's own text can't be relied
         // on: a ⌘C posted to the session arrived without its "c", so it went to the app.
-        let command_keys = COMMAND_KEYS.lock().unwrap();
+        let command_keys = crate::platform::lock(&COMMAND_KEYS);
         let key = command_keys.iter().find(|(c, _)| *c == code).map(|(_, key)| key.to_string());
         key.filter(|_| modifiers(event.get_flags()) == double_press::COMMAND)
     };
@@ -399,7 +399,7 @@ pub fn start_double_press_tap(
                         {
                             return CallbackResult::Keep;
                         }
-                        let chords = DOUBLE_CHORDS.lock().unwrap().clone();
+                        let chords = crate::platform::lock(&DOUBLE_CHORDS).clone();
                         let code = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
                         let key = KEY_CODES.iter().find(|(_, c)| *c == code).map(|(key, _)| *key);
                         let mods = modifiers(event.get_flags());
@@ -433,7 +433,9 @@ pub fn start_double_press_tap(
                                 std::thread::sleep(double_press::WINDOW);
                                 let mut detector = detector.lock().unwrap();
                                 let held = detector.expire(generation);
-                                if let Some(chord) = held.and_then(|i| DOUBLE_CHORDS.lock().unwrap().get(i).cloned()) {
+                                if let Some(chord) =
+                                    held.and_then(|i| crate::platform::lock(&DOUBLE_CHORDS).get(i).cloned())
+                                {
                                     replay(&chord, None);
                                 }
                             });

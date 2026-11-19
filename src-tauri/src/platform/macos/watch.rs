@@ -44,7 +44,7 @@ pub fn start_selection_watcher(on_event: impl Fn(WatchEvent) + Send + Sync + 'st
         let navigation = || matches!(event.keyCode(), 115 | 116 | 119 | 121 | 123 | 124 | 125 | 126);
         let input = if kind == NSEventType::LeftMouseDown {
             let (x, y) = mouse_location();
-            *LAST_PRESS.lock().unwrap() = Some((Instant::now(), x, y));
+            *crate::platform::lock(&LAST_PRESS) = Some((Instant::now(), x, y));
             let p = event.locationInWindow();
             *down_at.lock().unwrap() = (p.x, p.y);
             Input::MouseDown
@@ -69,7 +69,7 @@ pub fn start_selection_watcher(on_event: impl Fn(WatchEvent) + Send + Sync + 'st
         } else {
             return;
         };
-        if let Some(watch) = GESTURE.lock().unwrap().feed(input) {
+        if let Some(watch) = crate::platform::lock(&GESTURE).feed(input) {
             on_event(watch);
         }
     });
@@ -98,7 +98,7 @@ unsafe extern "C" {
 /// app `pid`: inside that frame, with no other app's window over it there. Asked once per press.
 /// Where the window server lists no windows, the frame alone decides.
 pub fn pressed_on_window(pid: i32, frame: Rect) -> bool {
-    let Some((at, x, y)) = LAST_PRESS.lock().unwrap().take() else { return false };
+    let Some((at, x, y)) = crate::platform::lock(&LAST_PRESS).take() else { return false };
     let inside = |r: &Rect| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
     if at.elapsed() > Duration::from_millis(100) || !inside(&frame) {
         return false;
@@ -164,7 +164,7 @@ static GESTURE: Mutex<crate::platform::gesture::Gesture> = Mutex::new(crate::pla
 
 /// Another app came to the front: forget a selection the user was making in the previous one.
 pub fn selection_app_switched() {
-    GESTURE.lock().unwrap().feed(crate::platform::gesture::Input::AppSwitched);
+    crate::platform::lock(&GESTURE).feed(crate::platform::gesture::Input::AppSwitched);
 }
 
 const KEY_A: u16 = 0;

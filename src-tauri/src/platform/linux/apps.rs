@@ -5,6 +5,7 @@
 //! copy-only, because a paste there can run a command.
 
 use supereditr_core::config::is_terminal;
+use supereditr_core::policy::{Os, is_password_manager};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Write {
@@ -26,9 +27,6 @@ pub struct Profile {
     /// what's running in that terminal).
     pub code_editor: bool,
 }
-
-const PASSWORD_MANAGERS: &[&str] =
-    &["1Password", "Bitwarden", "org.keepassxc.KeePassXC", "org.gnome.seahorse.Application"];
 
 /// Apps whose text accessibility exposes only in part. Obsidian's editor shows one placeholder
 /// character per line, so its selection is read by a guarded copy.
@@ -52,7 +50,7 @@ const CODE_EDITORS: &[&str] = &[
 pub fn profile(app_id: &str, tags: &[String]) -> Profile {
     let listed = |list: &[&str]| list.iter().any(|id| id.eq_ignore_ascii_case(app_id));
     let terminal = is_terminal(app_id) || tags.iter().any(|tag| tag.starts_with("terminal"));
-    let password_manager = listed(PASSWORD_MANAGERS);
+    let password_manager = is_password_manager(Os::Linux, app_id);
     let write = if terminal || password_manager || listed(COPY_ONLY) { Write::CopyOnly } else { Write::Paste };
     Profile { write, terminal, password_manager, code_editor: listed(CODE_EDITORS) }
 }

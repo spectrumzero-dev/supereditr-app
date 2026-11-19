@@ -65,6 +65,7 @@ unsafe extern "system" fn no_menu_key(
     if message == WM_SYSCOMMAND && (wparam.0 & 0xFFF0) == SC_KEYMENU as usize {
         return LRESULT(0);
     }
+    // SAFETY: passes on, unchanged, the message Windows gave this subclass procedure.
     unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
 }
 
@@ -73,6 +74,8 @@ pub fn init(window: &WebviewWindow) {
     // Also applies the undecorated frame: shown before this, the window has a title bar.
     let _ = window.set_focusable(false);
     let Some(hwnd) = handle(window) else { return };
+    // SAFETY: `no_menu_key` is a `'static` function with the subclass procedure's signature and
+    // uses no reference data; the other calls take their arguments by value.
     unsafe {
         let _ = SetWindowSubclass(hwnd, Some(no_menu_key), 0x5345, 0);
         let _ = SetWindowPos(hwnd, None, -32000, -32000, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -86,6 +89,7 @@ pub fn init(window: &WebviewWindow) {
             if !SHOWN.load(Ordering::SeqCst)
                 && let Some(hwnd) = handle(&warm)
             {
+                // SAFETY: takes its arguments by value.
                 let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
             }
         });
@@ -151,12 +155,12 @@ pub fn place(window: &WebviewWindow, anchor: Option<Rect>, height: f64, keep_poi
     let anchor = match anchor {
         Some(anchor) => anchor,
         None => {
-            let kept = if keep_pointer { *POINTER.lock().unwrap() } else { None };
+            let kept = if keep_pointer { *crate::platform::lock(&POINTER) } else { None };
             let at = kept.unwrap_or_else(|| {
                 let (x, y) = window::cursor().map_or((0, 0), |p| (p.x, p.y));
                 Rect { x: f64::from(x) - 24.0, y: f64::from(y) - 10.0, width: 1.0, height: 20.0 }
             });
-            *POINTER.lock().unwrap() = Some(at);
+            *crate::platform::lock(&POINTER) = Some(at);
             at
         }
     };
@@ -167,6 +171,8 @@ pub fn place(window: &WebviewWindow, anchor: Option<Rect>, height: f64, keep_poi
 
 /// Moves and sizes the window to `at` at once, and clips it to the card.
 fn put(hwnd: HWND, at: &Placement) {
+    // SAFETY: the calls take their arguments by value, and the region is handed to the window,
+    // which frees it, so it's never used or freed here again.
     unsafe {
         // Twice: moving to a monitor with another scale makes Tauri resize the window for it.
         for _ in 0..2 {
@@ -193,10 +199,11 @@ pub fn glide(window: &WebviewWindow, anchor: Rect, height: f64) {
     let Some(monitor) = window::monitor_for_rect(rect_of(anchor)) else { return };
     let to = placement(anchor, &monitor, height);
     let latest = GLIDES.load(Ordering::SeqCst);
-    if *HEADED.lock().unwrap() == Some((latest, to.x, to.y)) {
+    if *crate::platform::lock(&HEADED) == Some((latest, to.x, to.y)) {
         return;
     }
     let mut now = RECT::default();
+    // SAFETY: `now` is a live local.
     if unsafe { GetWindowRect(hwnd, &mut now) }.is_err() {
         return;
     }
@@ -205,12 +212,13 @@ pub fn glide(window: &WebviewWindow, anchor: Rect, height: f64) {
         return;
     }
     let same_scale = window::monitor_for_rect(now).is_some_and(|here| here.scale == monitor.scale);
+    // SAFETY: takes its argument by value.
     if !same_size || !same_scale || !unsafe { IsWindowVisible(hwnd) }.as_bool() {
         stop_glide();
         return put(hwnd, &to);
     }
     let number = GLIDES.fetch_add(1, Ordering::SeqCst) + 1;
-    *HEADED.lock().unwrap() = Some((number, to.x, to.y));
+    *crate::platform::lock(&HEADED) = Some((number, to.x, to.y));
     let raw = hwnd.0 as isize;
     let (from, end) = ((f64::from(now.left), f64::from(now.top)), (f64::from(to.x), f64::from(to.y)));
     let started =
@@ -241,6 +249,7 @@ struct Pacer {
 
 impl Pacer {
     fn new() -> Self {
+        // SAFETY: no name or security attributes are passed; the handle is closed once, in `drop`.
         let timer =
             unsafe { CreateWaitableTimerExW(None, None, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS.0) }
                 .ok();
@@ -251,6 +260,7 @@ impl Pacer {
     /// composed a frame; when nothing else on screen is changing it can return at once, and then
     /// the rest of the frame is waited out on the timer.
     fn next(&mut self) -> Instant {
+        // SAFETY: takes no arguments.
         let flushed = unsafe { DwmFlush() }.is_ok();
         let mut now = Instant::now();
         match self.last {
@@ -271,6 +281,8 @@ impl Pacer {
             return;
         }
         match self.timer {
+            // SAFETY: the timer stays open until `drop`, `due` is a live local, and no completion
+            // routine is passed.
             Some(timer) => unsafe {
                 // Negative: relative, in 100-nanosecond units.
                 let due = -((left.as_nanos() / 100) as i64).max(1);
@@ -288,6 +300,7 @@ impl Pacer {
 impl Drop for Pacer {
     fn drop(&mut self) {
         if let Some(timer) = self.timer.take() {
+            // SAFETY: the handle is taken out of `self`, so it's closed only once.
             let _ = unsafe { CloseHandle(timer) };
         }
     }
@@ -296,6 +309,7 @@ impl Drop for Pacer {
 /// One frame at the rate the desktop composes, from DWM; 60 Hz when it doesn't say.
 fn refresh_period() -> Duration {
     let mut info = DWM_TIMING_INFO { cbSize: std::mem::size_of::<DWM_TIMING_INFO>() as u32, ..Default::default() };
+    // SAFETY: `info` is a live local with `cbSize` set to its size.
     let rate = match unsafe { DwmGetCompositionTimingInfo(HWND::default(), &mut info) } {
         Ok(()) if info.rateRefresh.uiDenominator != 0 => {
             f64::from(info.rateRefresh.uiNumerator) / f64::from(info.rateRefresh.uiDenominator)
@@ -328,6 +342,7 @@ fn run_glide(handle: isize, number: u64, from: (f64, f64), to: (f64, f64)) {
         let (point, done) = crate::follow::glide_point(from, to, elapsed);
         let step = (point.0.round() as i32, point.1.round() as i32);
         if step != at {
+            // SAFETY: takes its arguments by value; a window destroyed meanwhile makes it fail.
             unsafe {
                 let _ = SetWindowPos(hwnd, None, step.0, step.1, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
             }
@@ -341,7 +356,7 @@ fn run_glide(handle: isize, number: u64, from: (f64, f64), to: (f64, f64)) {
         }
     };
     {
-        let mut headed = HEADED.lock().unwrap();
+        let mut headed = crate::platform::lock(&HEADED);
         if headed.is_some_and(|(n, _, _)| n == number) {
             *headed = None;
         }
@@ -363,6 +378,7 @@ fn run_glide(handle: isize, number: u64, from: (f64, f64), to: (f64, f64)) {
 pub fn show(window: &WebviewWindow, take_focus: bool) {
     let Some(hwnd) = handle(window) else { return };
     SHOWN.store(true, Ordering::SeqCst);
+    // SAFETY: both calls take their arguments by value.
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOWNA);
         let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -385,6 +401,7 @@ pub fn show(window: &WebviewWindow, take_focus: bool) {
 /// True when Windows took the request; the window may come to the front a moment later, so callers
 /// that must know poll the foreground window.
 pub fn bring_to_front(hwnd: HWND) -> bool {
+    // SAFETY: the calls take their arguments by value.
     unsafe {
         if GetForegroundWindow() == hwnd || SetForegroundWindow(hwnd).as_bool() {
             return true;
@@ -398,6 +415,7 @@ pub fn bring_to_front(hwnd: HWND) -> bool {
 fn wait_for_front(hwnd: HWND, limit: std::time::Duration) -> bool {
     let started = std::time::Instant::now();
     loop {
+        // SAFETY: takes no arguments.
         if unsafe { GetForegroundWindow() } == hwnd {
             return true;
         }
@@ -442,13 +460,14 @@ pub fn refocus(window: &WebviewWindow) {
 
 /// Where the panel last opened at the pointer, for a review with no selection bounds to go by.
 pub fn pointer_anchor() -> Option<Rect> {
-    *POINTER.lock().unwrap()
+    *crate::platform::lock(&POINTER)
 }
 
 pub fn hide(window: &WebviewWindow, had_focus: bool) {
     SHOWN.store(false, Ordering::SeqCst);
     stop_glide();
     let Some(hwnd) = handle(window) else { return };
+    // SAFETY: takes its arguments by value.
     let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
     // Windows would otherwise give focus to whichever window it chooses.
     if had_focus {

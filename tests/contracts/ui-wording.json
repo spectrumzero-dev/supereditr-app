@@ -1,0 +1,597 @@
+{
+  "comment": "Words in SuperEditr's windows and menus that the end-to-end UI drivers look for. `text` is what the app shows, the same on every platform or given per driver (`macos`, `linux`, `windows`) where the words differ. `made_by` says how the tests get it: `ui` renders the component in `file` (ui/src/lib/ui-wording.svelte.test.ts; with `role`, the text is the whole accessible name of an element with that role, otherwise it is somewhere in the page's text), `rust` calls the function or reads the config that makes it (src-tauri/src/ui_wording_contract.rs), and `source` finds `literal` as a whole string literal in `file`, with `vars` put in. Each of `matched_by` is a pattern a driver matches on the text, written exactly as it appears in `file`; `vars` are the driver's variables in it and the values they take here. `kind` is how the driver matches: `substring` (Swift `contains`), `regex` (Swift `.regularExpression`, grep -E), `regex-ignore-case` (PowerShell `-match`), `wildcard` (PowerShell `-like`, the whole text, ignoring case), `equals`, `prefix` (Swift `hasPrefix`), and `probe-button` (tests/ui/linux/probe.py's button name: `~rest` for a name containing rest, otherwise the whole name). src-tauri/src/ui_wording_contract.rs checks each pattern against `text` and finds it in its driver.",
+  "wording": [
+    {
+      "id": "change-count",
+      "made_by": "ui",
+      "file": "ui/src/overlay/panel.ts",
+      "text": "1 change",
+      "matched_by": [
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "regex", "pattern": "\\b\\d+ changes?\\b" },
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "[0-9]+ changes?" },
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "[0-9] changes?" },
+        { "driver": "linux", "file": "tests/ui/linux/hard-cases.sh", "kind": "regex", "pattern": "[0-9]+ changes?" },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": "\\d+ changes?" }
+      ]
+    },
+    {
+      "id": "no-changes",
+      "made_by": "ui",
+      "file": "ui/src/overlay/panel.ts",
+      "text": "No changes",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "No changes" }]
+    },
+    {
+      "id": "replace-key",
+      "made_by": "ui",
+      "file": "ui/src/overlay/Overlay.svelte",
+      "role": "button",
+      "text": { "macos": "⌥↩ replace", "linux": "Alt+Enter replace", "windows": "Alt+Enter replace" },
+      "matched_by": [
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "⌥↩" },
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "regex", "pattern": "\\breplace\\b" },
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "probe-button", "pattern": "~replace" },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "wildcard", "pattern": "*replace*" }
+      ]
+    },
+    {
+      "id": "working",
+      "made_by": "ui",
+      "file": "ui/src/overlay/Overlay.svelte",
+      "role": "img",
+      "text": "Working",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "equals", "pattern": "Working" }]
+    },
+    {
+      "id": "key-tips",
+      "made_by": "ui",
+      "file": "ui/src/overlay/Overlay.svelte",
+      "text": "Tip: ⌥↩ replaces your text with everything you see · tab steps through changes · ␣ switches a change between yours and the suggestion · esc closes",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Tip:" }]
+    },
+    {
+      "id": "hide-tips",
+      "made_by": "ui",
+      "file": "ui/src/overlay/Overlay.svelte",
+      "role": "button",
+      "text": "Don’t show tips again",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Don’t show tips again" }]
+    },
+    {
+      "id": "tips-hidden",
+      "made_by": "ui",
+      "file": "ui/src/overlay/Overlay.svelte",
+      "text": "The keys are listed in Settings → Shortcuts",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Settings → Shortcuts" }]
+    },
+    {
+      "id": "copy-only",
+      "made_by": "ui",
+      "file": "ui/src/overlay/Overlay.svelte",
+      "text": "SuperEditr can’t replace text here. Press ⌘C to copy the fix.",
+      "matched_by": [
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "replace text here" },
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "⌘C" }
+      ]
+    },
+    {
+      "id": "nothing-replaced",
+      "made_by": "ui",
+      "file": "ui/src/overlay/Overlay.svelte",
+      "text": {
+        "macos": "Nothing replaced. Press ⌘C to copy the fix.",
+        "linux": "Nothing replaced. Press Ctrl+C to copy the fix.",
+        "windows": "Nothing replaced. Press Ctrl+C to copy the fix."
+      },
+      "matched_by": [
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Nothing replaced" },
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "Nothing replaced" },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": "Nothing replaced" }
+      ]
+    },
+    {
+      "id": "copied",
+      "made_by": "ui",
+      "file": "ui/src/overlay/Overlay.svelte",
+      "text": "Copied",
+      "matched_by": [
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Copied" },
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "Copied" },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": "Copied" }
+      ]
+    },
+    {
+      "id": "change-described",
+      "made_by": "ui",
+      "file": "ui/src/overlay/panel.ts",
+      "text": "“Their” → “They're”",
+      "matched_by": [
+        {
+          "driver": "windows",
+          "file": "tests/ui/windows/driver.ps1",
+          "kind": "regex-ignore-case",
+          "pattern": "Did you mean|$Arrow",
+          "vars": { "$Arrow": "→" }
+        }
+      ]
+    },
+    {
+      "id": "copy-suggestion",
+      "made_by": "ui",
+      "file": "ui/src/overlay/Overlay.svelte",
+      "role": "button",
+      "text": "Copy suggestion",
+      "matched_by": [{ "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": "Copy suggestion" }]
+    },
+    {
+      "id": "unconfirmed",
+      "made_by": "rust",
+      "file": "src-tauri/src/platform/mod.rs",
+      "text": "SuperEditr couldn’t confirm the change. Check the text before copying the suggestion.",
+      "matched_by": [
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "confirm" },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": "couldn.t confirm" }
+      ]
+    },
+    {
+      "id": "password-field",
+      "made_by": "rust",
+      "file": "src-tauri/src/platform/mod.rs",
+      "text": "SuperEditr doesn’t read password fields.",
+      "matched_by": [
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "[Pp]assword" },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": "password" }
+      ]
+    },
+    {
+      "id": "secret",
+      "made_by": "rust",
+      "file": "crates/core/src/sensitive.rs",
+      "text": "This text has what looks like a GitHub token, so SuperEditr didn’t check it or send it anywhere.",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "a GitHub token" }]
+    },
+    {
+      "id": "not-responding",
+      "made_by": "rust",
+      "file": "src-tauri/src/platform/log_lines.rs",
+      "text": "RacePad isn’t responding, so SuperEditr couldn’t read the selection.",
+      "matched_by": [{ "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": "responding" }]
+    },
+    {
+      "id": "turned-off-notice",
+      "made_by": "source",
+      "file": "src-tauri/src/review.rs",
+      "literal": "SuperEditr is turned off in {name}. Turn it on from the pen icon in the {tray}, or in Settings → Privacy.",
+      "vars": { "{name}": "TextEdit", "{tray}": "menu bar" },
+      "text": "SuperEditr is turned off in TextEdit. Turn it on from the pen icon in the menu bar, or in Settings → Privacy.",
+      "matched_by": [
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "turned off in TextEdit" },
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "menu bar" }
+      ]
+    },
+    {
+      "id": "panel-title",
+      "made_by": "rust",
+      "file": "src-tauri/tauri.conf.json",
+      "text": "SuperEditr",
+      "matched_by": [{ "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "equals", "pattern": "SuperEditr" }]
+    },
+    {
+      "id": "panel-title-linux",
+      "made_by": "source",
+      "file": "src-tauri/src/platform/linux/desktop/lua.rs",
+      "literal": "SuperEditr suggestions",
+      "text": "SuperEditr suggestions",
+      "matched_by": [
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "equals", "pattern": "SuperEditr suggestions" },
+        { "driver": "linux", "file": "tests/ui/linux/probe.py", "kind": "equals", "pattern": "SuperEditr suggestions" }
+      ]
+    },
+    {
+      "id": "settings-title",
+      "made_by": "rust",
+      "file": "src-tauri/tauri.conf.json",
+      "text": "SuperEditr Settings",
+      "matched_by": [
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "equals", "pattern": "SuperEditr Settings" },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "equals", "pattern": "SuperEditr Settings" }
+      ]
+    },
+    {
+      "id": "update-title",
+      "made_by": "rust",
+      "file": "src-tauri/src/updater.rs",
+      "text": "SuperEditr Updates",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "equals", "pattern": "SuperEditr Updates" }]
+    },
+    {
+      "id": "menu-turn-off",
+      "made_by": "rust",
+      "file": "src-tauri/src/app_toggle.rs",
+      "text": "Turn off in TextEdit",
+      "matched_by": [
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "prefix", "pattern": "Turn " },
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "equals", "pattern": "Turn off in TextEdit" }
+      ]
+    },
+    {
+      "id": "menu-turn-on",
+      "made_by": "rust",
+      "file": "src-tauri/src/app_toggle.rs",
+      "text": "Turn on in TextEdit",
+      "matched_by": [
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "prefix", "pattern": "Turn " },
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "equals", "pattern": "Turn on in TextEdit" }
+      ]
+    },
+    {
+      "id": "menu-check-for-updates",
+      "made_by": "rust",
+      "file": "src-tauri/src/updater.rs",
+      "text": "Check for Updates…",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "prefix", "pattern": "Check for Updates" }]
+    },
+    {
+      "id": "menu-update-failed",
+      "made_by": "rust",
+      "file": "src-tauri/src/updater.rs",
+      "text": "Update Failed. Try Again…",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "prefix", "pattern": "Update Failed" }]
+    },
+    {
+      "id": "menu-restart-to-update",
+      "made_by": "rust",
+      "file": "src-tauri/src/updater.rs",
+      "text": "Restart to Update to 99.0.0",
+      "matched_by": [
+        {
+          "driver": "macos",
+          "file": "tests/ui/smoke.swift",
+          "kind": "prefix",
+          "pattern": "Restart to Update to \\(newVersion)",
+          "vars": { "\\(newVersion)": "99.0.0" }
+        }
+      ]
+    },
+    {
+      "id": "menu-downloading",
+      "made_by": "rust",
+      "file": "src-tauri/src/updater.rs",
+      "text": "Downloading SuperEditr 99.0.0…",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "prefix", "pattern": "Downloading SuperEditr" }]
+    },
+    {
+      "id": "update-checking",
+      "made_by": "ui",
+      "file": "ui/src/update/Update.svelte",
+      "text": "Checking for updates…",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Checking for updates" }]
+    },
+    {
+      "id": "update-up-to-date",
+      "made_by": "ui",
+      "file": "ui/src/update/Update.svelte",
+      "text": "You’re up to date",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "You’re up to date" }]
+    },
+    {
+      "id": "update-check-failed",
+      "made_by": "ui",
+      "file": "ui/src/update/Update.svelte",
+      "text": "Couldn’t check for updates",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Couldn’t check for updates" }]
+    },
+    {
+      "id": "update-try-again",
+      "made_by": "ui",
+      "file": "ui/src/update/Update.svelte",
+      "role": "button",
+      "text": "Try Again",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Try Again" }]
+    },
+    {
+      "id": "update-install-failed",
+      "made_by": "ui",
+      "file": "ui/src/update/Update.svelte",
+      "text": "Couldn’t install SuperEditr 99.0.0",
+      "matched_by": [
+        {
+          "driver": "macos",
+          "file": "tests/ui/smoke.swift",
+          "kind": "substring",
+          "pattern": "Couldn’t install SuperEditr \\(newVersion)",
+          "vars": { "\\(newVersion)": "99.0.0" }
+        }
+      ]
+    },
+    {
+      "id": "update-close",
+      "made_by": "ui",
+      "file": "ui/src/update/Update.svelte",
+      "role": "button",
+      "text": "Close",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Close" }]
+    },
+    {
+      "id": "update-downloading",
+      "made_by": "ui",
+      "file": "ui/src/update/Update.svelte",
+      "text": "Downloading SuperEditr 99.0.0…",
+      "matched_by": [
+        {
+          "driver": "macos",
+          "file": "tests/ui/smoke.swift",
+          "kind": "substring",
+          "pattern": "Downloading SuperEditr \\(newVersion)",
+          "vars": { "\\(newVersion)": "99.0.0" }
+        }
+      ]
+    },
+    {
+      "id": "update-ready",
+      "made_by": "ui",
+      "file": "ui/src/update/Update.svelte",
+      "text": "SuperEditr 99.0.0 is ready",
+      "matched_by": [
+        {
+          "driver": "macos",
+          "file": "tests/ui/smoke.swift",
+          "kind": "substring",
+          "pattern": "SuperEditr \\(newVersion) is ready",
+          "vars": { "\\(newVersion)": "99.0.0" }
+        }
+      ]
+    },
+    {
+      "id": "update-later",
+      "made_by": "ui",
+      "file": "ui/src/update/Update.svelte",
+      "role": "button",
+      "text": "Later",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Later" }]
+    },
+    {
+      "id": "update-restart-now",
+      "made_by": "ui",
+      "file": "ui/src/update/Update.svelte",
+      "role": "button",
+      "text": "Restart Now",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Restart Now" }]
+    },
+    {
+      "id": "nav-get-started",
+      "made_by": "ui",
+      "file": "ui/src/settings/App.svelte",
+      "role": "button",
+      "text": "Get Started",
+      "matched_by": [
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Get Started" },
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "probe-button", "pattern": "Get Started" },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "wildcard", "pattern": "Get Started" },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "wildcard", "pattern": "*Get Started*" }
+      ]
+    },
+    {
+      "id": "nav-shortcuts",
+      "made_by": "ui",
+      "file": "ui/src/settings/App.svelte",
+      "role": "button",
+      "text": "Shortcuts",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Shortcuts" }]
+    },
+    {
+      "id": "nav-general",
+      "made_by": "ui",
+      "file": "ui/src/settings/App.svelte",
+      "role": "button",
+      "text": "General",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "General" }]
+    },
+    {
+      "id": "nav-privacy",
+      "made_by": "ui",
+      "file": "ui/src/settings/App.svelte",
+      "role": "button",
+      "text": "Privacy",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Privacy" }]
+    },
+    {
+      "id": "nav-styles",
+      "made_by": "ui",
+      "file": "ui/src/settings/App.svelte",
+      "role": "button",
+      "text": "Styles",
+      "matched_by": [
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Styles" },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "wildcard", "pattern": "Styles" }
+      ]
+    },
+    {
+      "id": "review-shortcut",
+      "made_by": "ui",
+      "file": "ui/src/settings/ShortcutInput.svelte",
+      "role": "button",
+      "text": "⌘E E",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "⌘E E" }]
+    },
+    {
+      "id": "shortcut-taken",
+      "made_by": "rust",
+      "file": "src-tauri/src/shortcut_check.rs",
+      "text": "SuperEditr already uses this for Quick fix.",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "already uses this for Quick fix" }]
+    },
+    {
+      "id": "open-at-login",
+      "made_by": "ui",
+      "file": "ui/src/settings/General.svelte",
+      "role": "checkbox",
+      "text": "Open at login",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Open at login" }]
+    },
+    {
+      "id": "password-fields-never-read",
+      "made_by": "ui",
+      "file": "ui/src/settings/Privacy.svelte",
+      "text": "Lets SuperEditr read the text you select and replace it when you accept a suggestion. Password fields are never read.",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Password fields are never read" }]
+    },
+    {
+      "id": "add-app",
+      "made_by": "ui",
+      "file": "ui/src/settings/Privacy.svelte",
+      "role": "button",
+      "text": "Add app…",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Add app" }]
+    },
+    {
+      "id": "add-app-panel-button",
+      "made_by": "source",
+      "file": "src-tauri/src/apps.rs",
+      "literal": "Add",
+      "text": "Add",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "equals", "pattern": "Add" }]
+    },
+    {
+      "id": "find-accounts",
+      "made_by": "ui",
+      "file": "ui/src/settings/Welcome.svelte",
+      "role": "button",
+      "text": "Find my AI accounts →",
+      "matched_by": [
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Find my AI accounts" },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "wildcard", "pattern": "Find my AI accounts*" }
+      ]
+    },
+    {
+      "id": "scan",
+      "made_by": "ui",
+      "file": "ui/src/settings/Models.svelte",
+      "role": "button",
+      "text": "Scan",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Scan" }]
+    },
+    {
+      "id": "scanning",
+      "made_by": "ui",
+      "file": "ui/src/settings/Models.svelte",
+      "role": "button",
+      "text": "Scanning…",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Scanning" }]
+    },
+    {
+      "id": "scan-again",
+      "made_by": "ui",
+      "file": "ui/src/settings/Models.svelte",
+      "role": "button",
+      "text": "Scan again",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Scan again" }]
+    },
+    {
+      "id": "early-access",
+      "made_by": "ui",
+      "file": "ui/src/settings/Models.svelte",
+      "text": "Early access",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Early access" }]
+    },
+    {
+      "id": "no-ai",
+      "made_by": "ui",
+      "file": "ui/src/settings/Welcome.svelte",
+      "text": "No AI set up · spelling and grammar only · Set up AI",
+      "matched_by": [
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "No AI set up" },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "wildcard", "pattern": "*No AI set up*" },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "wildcard", "pattern": "*Set up AI*" }
+      ]
+    },
+    {
+      "id": "set-up-ai",
+      "made_by": "ui",
+      "file": "ui/src/settings/Styles.svelte",
+      "role": "button",
+      "text": "Set up AI",
+      "matched_by": [
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Set up AI" },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "wildcard", "pattern": "Set up AI" }
+      ]
+    },
+    {
+      "id": "styles-need-ai",
+      "made_by": "ui",
+      "file": "ui/src/settings/Styles.svelte",
+      "text": "Styles other than Proofread need an AI.",
+      "matched_by": [
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Styles other than Proofread need an AI" },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "wildcard", "pattern": "*Styles other than Proofread need an AI*" }
+      ]
+    },
+    {
+      "id": "turn-on-apple-intelligence",
+      "made_by": "ui",
+      "file": "ui/src/settings/Styles.svelte",
+      "role": "button",
+      "text": "Turn on Apple Intelligence",
+      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Turn on Apple Intelligence" }]
+    },
+    {
+      "id": "claude-app-found",
+      "made_by": "source",
+      "file": "crates/core/src/detect.rs",
+      "literal": "Claude Code from the Claude app",
+      "text": "Claude Code from the Claude app",
+      "matched_by": [
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "wildcard", "pattern": "*Claude Code from the Claude app*" }
+      ]
+    },
+    {
+      "id": "claude-not-signed-in",
+      "made_by": "ui",
+      "file": "ui/src/settings/signin.ts",
+      "text": { "windows": "Claude Code isn’t signed in to your Claude account yet" },
+      "matched_by": [
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "wildcard", "pattern": "*signed in to your Claude account*" }
+      ]
+    },
+    {
+      "id": "sign-in-to-claude",
+      "made_by": "ui",
+      "file": "ui/src/settings/ClaudeSignIn.svelte",
+      "role": "button",
+      "text": "Sign in to Claude",
+      "matched_by": [{ "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "wildcard", "pattern": "Sign in to Claude" }]
+    },
+    {
+      "id": "use-found-account",
+      "made_by": "ui",
+      "file": "ui/src/settings/Models.svelte",
+      "role": "button",
+      "text": "Use",
+      "matched_by": [{ "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "wildcard", "pattern": "Use" }]
+    },
+    {
+      "id": "done",
+      "made_by": "ui",
+      "file": "ui/src/settings/Welcome.svelte",
+      "role": "button",
+      "text": "Done",
+      "matched_by": [{ "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "wildcard", "pattern": "Done" }]
+    },
+    {
+      "id": "try-it-review",
+      "made_by": "ui",
+      "file": "ui/src/settings/Playground.svelte",
+      "role": "button",
+      "text": "Review",
+      "matched_by": [{ "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "probe-button", "pattern": "Review" }]
+    },
+    {
+      "id": "set-up-omarchy",
+      "made_by": "ui",
+      "file": "ui/src/settings/LinuxSetup.svelte",
+      "role": "button",
+      "text": "Set up Omarchy…",
+      "matched_by": [{ "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "probe-button", "pattern": "Set up Omarchy…" }]
+    }
+  ]
+}

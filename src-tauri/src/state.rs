@@ -12,8 +12,19 @@ pub struct AppState {
     pub config: RwLock<Config>,
     pub config_path: PathBuf,
     pub engine: Engine,
-    /// The review or notice on screen, and the quiet period after a fix. Never held across an
-    /// `.await`, an emit or a platform call, except `follow`'s reads of the watched window.
+    /// The review or notice on screen, and the quiet period after a fix.
+    ///
+    /// The main thread takes this lock: `review::on_review_hotkey`, run there by the global shortcut
+    /// and the tray menu, takes it to hand the keys to an automatic review, and so do the
+    /// synchronous commands (`dismiss`, `focus_overlay`, `resize_overlay`). Whoever holds it
+    /// therefore holds up the main thread, so it is held only to read or change `ReviewState`.
+    ///
+    /// While holding it, never `.await`, never emit, never wait for the main thread (it may be
+    /// waiting for this lock), and never make a platform call that can wait on another app, except
+    /// `follow`'s reads of the watched window. It isn't reentrant: never call anything that takes it, such as
+    /// `follow::hold_for_click`, `follow::gesture_ended` or `review::dismiss`. A review that ends is
+    /// handed back by `ReviewState` and dropped after the lock, as dropping it stops watching its
+    /// window through the platform.
     pub review: Mutex<ReviewState>,
     pub next_id: AtomicU64,
     /// Results of the last account scan, keys included, until the user picks one.
@@ -293,6 +304,23 @@ impl AppState {
     pub fn set_cached_key(&self, kind: ProviderKind, profile_id: &str, key: Option<String>) {
         self.keys.lock().unwrap().insert(crate::secrets::account(kind, profile_id), key);
         self.last_review.forget();
+    }
+
+    /// Saves `config` as `save_config_based_on` does, and only while `profile`'s API key is still
+    /// the one it carries. The keys are held for the save, so a key saved meanwhile either comes
+    /// first and refuses this, or comes after it.
+    pub fn save_config_for_checked(
+        &self,
+        config: Config,
+        revision: u64,
+        profile: &ProviderProfile,
+    ) -> std::io::Result<Option<u64>> {
+        let account = crate::secrets::account(profile.kind, &profile.id);
+        let mut keys = self.keys.lock().unwrap();
+        if *keys.entry(account.clone()).or_insert_with(|| crate::secrets::get(&account)) != profile.api_key {
+            return Ok(None);
+        }
+        self.save_config_based_on(config, Some(revision))
     }
 
     /// The active provider with its API key attached, ready for a request.

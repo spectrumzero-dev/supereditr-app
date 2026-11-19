@@ -48,34 +48,60 @@ fn add(state: &AppState, kind: ProviderKind, model: &str) -> String {
 
 /// Servers that answer without the network: each lists `offered` and passes its check when its key
 /// is present, or none answers at all when `reachable` is false.
-struct FakeServers {
+struct FakeServers<'a> {
+    /// What happens while the second check is waiting for its answer, such as an edit in Settings.
+    during_second: Option<Box<dyn Fn() + Send + Sync + 'a>>,
     offered: Vec<String>,
     reachable: bool,
     /// The profiles checked, by ID, in order.
     checked: Mutex<Vec<String>>,
+    /// How many checks answer before the server stops answering.
+    answers: usize,
 }
 
-impl FakeServers {
+impl<'a> FakeServers<'a> {
+    fn during_second_check(self, act: impl Fn() + Send + Sync + 'a) -> Self {
+        Self { during_second: Some(Box::new(act)), ..self }
+    }
+
     fn offering(models: &[&str]) -> Self {
-        Self { offered: models.iter().map(|m| m.to_string()).collect(), reachable: true, checked: Mutex::default() }
+        Self {
+            offered: models.iter().map(|m| m.to_string()).collect(),
+            reachable: true,
+            checked: Mutex::default(),
+            answers: usize::MAX,
+            during_second: None,
+        }
     }
 
     fn unreachable() -> Self {
         Self { reachable: false, ..Self::offering(&[]) }
     }
+
+    /// Answers the first check only.
+    fn answering_once(self) -> Self {
+        Self { answers: 1, ..self }
+    }
 }
 
-impl Servers for FakeServers {
+impl Servers for FakeServers<'_> {
     async fn models(&self, _profile: &ProviderProfile) -> Option<Vec<String>> {
         self.reachable.then(|| self.offered.clone())
     }
 
     async fn check(&self, profile: &ProviderProfile) -> Result<Vec<String>, CheckProblem> {
-        self.checked.lock().unwrap().push(profile.id.clone());
+        let mut checked = self.checked.lock().unwrap();
+        checked.push(profile.id.clone());
+        let answered_before = checked.len() > self.answers;
+        let second = checked.len() == 2;
+        drop(checked);
+        if second && let Some(act) = &self.during_second {
+            act();
+        }
         if profile.kind.needs_key() && profile.api_key.is_none() {
             return Err("Add an API key".into());
         }
-        if !self.reachable {
+        if !self.reachable || answered_before {
             return Err("Can’t connect: no answer in 8 seconds".into());
         }
         Ok(self.offered.clone())
@@ -289,6 +315,45 @@ fn a_provider_whose_model_is_gone_switches_to_one_its_server_offers() {
     assert_eq!(state.profile(&id).unwrap().model, "qwen3:4b");
     assert_eq!(state.config().active_provider, Some(id.clone()));
     assert_eq!(*servers.checked.lock().unwrap(), [id.clone(), id], "checked again with the new model");
+}
+
+#[test]
+fn a_model_chosen_while_the_switched_one_is_checked_is_kept_and_nothing_is_activated() {
+    let state = test_state();
+    let id = add(&state, ProviderKind::Ollama, "retired-model");
+    let servers = FakeServers::offering(&["mistral", "qwen3:4b"]).during_second_check(|| {
+        let mut config = state.config();
+        config.providers.iter_mut().find(|p| p.id == id).unwrap().model = "qwen3:4b".into();
+        state.save_config(config).unwrap();
+    });
+    let error = block_on(activate(&state, &servers, id.clone())).unwrap_err();
+    assert_eq!(error, "This AI’s settings changed while it was being checked. Try again.");
+    assert_eq!(state.profile(&id).unwrap().model, "qwen3:4b", "the newer choice stays");
+    assert_eq!(state.config().active_provider, None);
+}
+
+#[test]
+fn a_key_replaced_while_the_ai_is_checked_means_nothing_is_activated() {
+    let state = test_state();
+    let id = add(&state, ProviderKind::Anthropic, "retired-model");
+    state.set_cached_key(ProviderKind::Anthropic, &id, Some(fake_key("brynlee")));
+    let servers = FakeServers::offering(&["claude-sonnet-5-5"])
+        .during_second_check(|| state.set_cached_key(ProviderKind::Anthropic, &id, Some(fake_key("kyndal"))));
+    let error = block_on(activate(&state, &servers, id.clone())).unwrap_err();
+    assert_eq!(error, "This AI’s settings changed while it was being checked. Try again.");
+    assert_eq!(state.profile(&id).unwrap().model, "retired-model");
+    assert_eq!(state.config().active_provider, None);
+}
+
+#[test]
+fn a_provider_that_fails_its_check_with_the_switched_model_keeps_the_model_it_had() {
+    let state = test_state();
+    let id = add(&state, ProviderKind::Ollama, "retired-model");
+    let servers = FakeServers::offering(&["mistral", "qwen3:4b"]).answering_once();
+    let error = block_on(activate(&state, &servers, id.clone())).unwrap_err();
+    assert_eq!(error, "Can’t connect: no answer in 8 seconds");
+    assert_eq!(state.profile(&id).unwrap().model, "retired-model");
+    assert_eq!(state.config().active_provider, None);
 }
 
 #[test]

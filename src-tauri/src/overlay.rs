@@ -140,10 +140,13 @@ fn place(app: &AppHandle, anchor: Rect, height: f64) {
         let wanted = Rect { x, y, width: WIDTH, height };
         // Counted before anything is sent, and under the lock a correction takes, so a correction
         // of an earlier placement either finishes first or finds itself superseded and sends nothing.
+        // Asked before the lock is taken: off the main thread the answer comes from the main
+        // thread, which may itself be waiting here for the lock.
+        let visible = window.is_visible().unwrap_or(false);
         let placement = {
             let _one_at_a_time = platform::lock(&PLACING);
             let placement = PLACEMENT.fetch_add(1, Ordering::Relaxed) + 1;
-            platform::place_overlay(wanted, window.is_visible().unwrap_or(false));
+            platform::place_overlay(wanted, visible);
             placement
         };
         keep_placed(wanted, placement);

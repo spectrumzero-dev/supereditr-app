@@ -125,6 +125,51 @@ impl Detector {
     }
 }
 
+/// One event tap's detector, shared by the tap's callback and its replay timers.
+///
+/// The callback sees every key typed, so it must never wait on a replay: posting a replayed chord
+/// asks the system for Accessibility trust and posts events, and either can be slow. Only timers
+/// and `retire` take `replaying`, and the callback only ever takes `detector`, which nobody holds
+/// for longer than one `Detector` call.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Default)]
+pub struct Shared {
+    detector: std::sync::Mutex<Detector>,
+    replaying: std::sync::Mutex<()>,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+impl Shared {
+    /// For the tap's callback: decides what to do with one key press.
+    pub fn press(&self, matched: Option<usize>, autorepeat: bool, now: Instant) -> Step {
+        lock(&self.detector).press(matched, autorepeat, now)
+    }
+
+    /// For a timer, once `WINDOW` has passed: calls `replay` with the chord still held, if any.
+    /// `retire` waits for `replay` to return.
+    pub fn expire(&self, generation: u64, replay: impl FnOnce(usize)) {
+        let _replaying = lock(&self.replaying);
+        let held = lock(&self.detector).expire(generation);
+        if let Some(chord) = held {
+            replay(chord);
+        }
+    }
+
+    /// Once the tap is removed: waits for a replay in progress, then forgets the held press, so a
+    /// timer still waiting replays nothing. A retired tap posts no chord after its successor starts.
+    pub fn retire(&self) {
+        let _replaying = lock(&self.replaying);
+        *lock(&self.detector) = Detector::default();
+    }
+}
+
+/// A panic in a replay must not leave the tap's locks poisoned, which would stop every later key
+/// press and teardown. The detector's state is valid between calls, so the guard is used as is.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,5 +231,95 @@ mod tests {
         let late = d.press(Some(0), false, t + WINDOW + Duration::from_millis(10));
         assert_eq!(late.replay, Some(0));
         assert_eq!(late.hold, Some(2));
+    }
+
+    /// Starts a timer that expires `generation` and replays the chord, but stays inside the replay
+    /// until the returned sender is used or dropped. Returns once the replay has started.
+    fn stalled_replay(
+        shared: &std::sync::Arc<Shared>,
+        generation: u64,
+    ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<Option<usize>>) {
+        let (started_tx, started) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel::<()>();
+        let timer = {
+            let shared = shared.clone();
+            std::thread::spawn(move || {
+                let mut replayed = None;
+                shared.expire(generation, |chord| {
+                    replayed = Some(chord);
+                    started_tx.send(()).unwrap();
+                    let _ = release_rx.recv();
+                });
+                replayed
+            })
+        };
+        started.recv_timeout(Duration::from_secs(3)).expect("the timer replays the held press");
+        (release, timer)
+    }
+
+    #[test]
+    fn typing_never_waits_for_a_replay() {
+        let shared = std::sync::Arc::new(Shared::default());
+        let first = shared.press(Some(0), false, Instant::now());
+        let (release, timer) = stalled_replay(&shared, first.hold.unwrap());
+
+        // A letter typed while the replay is stuck is decided at once, from another thread.
+        let (decided_tx, decided) = std::sync::mpsc::channel();
+        let callback = {
+            let shared = shared.clone();
+            std::thread::spawn(move || decided_tx.send(shared.press(None, false, Instant::now())).unwrap())
+        };
+        let step = decided.recv_timeout(Duration::from_secs(1)).expect("the letter waited for the replay");
+        assert_eq!(step, Step { pass: true, ..Step::default() }, "the letter goes straight to the app");
+
+        drop(release);
+        callback.join().unwrap();
+        assert_eq!(timer.join().unwrap(), Some(0));
+    }
+
+    #[test]
+    fn retiring_the_tap_waits_for_a_replay_in_progress() {
+        let shared = std::sync::Arc::new(Shared::default());
+        let first = shared.press(Some(0), false, Instant::now());
+        let (release, timer) = stalled_replay(&shared, first.hold.unwrap());
+
+        let (retired_tx, retired) = std::sync::mpsc::channel();
+        let owner = {
+            let shared = shared.clone();
+            std::thread::spawn(move || {
+                shared.retire();
+                retired_tx.send(()).unwrap();
+            })
+        };
+        assert!(retired.recv_timeout(Duration::from_millis(200)).is_err(), "retired during a replay");
+        drop(release);
+        retired.recv_timeout(Duration::from_secs(3)).expect("retires once the replay is done");
+        owner.join().unwrap();
+        assert_eq!(timer.join().unwrap(), Some(0));
+    }
+
+    #[test]
+    fn a_retired_tap_replays_nothing() {
+        // Accessibility was revoked while a press was held: its timer fires after the tap is gone,
+        // perhaps after access is granted again, and must not post the old chord.
+        let shared = Shared::default();
+        let first = shared.press(Some(0), false, Instant::now());
+        shared.retire();
+        let mut replayed = None;
+        shared.expire(first.hold.unwrap(), |chord| replayed = Some(chord));
+        assert_eq!(replayed, None);
+    }
+
+    #[test]
+    fn a_replay_that_panics_leaves_the_tap_working() {
+        let shared = std::sync::Arc::new(Shared::default());
+        let first = shared.press(Some(0), false, Instant::now());
+        let timer = {
+            let shared = shared.clone();
+            std::thread::spawn(move || shared.expire(first.hold.unwrap(), |_| panic!("replay failed")))
+        };
+        assert!(timer.join().is_err());
+        assert_eq!(shared.press(None, false, Instant::now()), Step { pass: true, ..Step::default() });
+        shared.retire();
     }
 }

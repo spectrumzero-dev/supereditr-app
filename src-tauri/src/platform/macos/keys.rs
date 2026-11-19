@@ -378,7 +378,7 @@ pub fn start_double_press_tap(
                     std::thread::sleep(Duration::from_secs(2));
                     continue;
                 }
-                let detector = Arc::new(Mutex::new(double_press::Detector::default()));
+                let detector = Arc::new(double_press::Shared::default());
                 let callback_detector = detector.clone();
                 let on_fire = on_fire.clone();
                 let on_review_key = on_review_key.clone();
@@ -423,7 +423,7 @@ pub fn start_double_press_tap(
                             return CallbackResult::Keep;
                         }
                         let autorepeat = event.get_integer_value_field(EventField::KEYBOARD_EVENT_AUTOREPEAT) != 0;
-                        let step = callback_detector.lock().unwrap().press(matched, autorepeat, Instant::now());
+                        let step = callback_detector.press(matched, autorepeat, Instant::now());
                         if let Some(held) = step.replay.and_then(|i| chords.get(i)) {
                             replay(held, Some(proxy));
                         }
@@ -431,13 +431,14 @@ pub fn start_double_press_tap(
                             let detector = callback_detector.clone();
                             std::thread::spawn(move || {
                                 std::thread::sleep(double_press::WINDOW);
-                                let mut detector = detector.lock().unwrap();
-                                let held = detector.expire(generation);
-                                if let Some(chord) =
-                                    held.and_then(|i| crate::platform::lock(&DOUBLE_CHORDS).get(i).cloned())
-                                {
-                                    replay(&chord, None);
-                                }
+                                // Keys typed meanwhile don't wait for this replay (`Shared`).
+                                detector.expire(generation, |held| {
+                                    // Not in the `if let`, which would hold the lock through the replay.
+                                    let chord = crate::platform::lock(&DOUBLE_CHORDS).get(held).cloned();
+                                    if let Some(chord) = chord {
+                                        replay(&chord, None);
+                                    }
+                                });
                             });
                         }
                         if let Some(index) = step.fire {
@@ -474,7 +475,7 @@ pub fn start_double_press_tap(
                 run_loop.remove_source(&source, mode);
                 drop(tap); // Invalidates its Mach port.
                 // A pending timeout belongs to this tap. Cancel it before installing another one.
-                *detector.lock().unwrap() = double_press::Detector::default();
+                detector.retire();
             }
         })
         .expect("thread spawns");

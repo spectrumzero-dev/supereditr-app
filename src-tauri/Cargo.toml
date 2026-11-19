@@ -28,6 +28,12 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 tauri-plugin-updater = "2.14"
 semver = "1"
 
+# The tests write the TypeScript definitions of the IPC payloads to ui/src/lib/generated (the
+# directory is set in .cargo/config.toml); scripts/check.sh fails when the committed ones are stale.
+[dev-dependencies]
+ts-rs = "12"
+supereditr-core = { workspace = true, features = ["ts"] }
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
   "Win32_Foundation",

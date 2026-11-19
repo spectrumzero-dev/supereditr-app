@@ -13,12 +13,14 @@ mod ollama;
 mod openai;
 
 pub use apple::{AppleStatus, helper_path as apple_helper_path};
+pub use ollama::PullProgress;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
     Anthropic,
@@ -89,6 +91,7 @@ impl ProviderKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ProviderProfile {
     pub id: String,
     pub kind: ProviderKind,
@@ -97,6 +100,7 @@ pub struct ProviderProfile {
     pub model: String,
     /// Extra JSON merged into each request body, for provider options SuperEditr does not model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional, type = "unknown"))]
     pub extra_body: Option<serde_json::Value>,
     /// Loaded from the OS keychain at runtime; never written to the settings file.
     #[serde(skip)]
@@ -246,7 +250,7 @@ impl Providers {
     /// few seconds, or for the Claude CLI, the program runs signed in. `Err` says what to fix.
     pub async fn check(&self, profile: &ProviderProfile) -> Result<Vec<String>, CheckProblem> {
         if profile.kind.needs_key() && profile.api_key.as_deref().is_none_or(|k| k.trim().is_empty()) {
-            return Err("Add an API key".into());
+            return Err(CheckProblem::NeedsKey);
         }
         if profile.kind == ProviderKind::ClaudeCli {
             // `--version` works signed out too; `auth status` reports whether reviews can run.
@@ -263,7 +267,7 @@ impl Providers {
         }
         match tokio::time::timeout(std::time::Duration::from_secs(8), self.list_models(profile)).await {
             Ok(Ok(models)) if models.is_empty() => Err(if profile.kind == ProviderKind::Ollama {
-                "No models downloaded yet: download one below".into()
+                CheckProblem::NoModelsDownloaded
             } else {
                 "This server lists no models".into()
             }),
@@ -388,17 +392,56 @@ pub enum CheckProblem {
     /// Claude Code runs but isn't signed in to a Claude account. The settings UI words this, and
     /// may offer to start the sign-in, so it has a code of its own.
     ClaudeSignIn,
+    /// The AI takes an API key and none is saved.
+    NeedsKey,
+    /// Ollama answers but has no models downloaded.
+    NoModelsDownloaded,
     /// Anything else, in words the user can act on.
     Other(String),
 }
 
-impl CheckProblem {
-    /// A code for a problem the settings UI words itself.
-    pub fn code(&self) -> Option<&'static str> {
+/// A problem the settings UI recognizes, to label it and maybe offer a fix, sent with its words
+/// (`ProviderCheck` in the app). Serialized as its snake_case name, such as `"claude_sign_in"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum CheckCode {
+    /// Claude Code isn't signed in.
+    ClaudeSignIn,
+    /// No API key is saved.
+    NeedsKey,
+    /// The server answers, but the saved model isn't one it offers.
+    ChooseModel,
+    /// Ollama has no models downloaded.
+    NoModels,
+}
+
+impl CheckCode {
+    /// The name it's serialized as.
+    pub fn as_str(self) -> &'static str {
         match self {
-            Self::ClaudeSignIn => Some("claude_sign_in"),
+            Self::ClaudeSignIn => "claude_sign_in",
+            Self::NeedsKey => "needs_key",
+            Self::ChooseModel => "choose_model",
+            Self::NoModels => "no_models",
+        }
+    }
+}
+
+impl CheckProblem {
+    /// The code of a problem the settings UI recognizes.
+    pub fn check_code(&self) -> Option<CheckCode> {
+        match self {
+            Self::ClaudeSignIn => Some(CheckCode::ClaudeSignIn),
+            Self::NeedsKey => Some(CheckCode::NeedsKey),
+            Self::NoModelsDownloaded => Some(CheckCode::NoModels),
             Self::Other(_) => None,
         }
+    }
+
+    /// `check_code` as the name it's serialized as.
+    pub fn code(&self) -> Option<&'static str> {
+        self.check_code().map(CheckCode::as_str)
     }
 }
 
@@ -406,6 +449,8 @@ impl std::fmt::Display for CheckProblem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ClaudeSignIn => f.write_str("Sign in to Claude Code: run `claude` in Terminal and use /login"),
+            Self::NeedsKey => f.write_str("Add an API key"),
+            Self::NoModelsDownloaded => f.write_str("No models downloaded yet: download one below"),
             Self::Other(message) => f.write_str(message),
         }
     }
@@ -456,6 +501,16 @@ mod tests {
         assert_eq!(silent.code(), None, "no code: its words are shown as they are");
         assert!(silent.to_string().contains("didn’t report"));
         assert_eq!(CheckProblem::from("Add an API key").code(), None);
+    }
+
+    #[test]
+    fn check_codes_are_serialized_as_their_names() {
+        for code in [CheckCode::ClaudeSignIn, CheckCode::NeedsKey, CheckCode::ChooseModel, CheckCode::NoModels] {
+            assert_eq!(serde_json::to_value(code).unwrap(), code.as_str());
+        }
+        assert_eq!(CheckProblem::NeedsKey.code(), Some("needs_key"));
+        assert_eq!(CheckProblem::NeedsKey.to_string(), "Add an API key");
+        assert_eq!(CheckProblem::NoModelsDownloaded.code(), Some("no_models"));
     }
 
     /// A stand-in for Claude Code whose `auth status` reports signed in once `signed-in` exists in

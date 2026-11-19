@@ -1,9 +1,12 @@
-import type { ProviderCheck } from "../lib/types";
+import type { CheckCode, ProviderCheck } from "../lib/types";
 import { words } from "../lib/platform";
 
-/** The words for a check that failed: Settings' own for a problem with a code, else the app's. */
-export function problemText(check: ProviderCheck): string {
-  if (check.code === "claude_sign_in") return words().claudeSignIn;
+const signIn: CheckCode = "claude_sign_in";
+
+/** The words for a check that failed: Settings' own for a problem with a code, else the app's.
+ * Takes a code as any string; the one it words is checked against `CheckCode` above. */
+export function problemText(check: Omit<ProviderCheck, "code"> & { code?: string | null }): string {
+  if (check.code === signIn) return words().claudeSignIn;
   return check.problem ?? "";
 }
 

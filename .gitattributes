@@ -1,0 +1,3 @@
+# Written by the Rust tests with LF line endings on every system; scripts/check.sh compares them byte
+# for byte.
+ui/src/lib/generated/*.ts text eol=lf

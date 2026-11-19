@@ -81,6 +81,7 @@ pub(super) async fn list_models(
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct PullProgress {
     pub status: String,
     pub completed: u64,

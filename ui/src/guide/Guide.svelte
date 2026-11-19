@@ -6,12 +6,14 @@
   // itself (a native file drag started in Rust), which the Accessibility list accepts.
   import { invoke as tauriInvoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import type { Command, EventName, EventPayloads } from "../lib/ipc-names";
+  import type { GuideSide } from "../lib/types";
 
   const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
   let error = $state("");
 
   /** Where the card sits relative to System Settings' window (`Side` in permission_guide.rs). */
-  type Side = "right" | "left" | "below" | "inside";
+  type Side = GuideSide;
   let side = $state<Side>("below");
   /** Where the list is, seen from the card, and the arrow's turn to point at it. */
   const toList: Record<Side, { words: string; turn: number }> = {
@@ -21,10 +23,10 @@
     left: { words: "to the right", turn: 90 },
   };
   const where = $derived(toList[side]);
-  if (inTauri) listen<Side>("guide:side", (e) => (side = e.payload));
+  if (inTauri) listen<EventPayloads["guide:side"]>("guide:side" satisfies EventName, (e) => (side = e.payload));
 
   // Imported up front, not on demand: the drag must start while the mouse button is still down.
-  function invoke(cmd: string): Promise<unknown> {
+  function invoke(cmd: Command): Promise<unknown> {
     return inTauri ? tauriInvoke(cmd) : Promise.resolve();
   }
 

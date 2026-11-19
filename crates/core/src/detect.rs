@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "DetectedAccount"))]
 #[serde(rename_all = "camelCase")]
 pub struct Candidate {
     pub kind: ProviderKind,

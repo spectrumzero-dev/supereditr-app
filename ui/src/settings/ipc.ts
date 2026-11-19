@@ -1,4 +1,5 @@
-import type { AppInfo, BuiltinAi, Candidate, ProviderCheck, Config, LinuxSetup, Preset, ProviderKind, PickedApps, ProviderProfile, Saved, SettingsPayload } from "../lib/types";
+import type { Command, EventName, EventPayloads } from "../lib/ipc-names";
+import type { AppInfo, BuiltinAi, Candidate, ProviderCheck, Config, LinuxSetup, Preset, ProviderKind, PickedApps, ProviderProfile, Saved, SettingsPayload, TestResult } from "../lib/types";
 
 export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -37,13 +38,13 @@ let demoConfig: Config = {
 let demoLaunchAtLogin = true;
 let demoRevision = 0;
 
-async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+async function invoke<T>(cmd: Command, args?: Record<string, unknown>): Promise<T> {
   if (inTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<T>(cmd, args);
   }
   // Browser preview: just enough behavior to design the screens.
-  const demo: Record<string, () => unknown> = {
+  const demo: Partial<Record<Command, () => unknown>> = {
     get_settings: () => ({ config: demoConfig, keys: { anthropic: true }, accessibility: false, version: "0.1.0", platform: "macos", logPath: "/Users/rhyan/Library/Logs/SuperEditr/capture.log", revision: demoRevision }),
     save_settings: () => {
       if (args?.revision != null && args.revision !== demoRevision) return { revision: null, problems: [] };
@@ -108,7 +109,7 @@ export const api = {
   /** Starts Claude Code's own sign-in in a console window (Windows). */
   claudeSignIn: (profileId: string) => invoke<void>("claude_sign_in", { profileId }),
   activateProvider: (profileId: string) => invoke<ProviderCheck>("activate_provider", { profileId }),
-  test: (profileId: string) => invoke<{ firstTokenMs: number | null; totalMs: number; output: string }>("test_provider", { profileId }),
+  test: (profileId: string) => invoke<TestResult>("test_provider", { profileId }),
   pull: (baseUrl: string, model: string) => invoke<void>("pull_ollama_model", { baseUrl, model }),
   builtinAi: () => invoke<BuiltinAi>("builtin_ai"),
   /** `rect` is the box's frame within the window, in CSS pixels. */
@@ -137,9 +138,9 @@ export const api = {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("plugin:opener|open_url", { url });
   },
-  async on<T>(event: string, handler: (payload: T) => void): Promise<() => void> {
+  async on<E extends EventName>(event: E, handler: (payload: EventPayloads[E]) => void): Promise<() => void> {
     if (!inTauri) return () => {};
     const { listen } = await import("@tauri-apps/api/event");
-    return listen<T>(event, (e) => handler(e.payload));
+    return listen<EventPayloads[E]>(event, (e) => handler(e.payload));
   },
 };

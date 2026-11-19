@@ -108,6 +108,7 @@ fn trusted() -> bool {
 /// Where the card sits relative to System Settings' window. The card's arrow and wording point
 /// from there to the list.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, rename = "GuideSide"))]
 #[serde(rename_all = "camelCase")]
 enum Side {
     Right,

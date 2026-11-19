@@ -1,0 +1,5 @@
+# Where the app's tests write the TypeScript definitions of what it sends its UI (ts-rs), and how
+# they write 64-bit numbers: as `number`, which is what the UI receives over IPC (JSON).
+[env]
+TS_RS_EXPORT_DIR = { value = "ui/src/lib/generated", relative = true }
+TS_RS_LARGE_INT = "number"

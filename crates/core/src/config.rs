@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct Hotkeys {
     /// Opens the overlay for the current selection.
@@ -174,6 +175,7 @@ impl Default for Hotkeys {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct Config {
     pub providers: Vec<ProviderProfile>,

@@ -16,6 +16,7 @@ use serde::Serialize;
 /// One key press, named and flagged as a web page's `KeyboardEvent` names it, so the panel handles
 /// it like a key typed into its own window.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, rename = "PanelKeyPayload"))]
 #[serde(rename_all = "camelCase")]
 pub struct Key {
     /// "Enter", "Escape", "Tab", "ArrowLeft", " ", "Backspace", or the character typed ("a", "/").

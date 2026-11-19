@@ -8,6 +8,8 @@ mod commands;
 mod double_press;
 mod follow;
 mod hotkeys;
+#[cfg(test)]
+mod ipc_contract;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod keys;
 mod last_review;

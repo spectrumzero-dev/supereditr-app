@@ -7,6 +7,7 @@ use tauri::WebviewWindow;
 
 /// An installed app, as the Privacy page shows it.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct AppInfo {
     pub bundle_id: String,
@@ -17,6 +18,7 @@ pub struct AppInfo {
 
 /// The apps chosen in the open panel: none if the user cancelled.
 #[derive(Debug, Default, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, rename = "PickedApps"))]
 pub struct Picked {
     pub apps: Vec<AppInfo>,
     /// Names of chosen apps without a bundle ID, which SuperEditr can't recognize.

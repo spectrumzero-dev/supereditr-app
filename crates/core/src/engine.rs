@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "EngineEvent"))]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Event {
     /// Offline checker result, typically within a few milliseconds.
@@ -35,6 +36,7 @@ pub enum Event {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct Outcome {
     pub view: DiffView,
@@ -61,6 +63,7 @@ pub struct Outcome {
 /// One of the author's terms a revision would have dropped, and the changes (by id) that drop it.
 /// The panel says it kept the term only while one of those changes stays rejected.
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct KeptTerm {
     pub term: String,
     pub changes: Vec<usize>,

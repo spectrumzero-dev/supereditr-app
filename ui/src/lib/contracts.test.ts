@@ -3,8 +3,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import acceleratorsJson from "../../../tests/contracts/accelerators.json?raw";
 import diffApplyJson from "../../../tests/contracts/diff-apply.json?raw";
+import ipcNamesJson from "../../../tests/contracts/ipc-names.json?raw";
 import { acceleratorFromEvent, windowsKeyName } from "./accelerator";
 import { applyView } from "./diff";
+import { commands, events } from "./ipc-names";
 import { setPlatform, type Platform } from "./platform";
 import type { DiffView } from "./types";
 
@@ -30,6 +32,7 @@ interface DiffApply {
 
 const accelerators: Accelerators = JSON.parse(acceleratorsJson);
 const diffApply: DiffApply = JSON.parse(diffApplyJson);
+const ipcNames: { commands: string[]; events: string[] } = JSON.parse(ipcNamesJson);
 
 const keydown = (e: KeyEvent) =>
   ({
@@ -83,4 +86,16 @@ describe("diff-apply.json", () => {
       for (const { rejected, text } of c.applied) expect(applyView(c.view, new Set(rejected)), `${rejected}`).toBe(text);
     });
   }
+});
+
+// src-tauri/src/ipc_contract.rs checks the same lists against the commands the app registers and the
+// events it emits.
+describe("ipc-names.json", () => {
+  it("names every command the app registers, as ipc-names.ts does", () => {
+    expect([...commands].sort()).toEqual([...ipcNames.commands].sort());
+  });
+
+  it("names every event the app emits, as ipc-names.ts does", () => {
+    expect([...events].sort()).toEqual([...ipcNames.events].sort());
+  });
 });

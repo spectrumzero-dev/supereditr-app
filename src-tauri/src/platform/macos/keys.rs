@@ -432,6 +432,10 @@ pub fn start_double_press_tap(
                 }
                 let detector = Arc::new(double_press::Shared::default());
                 let callback_detector = detector.clone();
+                // Set when macOS turns the tap off, the one stop after which the tap is known to be
+                // off. Any other stop may come while it's on, even from a stop meant for the last tap.
+                let turned_off = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let callback_turned_off = turned_off.clone();
                 let on_fire = on_fire.clone();
                 let on_review_key = on_review_key.clone();
                 let tap = CGEventTap::new(
@@ -443,6 +447,12 @@ pub fn start_double_press_tap(
                         if matches!(kind, CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput) {
                             // Return to the owner loop to recheck trust before enabling the tap.
                             // macOS has turned the tap off, so that check holds up no key.
+                            callback_turned_off.store(true, Ordering::Relaxed);
+                            CFRunLoop::get_current().stop();
+                            return CallbackResult::Keep;
+                        }
+                        if !tap_trusted() {
+                            // No recent answer: take nothing, and have the owner remove the tap.
                             CFRunLoop::get_current().stop();
                             return CallbackResult::Keep;
                         }
@@ -521,9 +531,11 @@ pub fn start_double_press_tap(
                         tap.enable();
                     }
                     match CFRunLoop::run_in_mode(mode, Duration::from_secs(1), false) {
-                        // macOS turned the tap off, or `watch_trust` found access gone. With the
-                        // tap off, asking holds up no key, so ask afresh before turning it back on.
-                        CFRunLoopRunResult::Stopped => enable = tap_trusted() && check_trust(),
+                        // Only when macOS turned the tap off, so that no key can wait on it, ask
+                        // afresh before turning it back on. Any other stop rereads the last answer.
+                        CFRunLoopRunResult::Stopped => {
+                            enable = turned_off.swap(false, Ordering::Relaxed) && tap_trusted() && check_trust()
+                        }
                         CFRunLoopRunResult::TimedOut => enable = false,
                         _ => break,
                     }
@@ -532,8 +544,14 @@ pub fn start_double_press_tap(
                 REVIEW_KEYS.store(TAP_OFFLINE, Ordering::Relaxed);
                 run_loop.remove_source(&source, mode);
                 drop(tap); // Invalidates its Mach port.
-                // A pending timeout belongs to this tap. Cancel it before installing another one.
-                detector.retire();
+                // A pending timeout belongs to this tap. Cancel it before installing another one,
+                // and pass a press it still held on to the app now. `replay` asks first, and with
+                // no tap installed, asking holds up no key.
+                let held = detector.retire();
+                let chord = held.and_then(|i| crate::platform::lock(&DOUBLE_CHORDS).get(i).cloned());
+                if let Some(chord) = chord {
+                    replay(&chord, None);
+                }
             }
         })
         .expect("thread spawns");

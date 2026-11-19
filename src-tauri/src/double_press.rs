@@ -157,9 +157,10 @@ impl Shared {
 
     /// Once the tap is removed: waits for a replay in progress, then forgets the held press, so a
     /// timer still waiting replays nothing. A retired tap posts no chord after its successor starts.
-    pub fn retire(&self) {
+    /// Returns the press that was still held, which the caller may replay itself, at once.
+    pub fn retire(&self) -> Option<usize> {
         let _replaying = lock(&self.replaying);
-        *lock(&self.detector) = Detector::default();
+        std::mem::take(&mut *lock(&self.detector)).held.map(|h| h.chord)
     }
 }
 
@@ -304,7 +305,8 @@ mod tests {
         // perhaps after access is granted again, and must not post the old chord.
         let shared = Shared::default();
         let first = shared.press(Some(0), false, Instant::now());
-        shared.retire();
+        assert_eq!(shared.retire(), Some(0), "retiring hands back the held press");
+        assert_eq!(shared.retire(), None);
         let mut replayed = None;
         shared.expire(first.hold.unwrap(), |chord| replayed = Some(chord));
         assert_eq!(replayed, None);

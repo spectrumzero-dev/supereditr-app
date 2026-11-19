@@ -94,8 +94,8 @@ export function keyAction(state: KeyState, e: KeyPress, forwarded = false): KeyO
       return handled({ type: "startSteering" });
   }
   // Caps lock names a letter in upper case; the key is the same one. With Shift held it is another
-  // chord, left as it was.
-  const letter = e.shiftKey ? e.key : e.key.toLowerCase();
+  // chord, and not the panel's, whichever case caps lock gives it.
+  const letter = e.shiftKey ? "" : e.key.toLowerCase();
   if (mod && letter === "c") return handled({ type: "copy" });
   if (letter === "r") return handled({ type: "retry" });
   if (!mod && letter === "a" && state.keepOffer) return handled({ type: "keep", word: state.keepOffer });

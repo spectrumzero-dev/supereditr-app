@@ -80,6 +80,10 @@ describe("what a key does", () => {
     expect(keyAction(reviewing, key("R", { shiftKey: true }))).toBeNull();
     expect(keyAction(reviewing, key("C", { ctrlKey: true, shiftKey: true }))).toBeNull();
     expect(keyAction({ ...reviewing, keepOffer: "Kyndal" }, key("A", { shiftKey: true }))).toBeNull();
+    // Caps lock and Shift together name the letter in lower case.
+    expect(keyAction(reviewing, key("r", { shiftKey: true }))).toBeNull();
+    expect(keyAction(reviewing, key("c", { ctrlKey: true, shiftKey: true }))).toBeNull();
+    expect(keyAction({ ...reviewing, keepOffer: "Kyndal" }, key("a", { shiftKey: true }))).toBeNull();
   });
 
   it("adds the offered word on A", () => {

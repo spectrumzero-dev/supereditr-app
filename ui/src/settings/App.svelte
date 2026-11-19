@@ -72,6 +72,16 @@
     timer = setTimeout(() => (saving = saving.then(() => save()).catch(console.error)), 250);
   }
 
+  /** Saves now, in turn with any other save, for a step that needs the change saved first (checking
+   * an AI's new address). Settled once that save is. */
+  function saveNow(): Promise<void> {
+    edits++;
+    clearTimeout(timer);
+    const done = saving.then(() => save());
+    saving = done.catch(console.error);
+    return done;
+  }
+
   /** Saves the whole config. When the app has saved it since Settings loaded or saved it, the app
    * refuses, and Settings reloads, keeping its unsaved changes, and tries again. If the app keeps
    * refusing, the changes stay unsaved until the next one. */
@@ -155,12 +165,13 @@
     <div class="drag" data-tauri-drag-region></div>
     {#if config && payload}
       {#if section === "welcome"}
-        <Welcome {config} accessibility={payload.accessibility} {reload} {finish} openModels={() => (section = "models")} {findAccounts} />
+        <Welcome bind:config accessibility={payload.accessibility} {saveNow} {finish} openModels={() => (section = "models")} {findAccounts} />
       {:else if section === "models"}
         <Models
           bind:config
           keys={payload.keys}
           {onchange}
+          {saveNow}
           {reload}
           bind:scanOnOpen
           backToSetup={config.onboarded ? null : () => (section = "welcome")}

@@ -108,7 +108,6 @@ export const api = {
   /** Starts Claude Code's own sign-in in a console window (Windows). */
   claudeSignIn: (profileId: string) => invoke<void>("claude_sign_in", { profileId }),
   activateProvider: (profileId: string) => invoke<ProviderCheck>("activate_provider", { profileId }),
-  models: (profileId: string) => invoke<string[]>("list_models", { profileId }),
   test: (profileId: string) => invoke<{ firstTokenMs: number | null; totalMs: number; output: string }>("test_provider", { profileId }),
   pull: (baseUrl: string, model: string) => invoke<void>("pull_ollama_model", { baseUrl, model }),
   builtinAi: () => invoke<BuiltinAi>("builtin_ai"),
@@ -122,7 +121,6 @@ export const api = {
   launchAtLogin: () => invoke<boolean>("launch_at_login"),
   /** Returns whether opening at login is on afterwards. */
   setLaunchAtLogin: (enabled: boolean) => invoke<boolean>("set_launch_at_login", { enabled }),
-  openAccessibility: () => invoke<void>("open_accessibility_settings"),
   /** The Linux setup page's checks; null on other systems. */
   linuxSetup: () => invoke<LinuxSetup | null>("linux_setup"),
   /** Returns what it changed. */

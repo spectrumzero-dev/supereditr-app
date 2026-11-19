@@ -14,14 +14,15 @@
   interface Props {
     config: Config;
     accessibility: boolean;
-    reload: () => Promise<void>;
+    /** Saves the config now, based on the settings the app last gave Settings. */
+    saveNow: () => Promise<void>;
     finish: () => void;
     /** Opens the Models page, to fix an AI that isn't working. */
     openModels: () => void;
     /** Opens the Models page and scans this Mac for AI accounts there. */
     findAccounts: () => void;
   }
-  let { config, accessibility, reload, finish, openModels, findAccounts }: Props = $props();
+  let { config = $bindable(), accessibility, saveNow, finish, openModels, findAccounts }: Props = $props();
   let polled = $state(false);
   let builtin = $state<BuiltinAi | null>(null);
   const trusted = $derived(accessibility || polled);
@@ -40,8 +41,8 @@
 
   /** Whether suggestions appear on their own after a selection, or only on the shortcut. */
   async function setAuto(on: boolean) {
-    await api.save({ ...config, auto_popup: on });
-    await reload();
+    config.auto_popup = on;
+    await saveNow();
   }
 
   function granted() {

@@ -1138,17 +1138,20 @@ quitOpened("com.apple.TextEdit")
 pump(1.5)
 let terminalMark = logMark()
 check(selectAll(), "Terminal's text is selected")
-if focusedValueSettable() == true { log("NOTE Terminal's text reports an editable value; check 4 proves less") }
+let terminalEditable = focusedValueSettable() == true
+if terminalEditable { log("NOTE Terminal's text reports an editable value; check 4 proves less") }
 // The automatic suggestion's line naming Terminal says what it decided once it read the selection.
-// Only a decision to skip counts: one to show a suggestion fails the check even before the panel
-// is on screen. The panel is looked for after that.
+// It must say the suggestion was skipped because the field isn't editable: a skip for another
+// reason, such as the text's length, would hide a broken read-only rule. Only where Terminal
+// itself reports an editable value does any skip count. The panel is looked for after that.
+let terminalSkip = terminalEditable ? "skipped: " : "skipped: the field isn't editable"
 let terminalDecided = waitForDecision(atLeast: 3, within: 8) { () -> String? in
     guard let line = lastLogLine(since: terminalMark, containing: "automatic com.apple.Terminal: ") else { return nil }
-    return line.contains("skipped: ") ? line : nil
+    return line.contains(terminalSkip) ? line : nil
 }
 if let terminalDecided { log("NOTE Terminal's selection: \(terminalDecided)") }
 check(terminalDecided != nil && overlay() == nil, "no automatic suggestion for terminal output",
-      terminalDecided == nil ? "capture.log has no line skipping Terminal's selection within 8 s; latest automatic line: \(lastLogLine(since: terminalMark, containing: "automatic") ?? "none")" : "overlay appeared")
+      terminalDecided == nil ? "capture.log has no line with “\(terminalSkip)” for Terminal's selection within 8 s; latest automatic line: \(lastLogLine(since: terminalMark, containing: "automatic") ?? "none")" : "overlay appeared")
 quitOpened("com.apple.Terminal")
 
 section("4a")

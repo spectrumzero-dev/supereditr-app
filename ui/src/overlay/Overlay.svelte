@@ -2,10 +2,11 @@
   import { onMount, tick } from "svelte";
   import { slide } from "svelte/transition";
   import DiffText from "../lib/DiffText.svelte";
-  import { applyView, changeLabel, changes, sourceLabel, summarize } from "../lib/diff";
+  import { applyView } from "../lib/diff";
   import type { EngineEvent, SessionPayload, StatusPayload } from "../lib/types";
   import { ipc } from "./ipc";
-  import { canUse, emptyReview, footerAction, isCurrentRun, keptWording, notReplacing, offerAnyway, offerToKeep, reduce, runRequest, startReplacing, type Replacing, type Review } from "./review";
+  import { keyAction, viewOf, type KeyPress } from "./panel";
+  import { emptyReview, isCurrentRun, notReplacing, offerAnyway, reduce, runRequest, startReplacing, type Replacing, type Review } from "./review";
   import { closeTips, countTip } from "./tips";
   import { words } from "../lib/platform";
 
@@ -34,26 +35,28 @@
   let card: HTMLElement | undefined = $state();
   let steerInput: HTMLInputElement | undefined = $state();
 
-  const view = $derived(review.view);
-  const phase = $derived(review.phase);
-  const source = $derived(review.source);
-  const timing = $derived(review.timing);
-  const remembered = $derived(review.remembered);
-  const error = $derived(review.error);
-  const changedTokens = $derived(review.changedTokens);
-  const keptTerms = $derived(keptWording(review, rejected));
-  const backupFor = $derived(review.backupFor);
-  const usable = $derived(canUse(review));
-  const list = $derived(changes(view));
-  const result = $derived(view ? applyView(view, rejected) : session?.text ?? "");
-  const focusedChange = $derived(list.find((c) => c.id === focusedId) ?? null);
-  const unchanged = $derived(phase === "done" && list.length === 0);
-  const busy = $derived(phase === "local" || phase === "streaming" || phase === "idle");
-  const keepOffer = $derived(offerToKeep(review, rejected, focusedId, added));
-  const action = $derived(footerAction(review, session?.canApply ?? false));
-
   /** Key tips for the first few reviews, until the keys are familiar or the author closes them. */
   let showTips = $state(false);
+
+  const view = $derived(review.view);
+  const phase = $derived(review.phase);
+  const result = $derived(view ? applyView(view, rejected) : session?.text ?? "");
+  const panel = $derived(
+    viewOf({
+      review,
+      canApply: session?.canApply ?? false,
+      showTiming: session?.showTiming ?? false,
+      presets: session?.presets ?? [],
+      presetId,
+      rejected,
+      focusedId,
+      added,
+      keyboard,
+      showTips,
+      anyway: replacing.anyway,
+    }),
+  );
+  const list = $derived(panel.changes);
 
   function hideTips() {
     showTips = false;
@@ -119,7 +122,7 @@
 
   async function apply() {
     // Only a finished result can be applied: never a revision that is still streaming or failed.
-    if (!session || !usable) return;
+    if (!session || !panel.usable) return;
     // ↩ and ⌥↩ mean the same in every app: they replace. Copying is what ⌘C is for. Only a replacement
     // that fails leaves the fix on the clipboard, so it isn't lost, and the backend says so.
     if (!session.canApply) {
@@ -166,7 +169,7 @@
   }
 
   async function copy() {
-    if (!usable) return;
+    if (!panel.usable) return;
     await ipc.copy(result);
     showFlash("Copied", 1200);
   }
@@ -201,94 +204,58 @@
   }
 
   /** A key typed into the panel, or one the keyboard tap took from the app (`forwarded`). */
-  type PanelKey = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey" | "preventDefault">;
-
-  function onKeydown(e: PanelKey, forwarded = false) {
-    if (notice && !session) {
-      if (e.key === "Escape" || e.key === "Enter") {
-        // Marked handled, or WebKit passes the key back to GTK after the panel has hidden, and on
-        // Linux GTK then drops the next press of that key: the first one in the next panel.
-        e.preventDefault();
+  function onKeydown(e: KeyPress & Pick<KeyboardEvent, "preventDefault">, forwarded = false) {
+    const outcome = keyAction(
+      { notice: !!notice && !session, review: !!session, steering, presets: session?.presets ?? [], focusedId, keepOffer: panel.keepOffer },
+      e,
+      forwarded,
+    );
+    if (!outcome) return;
+    if (outcome.preventDefault) e.preventDefault();
+    const action = outcome.action;
+    if (!action) return;
+    switch (action.type) {
+      case "close":
         close();
-      }
-      return;
-    }
-    if (!session) return;
-    const mod = e.metaKey || e.ctrlKey;
-    if (steering) {
-      if (e.key === "Escape") {
-        e.preventDefault();
+        break;
+      case "cancelSteering":
         steer = "";
         stopSteering();
-      } else if (e.key === "Enter") {
-        e.preventDefault();
+        break;
+      case "submitSteering":
         stopSteering();
         runPreset(presetId, steer);
-      } else if (forwarded && !mod) {
-        // Typed after / but before the panel had focus.
-        if (e.key === "Backspace") steer = steer.slice(0, -1);
-        else if (e.key.length === 1) steer += e.key;
-      }
-      return;
-    }
-    if (mod && /^[1-9]$/.test(e.key)) {
-      const preset = session.presets[Number(e.key) - 1];
-      if (preset) runPreset(preset.id);
-      e.preventDefault();
-      return;
-    }
-    switch (e.key) {
-      case "Enter":
-        e.preventDefault();
+        break;
+      case "typeSteering":
+        steer = action.key === "Backspace" ? steer.slice(0, -1) : steer + action.key;
+        break;
+      case "runPreset":
+        runPreset(action.presetId);
+        break;
+      case "apply":
         apply();
         break;
-      case "Escape":
-        e.preventDefault();
-        close();
+      case "cycle":
+        cycle(action.step);
         break;
-      case "Tab":
-        e.preventDefault();
-        cycle(e.shiftKey ? -1 : 1);
+      case "toggle":
+        toggle(action.id);
         break;
-      case "ArrowRight":
-      case "ArrowDown":
-        e.preventDefault();
-        cycle(1);
-        break;
-      case "ArrowLeft":
-      case "ArrowUp":
-        e.preventDefault();
-        cycle(-1);
-        break;
-      case " ":
-      case "Backspace":
-      case "Delete":
-        if (focusedId != null) {
-          e.preventDefault();
-          toggle(focusedId);
-        }
-        break;
-      case "/":
-        e.preventDefault();
+      case "startSteering":
         startSteering();
         break;
-      default:
-        if (mod && e.key === "c") {
-          e.preventDefault();
-          copy();
-        } else if ((mod && e.key === "r") || (!mod && e.key === "r")) {
-          e.preventDefault();
-          runPreset(presetId, undefined, true);
-        } else if (!mod && e.key === "a" && keepOffer) {
-          e.preventDefault();
-          alwaysKeep(keepOffer);
-        } else if (mod && e.key === ",") {
-          e.preventDefault();
-          ipc.openSettings();
-        } else if (!mod && /^[1-9]$/.test(e.key)) {
-          const preset = session.presets[Number(e.key) - 1];
-          if (preset) runPreset(preset.id);
-        }
+      case "copy":
+        copy();
+        break;
+      case "retry":
+        runPreset(presetId, undefined, true);
+        break;
+      case "keep":
+        alwaysKeep(action.word);
+        break;
+      case "openSettings":
+        ipc.openSettings();
+        break;
     }
   }
 
@@ -352,14 +319,14 @@
     {:else if session}
       <header>
         <nav class="presets" aria-label="Styles">
-          {#each session.presets.slice(0, 7) as preset, i (preset.id)}
+          {#each panel.chips as chip (chip.id)}
             <button
               class="chip"
-              class:active={preset.id === presetId}
-              title={`${preset.name} (${i + 1})`}
-              onclick={() => runPreset(preset.id)}
+              class:active={chip.active}
+              title={`${chip.name} (${chip.key})`}
+              onclick={() => runPreset(chip.id)}
             >
-              {preset.name}{#if keyboard}<span class="num">{i + 1}</span>{/if}
+              {chip.name}{#if keyboard}<span class="num">{chip.key}</span>{/if}
             </button>
           {/each}
         </nav>
@@ -371,16 +338,18 @@
         {:else}
           <div class="diff-placeholder">{session.text}</div>
         {/if}
-        {#if unchanged}
+        {#if panel.unchanged}
           <p class="all-good"><span aria-hidden="true">✓</span> Looks good — nothing to change.</p>
         {/if}
-        {#if error}
-          <p class="error">{error}</p>
+        {#if review.error}
+          <p class="error">{review.error}</p>
         {/if}
-        {#if backupFor}
-          <p class="error">{backupFor}. Apple Intelligence answered instead.</p>
+        {#if review.backupFor}
+          <p class="error">{review.backupFor}. Apple Intelligence answered instead.</p>
         {/if}
-        {#if keptTerms.length || keepOffer}
+        {#if panel.keptTerms.length || panel.keepOffer}
+          {@const keptTerms = panel.keptTerms}
+          {@const keepOffer = panel.keepOffer}
           <p class="kept">
             {#if keptTerms.length}Kept your wording: {keptTerms.slice(0, 3).join(", ")}{keptTerms.length > 3 ? "…" : ""}{/if}
             {#if keptTerms.length && keepOffer}·{/if}
@@ -389,13 +358,14 @@
             {/if}
           </p>
         {/if}
-        {#if changedTokens.length}
+        {#if review.changedTokens.length}
+          {@const changedTokens = review.changedTokens}
           <p class="error">Check before applying: this version changes {changedTokens.slice(0, 3).join(", ")}{changedTokens.length > 3 ? "…" : ""}</p>
         {/if}
-        {#if focusedChange}
+        {#if panel.note}
           <p class="note">
-            <strong>{changeLabel(focusedChange)}</strong>
-            {focusedChange.note ?? (rejected.has(focusedChange.id) ? "Keeping your original." : `“${focusedChange.old.trim()}” → “${focusedChange.new.trim()}”`)}
+            <strong>{panel.note.label}</strong>
+            {panel.note.text}
           </p>
         {/if}
       </div>
@@ -413,31 +383,24 @@
         </div>
       {/if}
 
-      {#if !session.canApply && !unchanged}
+      {#if panel.copyOnly}
         <p class="tips">SuperEditr can’t replace text here.{#if session.copyOnlyHint} {session.copyOnlyHint}{/if} Press <kbd>{words().copyKey}</kbd> to copy the fix.</p>
       {/if}
-      {#if replacing.anyway}
+      {#if panel.banner === "anyway"}
         <p class="anyway" role="status">Your clipboard can’t be restored after replacing. <kbd>{words().applyKey}</kbd> again to replace anyway.</p>
-      {:else if showTips && keyboard && phase === "done" && list.length}
+      {:else if panel.banner === "tips"}
         <p class="tips"><span>Tip: {#if session.canApply}<kbd>{words().applyKey}</kbd> replaces your text with{:else}<kbd>{words().copyKey}</kbd> copies{/if} everything you see · <kbd>{words().tabKey}</kbd> steps through changes · <kbd>␣</kbd> switches a change between yours and the suggestion · <kbd>{words().escKey}</kbd> closes</span><button class="hide-tips" onclick={hideTips} title="Don’t show again. The keys are listed in Settings → Shortcuts." aria-label="Don’t show tips again">×</button></p>
       {/if}
       <footer>
-        <div class="status" title={[summarize(view), sourceLabel(source, view), remembered ? "from earlier" : timing].filter(Boolean).join(" · ")}>
-          {#if busy}
-            <span class="dot pulsing" aria-hidden="true"></span>
-            {phase === "streaming" && source ? `${source}…` : "Checking…"}
-          {:else if phase === "failed"}
-            <span class="dot bad" aria-hidden="true"></span> Couldn’t finish
-          {:else}
-            <span class="dot good" aria-hidden="true"></span>
-            {list.length ? `${list.length} change${list.length === 1 ? "" : "s"}` : "No changes"}
-          {/if}
+        <div class="status" title={panel.status.title}>
+          <span class="dot {panel.status.dot}" aria-hidden="true"></span>
+          {panel.status.text}
           <!-- The backup note above explains a stand-in, so the footer keeps the name short; the
                name may shorten with an ellipsis, the time never does. -->
-          {#if phase === "done" && source}<span class="muted source">· {sourceLabel(source.replace(" (backup)", ""), view)}</span>{/if}
-          {#if session.showTiming && timing}<span class="muted time">· {timing}</span>{/if}
+          {#if panel.status.source}<span class="muted source">· {panel.status.source}</span>{/if}
+          {#if panel.status.timing}<span class="muted time">· {panel.status.timing}</span>{/if}
           <!-- An earlier result of the same selection, shown again: no model ran, so no time. -->
-          {#if phase === "done" && remembered}<span class="muted time">· from earlier</span>{/if}
+          {#if panel.status.fromEarlier}<span class="muted time">· from earlier</span>{/if}
         </div>
         <!-- ⌥↩ works in every panel, so it is the one replace key shown; ↩ also works in a review
              the user opened. A spinner holds its place until the answer is in, so the key is named
@@ -445,20 +408,18 @@
              Nothing to replace, nothing to show. Text that can't be replaced shows the key that
              does something with the fix. -->
         <div class="keys">
-          {#if keyboard}
-            {#if list.length > 1}<span><kbd>{words().tabKey}</kbd> next</span>{/if}
-            {#if focusedId != null}<span><kbd>␣</kbd> {rejected.has(focusedId) ? "restore" : "keep original"}</span>{/if}
-            <span><kbd>/</kbd> instruct</span>
-          {/if}
-          {#if action !== "none"}
+          {#if panel.keys.next}<span><kbd>{words().tabKey}</kbd> next</span>{/if}
+          {#if panel.keys.toggle}<span><kbd>␣</kbd> {panel.keys.toggle}</span>{/if}
+          {#if panel.keys.instruct}<span><kbd>/</kbd> instruct</span>{/if}
+          {#if panel.action !== "none"}
             <!-- The key is laid out from the start, hidden under the spinner, so the footer keeps its
                  size and nothing moves when the answer comes in. -->
             <span class="slot">
-              {#if action === "working"}<span class="spinner" role="img" aria-label="Working"></span>{/if}
+              {#if panel.action === "working"}<span class="spinner" role="img" aria-label="Working"></span>{/if}
               {#if session.canApply}
-                <button class="key" class:waiting={action === "working"} onclick={apply}><kbd>{words().applyKey}</kbd> replace</button>
+                <button class="key" class:waiting={panel.action === "working"} onclick={apply}><kbd>{words().applyKey}</kbd> replace</button>
               {:else}
-                <button class="key" class:waiting={action === "working"} onclick={copy}><kbd>{words().copyKey}</kbd> copy</button>
+                <button class="key" class:waiting={panel.action === "working"} onclick={copy}><kbd>{words().copyKey}</kbd> copy</button>
               {/if}
             </span>
           {/if}

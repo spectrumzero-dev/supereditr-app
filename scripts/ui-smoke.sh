@@ -22,6 +22,12 @@ caffeinate -u -t 2 || true
 
 status=0
 "$tool" "$APP" "$OUT_DIR" "${@:3}" || status=$?
+# The driver writes the seconds each section took to OUT_DIR/timings.tsv; in CI, the job's summary
+# shows them too.
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" && -f "$OUT_DIR/timings.tsv" ]]; then
+  { printf '### macOS UI smoke tests: seconds per section, slowest first\n\n| Section | Seconds |\n| --- | ---: |\n'
+    awk -F '\t' '{ printf "| %s | %s |\n", $1, $2 }' "$OUT_DIR/timings.tsv"; } >> "$GITHUB_STEP_SUMMARY" || true
+fi
 case "$status" in
   0) ;;
   78)

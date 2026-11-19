@@ -24,7 +24,8 @@
 #                      Hyprland restarting)
 #
 # Exit status: 0 when every check passed, 1 otherwise. OUT/summary.txt lists every check with its
-# time, OUT/results.tsv has one line per check, and OUT/shots holds the screenshots.
+# time, OUT/results.tsv has one line per check, OUT/timings.tsv the seconds each case took (case,
+# seconds; slowest first, then the total), and OUT/shots holds the screenshots.
 # Not -e: one failed step is a failed check, and the run goes on to the next.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -53,13 +54,14 @@ done
 [[ -f "$ROOT/tests/ui/linux/$DESKTOP.sh" ]] || { echo "No desktop layer tests/ui/linux/$DESKTOP.sh" >&2; exit 2; }
 
 mkdir -p "$OUT"
-rm -rf "${OUT:?}/shots" "$OUT/results.tsv" "$OUT/summary.txt"
+rm -rf "${OUT:?}/shots" "$OUT/results.tsv" "$OUT/summary.txt" "$OUT/timings.tsv"
 # A short path: an SSH control socket's path must fit in 104 bytes.
 CONTROL="$(mktemp -d /tmp/ui-smoke.XXXXXX)"
 SSH=(ssh -o ControlMaster=auto -o "ControlPath=$CONTROL/%C" -o ControlPersist=300 -o ConnectTimeout=10
   -o ServerAliveInterval=10 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
 [[ -n "$IDENTITY" ]] && SSH+=(-i "$IDENTITY" -o IdentitiesOnly=yes)
 cleanup() {
+  timings
   for host in "$VM" "$PROXMOX"; do "${SSH[@]}" -O exit "$host" 2> /dev/null || true; done
   rm -rf "$CONTROL"
 }
@@ -84,13 +86,38 @@ click() {
 # Results ------------------------------------------------------------------------------------
 
 CASE="" CASE_STARTED=0 PASSED=0 FAILED=0
+# Each finished case as "case<TAB>milliseconds", for timings; CASE_OPEN while one is running.
+TIMINGS=() CASE_OPEN=0 TIMED=0
 now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
 log() { printf '%s\n' "$@" | tee -a "$OUT/summary.txt"; }
 begin_case() {
-  CASE="$1" CASE_STARTED=$(now_ms)
+  CASE="$1" CASE_STARTED=$(now_ms) CASE_OPEN=1
   log "" "== $1: $2"
 }
-end_case() { log "   ($CASE took $((($(now_ms) - CASE_STARTED) / 1000)) s)"; }
+end_case() {
+  local ms=$(($(now_ms) - CASE_STARTED))
+  TIMINGS+=("$CASE"$'\t'"$ms") CASE_OPEN=0
+  log "   ($CASE took $((ms / 1000)) s)"
+}
+# timings: once per run, the seconds each case took, slowest first, then the whole run's, in
+# summary.txt, OUT/timings.tsv and, in CI, the job's summary. A case cut short is marked unfinished.
+timings() {
+  ((TIMED == 0)) || return 0
+  TIMED=1
+  local now rows=() tsv="$OUT/timings.tsv"
+  now=$(now_ms)
+  rows=(${TIMINGS[@]+"${TIMINGS[@]}"})
+  ((CASE_OPEN)) && rows+=("$CASE (unfinished)"$'\t'"$((now - CASE_STARTED))")
+  {
+    ((${#rows[@]})) && printf '%s\n' "${rows[@]}" | sort -t $'\t' -k2,2nr
+    printf 'total\t%s\n' "$((now - ${STARTED:-$now}))"
+  } | awk -F '\t' '{ printf "%s\t%.1f\n", $1, $2 / 1000 }' > "$tsv"
+  log "" "Seconds per case, slowest first:" "$(awk -F '\t' '{ printf "  %7.1f s  %s\n", $2, $1 }' "$tsv")"
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    { printf '### Linux UI smoke tests: seconds per case, slowest first\n\n| Case | Seconds |\n| --- | ---: |\n'
+      awk -F '\t' '{ printf "| %s | %s |\n", $1, $2 }' "$tsv"; } >> "$GITHUB_STEP_SUMMARY"
+  fi
+}
 # check NAME OK DETAIL
 check() {
   local status=PASS
@@ -692,5 +719,6 @@ begin_case watchdog "SuperEditr's main thread kept answering"
 stalls="$(grep -F "main thread hasn’t answered" "$OUT/capture.log" || true)"
 check "the main thread never went 5 s without answering" "$(ok [ -z "$stalls" ])" "${stalls:0:400}"
 end_case
+timings
 log "" "$PASSED passed, $FAILED failed in $((($(now_ms) - STARTED) / 1000)) s"
 ((FAILED == 0))

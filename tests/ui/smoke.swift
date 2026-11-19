@@ -21,8 +21,33 @@ var failures: [String] = []
 var cleanups: [() -> Void] = []
 func log(_ line: String) { print(line); fflush(stdout) }
 func finish(_ code: Int32) -> Never {
+    section("cleanup")
     cleanups.reversed().forEach { $0() }
+    reportTimings()
     exit(code)
+}
+
+/// How long each section took. `section(_:)` starts one and ends the one before; `finish` ends the
+/// last, prints them slowest first with the run's total, and writes them to OUT_DIR/timings.tsv
+/// (section, seconds), so a slow section shows up in the run's artifacts.
+var sectionTimes: [(name: String, seconds: Double)] = []
+var currentSection: (name: String, started: UInt64)?
+let runStarted = clock_gettime_nsec_np(CLOCK_MONOTONIC)
+var timingsDir = ""
+func section(_ name: String?) {
+    let now = clock_gettime_nsec_np(CLOCK_MONOTONIC)
+    if let current = currentSection { sectionTimes.append((current.name, Double(now - current.started) / 1e9)) }
+    currentSection = name.map { ($0, now) }
+}
+func reportTimings() {
+    section(nil)
+    guard !timingsDir.isEmpty, !sectionTimes.isEmpty else { return }
+    let total = Double(clock_gettime_nsec_np(CLOCK_MONOTONIC) - runStarted) / 1e9
+    let rows = sectionTimes.sorted { $0.seconds > $1.seconds } + [(name: "total", seconds: total)]
+    log("Seconds per section, slowest first:")
+    for row in rows { log(String(format: "  %7.1f s  ", row.seconds) + row.name) }
+    let tsv = rows.map { "\($0.name)\t" + String(format: "%.1f", $0.seconds) }.joined(separator: "\n") + "\n"
+    try? tsv.write(toFile: timingsDir + "/timings.tsv", atomically: true, encoding: .utf8)
 }
 func check(_ ok: Bool, _ name: String, _ detail: @autoclosure () -> String = "") {
     log("\(ok ? "PASS" : "FAIL") \(name)\(ok ? "" : ": \(detail())")")
@@ -557,6 +582,9 @@ guard arguments.count == 3 || accessibilityCycle else {
 }
 let appPath = arguments[1], outDir = arguments[2]
 try? FileManager.default.createDirectory(atPath: outDir, withIntermediateDirectories: true)
+try? FileManager.default.removeItem(atPath: outDir + "/timings.tsv")
+timingsDir = outDir
+section("startup")
 
 // Environment checks: a locked screen, missing permissions, or another SuperEditr make the results
 // meaningless, so they skip rather than fail.
@@ -565,6 +593,7 @@ if let session = CGSessionCopyCurrentDictionary() as? [String: Any], session["CG
 }
 guard AXIsProcessTrusted() else { skipEnvironment("this process lacks Accessibility permission") }
 if accessibilityCycle {
+    section("accessibility-cycle")
     // Launch SuperEditr from Finder in the VM so it has its own grant. The usual child process
     // inherits the test driver's grant, which the driver needs throughout this check.
     guard inVirtualMachine(), let app = running(superEditr).first,
@@ -704,6 +733,7 @@ if let data = FileManager.default.contents(atPath: status),
 guard trusted else { skipEnvironment("SuperEditr isn't trusted for Accessibility when run from here") }
 pump(1.5)  // shortcut registration and the keyboard tap start just after launch
 
+section("1")
 // 1. Selecting text in an editable document shows a suggestion on its own.
 check(openFront("TextEdit", bundleID: "com.apple.TextEdit", file: draft), "TextEdit opens the draft")
 check(selectAll(), "the draft's text is selected")
@@ -742,6 +772,7 @@ press(keyRight)
 check(waitFor(3) { overlay() == nil ? true : nil } != nil, "typing elsewhere dismisses it", "overlay still showing")
 check(KeyLog.seen.contains { $0.code == Int64(keyRight) }, "that key reaches TextEdit", "the arrow key never reached TextEdit")
 
+section("1b")
 // 1b. Extending a selection with Shift held shows nothing until Shift comes up, then one panel.
 press(keyUp, .maskCommand)  // to the start of the text, nothing selected
 pump(0.5)
@@ -759,6 +790,7 @@ check(settled != nil, "one suggestion once Shift comes up", "no overlay within 5
 press(keyEscape)
 check(waitFor(3) { overlay() == nil ? true : nil } != nil, "Escape dismisses it", "overlay still showing")
 
+section("1c")
 // 1c. ⌘A counts as a selection even when ⌘ comes up before A.
 press(keyUp, .maskCommand)  // nothing selected
 pump(0.5)
@@ -768,6 +800,7 @@ check(commandFirst != nil, "a suggestion after ⌘A with ⌘ let go first", "no 
 press(keyEscape)
 check(waitFor(3) { overlay() == nil ? true : nil } != nil, "Escape dismisses that one too", "overlay still showing")
 
+section("1d")
 // 1d. The menu-bar menu turns SuperEditr off in the app in front, and back on. The menu opens over
 // TextEdit without bringing SuperEditr forward, so its item names TextEdit. Turned off, TextEdit's
 // selections get no suggestion and ⌘E E says how to turn it back on.
@@ -858,6 +891,7 @@ check(selectAll(), "TextEdit's text is selected again")
 if waitFor(6, { overlay() }) != nil { press(keyEscape) }
 _ = waitFor(3) { overlay() == nil ? true : nil }
 
+section("2")
 // 2. A single ⌘E still reaches the app, replayed after the double-press window.
 pump(0.5)
 KeyLog.seen.removeAll()
@@ -866,6 +900,7 @@ pump(1.0)
 check(KeyLog.eKeys() == [true], "a single ⌘E reaches the app", "E key downs seen (replayed?): \(KeyLog.eKeys())")
 check(overlay() == nil, "a single ⌘E doesn't open a review", "overlay showing")
 
+section("3")
 // 3. ⌘E E opens the review and neither press reaches the app.
 KeyLog.seen.removeAll()
 press(keyE, .maskCommand)
@@ -880,6 +915,7 @@ if review != nil {
     screenshot(window: overlay(), to: outDir + "/review.png")
 }
 
+section("3b")
 // 3b. Moving the reviewed window moves the panel with it, by as much. The window moves toward the
 // middle of the screen, so the panel needn't be kept on screen and moves the full distance.
 if let before = overlay(), let editor = mainWindow("com.apple.TextEdit"), let screen = NSScreen.screens.first?.frame {
@@ -902,6 +938,7 @@ if let before = overlay(), let editor = mainWindow("com.apple.TextEdit"), let sc
     screenshot(window: overlay(), to: outDir + "/review-moved.png")
 }
 
+section("3c")
 // 3c. Dragging the reviewed window by its title bar keeps the panel open. The panel stays where it
 // is while the window moves, then glides to the same place by the window once the drag ends,
 // smoothly: every step the same way, none much larger than the rest. The review's keys still go to
@@ -983,6 +1020,7 @@ if overlay() != nil {
     check(waitFor(5) { overlay() } != nil, "⌘E E opens the review again", "no overlay within 5 s")
 }
 
+section("3d")
 // 3d. During a review, a key that isn't the panel's goes where it was headed. ⌘⇧2 is not the
 // panel's ⌘2 (switch style): it reaches TextEdit, as another app's own shortcut would reach that app.
 // And once a launcher's search box has the keyboard, typing goes to the launcher. Spotlight stands
@@ -1040,6 +1078,7 @@ if overlay() != nil {
     }
 }
 
+section("4")
 // 4. Switching to another app closes the panel: it belongs to the app it reviews. Then selecting
 // terminal output, read-only text, shows nothing.
 check(openFront("Terminal", bundleID: "com.apple.Terminal"), "Terminal opens")
@@ -1052,6 +1091,7 @@ pump(3)
 check(overlay() == nil, "no automatic suggestion for terminal output", "overlay appeared")
 quitOpened("com.apple.Terminal")
 
+section("5")
 // 5. Recording a shortcut that's already Quick fix's (⌃⌥⇧E) reaches the recorder, which says why
 // it can't be used, instead of running Quick fix.
 let second = launch(appPath, home: home)  // a second launch opens Settings in the running one
@@ -1195,6 +1235,7 @@ if let settings {
 }
 stop(app)
 
+section("6")
 // 6. Always keep: rejecting the rule-based checker's guess at a name ("Rhyan" → "Ryan") offers to add it
 // to the word list, and A adds it. No Apple Intelligence (its helper path doesn't exist), so the
 // rule-based checker answers on every Mac. Automatic suggestions are off: one would open without focus
@@ -1265,6 +1306,7 @@ if keepPanel != nil {
 }
 quitOpened("com.apple.TextEdit")
 
+section("6a")
 // 6a. With nothing to fix, the footer says so and offers no replace key.
 let clean = work + "/clean.txt"
 try! "We meet at noon.".write(toFile: clean, atomically: true, encoding: .utf8)
@@ -1293,6 +1335,7 @@ if cleanPanel != nil {
 }
 quitOpened("com.apple.TextEdit")
 
+section("6a-2")
 // 6a-2. Clicking the footer's ⌥↩ replace does what the key does: the fix goes into the document.
 let clickDraft = work + "/click.txt"
 try! "We meet tommorow at noon.".write(toFile: clickDraft, atomically: true, encoding: .utf8)
@@ -1323,6 +1366,7 @@ if clickPanel != nil {
 }
 quitOpened("com.apple.TextEdit")
 
+section("6a-3")
 // 6a-3. While the AI is answering, the footer shows a spinner where the replace key goes, and names
 // the key only once the answer is in; the footer is the same height either way. Every other check
 // here gets its answer at once from the rule-based checker, so a local server stands in for a slow
@@ -1454,6 +1498,7 @@ if let slowPort = slowModel.start() {
     check(false, "the test's slow AI starts")
 }
 
+section("6b")
 // 6b. A selection holding a secret isn't reviewed: ⌘E E says why instead of opening a review. The
 // token is assembled from pieces so the source holds no secret-shaped string.
 let secretDraft = work + "/secret.txt"
@@ -1474,6 +1519,7 @@ screenshot(window: overlay(), to: outDir + "/secret-refused.png")
 press(keyEscape)
 quitOpened("com.apple.TextEdit")
 
+section("6c")
 // 6c. ↩ in the review writes the fix into a web page's text field. Browsers and Electron apps take
 // the paste path rather than an Accessibility write. Checked in a plain text box, in an editable div,
 // the kind of field chat apps use, and in the composer matrix's editors. Chrome runs as its own copy
@@ -1903,6 +1949,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
     }
     quitOpened(chrome)
 
+    section("6c-1")
     // 6c-1. The first review in a Chromium app that has just started. Its text can't be read until
     // SuperEditr asks, and then only after about 2 s, so that first read has to wait: giving up falls
     // back to a read that can't replace anything. Nothing here asks for the tree first. Chrome stands in
@@ -1950,6 +1997,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
     }
     quitOpened(chrome)
 
+    section("6c-2")
     // 6c-2. ⌥↩ means replace and nothing else. In text that can't be replaced, it changes nothing:
     // the panel stays and says why, the clipboard is left alone, and ⌘C copies the fix.
     let readOnlyPage = work + "/read-only.html"
@@ -2013,6 +2061,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
     }
     quitOpened(chrome)
 }
+section("6c-3")
 // 6c-3. A web view inside another app can hold an editable box that doesn't say it is editable: one
 // with a button's role reports no settable value and no editable ancestor. The app's Cut menu item
 // says the selection can be edited, so a review there replaces the text, and read-only text in the
@@ -2222,6 +2271,7 @@ if webBoxBuilt {
     quitOpened(webBoxID)
 }
 
+section("6d")
 // 6d. ↩ in a review applies the fix and never reaches the app: the panel doesn't take keyboard
 // focus, and SuperEditr's keyboard tap takes ↩ from the app instead. In a chat app, ↩ reaching the
 // app would send the message. The second time, the instruction box (/) takes focus first and esc
@@ -2261,6 +2311,7 @@ for (index, how) in ["directly", "after closing the instruction box"].enumerated
     quitOpened("com.apple.TextEdit")
 }
 
+section("6e")
 // 6e. A proofread with two changes is applied in place in TextEdit: two Accessibility writes, each
 // replacing only the word it fixes, and the text around them as it was.
 let twoTypos = work + "/two-typos.txt"
@@ -2288,6 +2339,7 @@ if twoPanel != nil {
 }
 quitOpened("com.apple.TextEdit")
 
+section("6f")
 // 6f. With nothing selected, ⌘E E selects the sentence before the caret, visibly, and reviews it.
 let caretDraft = work + "/caret.txt"
 try! "We met at noon. Their going to love this, it work good.".write(toFile: caretDraft, atomically: true, encoding: .utf8)
@@ -2320,6 +2372,7 @@ if sentencePanel != nil {
 }
 quitOpened("com.apple.TextEdit")
 
+section("6g")
 // 6g. With no AI, Settings says what that means and offers to set one up: Get Started's badge, and
 // a line on Styles, where only Proofread works. Apple Intelligence's helper is missing here, so
 // nothing built in can review either, and neither page offers to turn it on.
@@ -2359,6 +2412,7 @@ stop(app)
 // What SuperEditr logged about each read and write (app IDs, timings and lengths, no text).
 try? FileManager.default.copyItem(atPath: home + "/Library/Logs/SuperEditr/capture.log", toPath: outDir + "/capture.log")
 
+section("7")
 // 7. The Accessibility guide card, when this build has it, sits beside System Settings' window, off
 // the list; with no room on the screen, over the window's top.
 let binary = (try? Data(contentsOf: URL(fileURLWithPath: "\(appPath)/Contents/MacOS/supereditr"))) ?? Data()
@@ -2397,6 +2451,7 @@ if binary.range(of: Data("SUPEREDITR_PREVIEW_GUIDE".utf8)) == nil {
     quitOpened("com.apple.systempreferences")
 }
 
+section("8")
 // 8. Check for Updates. A test build has no updater of its own, so a copy of this one gets the real
 // updater with a feed served from here and a key made for this run. The update is the app itself,
 // so its files change while its version doesn't.

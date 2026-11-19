@@ -60,8 +60,9 @@
 # unlock it by connecting the session to the console again.
 #
 # Exit status: 0 when every check passed, 1 otherwise. OUT/summary.txt lists every check, OUT/results.tsv
-# has one line per check (case, PASS or FAIL, check, milliseconds into the case, detail), OUT/shots
-# holds the screenshots and OUT/capture.log SuperEditr's log.
+# has one line per check (case, PASS or FAIL, check, milliseconds into the case, detail), OUT/timings.tsv
+# the seconds each case took (case, seconds; slowest first, then the total), OUT/shots holds the
+# screenshots and OUT/capture.log SuperEditr's log.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -99,7 +100,7 @@ ROLLS_BACK=0
 
 REMOTE='C:\SmokeWin'
 mkdir -p "$OUT"
-rm -rf "${OUT:?}/shots" "$OUT/results.tsv" "$OUT/summary.txt" "$OUT/capture.log" "$OUT/vm"
+rm -rf "${OUT:?}/shots" "$OUT/results.tsv" "$OUT/summary.txt" "$OUT/capture.log" "$OUT/timings.tsv" "$OUT/vm"
 SSH_OPTS=(-o ConnectTimeout=10 -o ServerAliveInterval=10 -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
 [[ -n "$IDENTITY" ]] && SSH_OPTS+=(-i "$IDENTITY" -o IdentitiesOnly=yes)
 say() { printf '%s\n' "$*" >&2; }
@@ -277,12 +278,16 @@ say "The driver: $state"
 admin stop > /dev/null
 
 copy_to -r "$VM:C:/SmokeWin/out" "$OUT/vm" || say "Couldn't fetch the results"
-for f in results.tsv summary.txt capture.log; do [[ -f "$OUT/vm/$f" ]] && mv "$OUT/vm/$f" "$OUT/"; done
+for f in results.tsv summary.txt capture.log timings.tsv; do [[ -f "$OUT/vm/$f" ]] && mv "$OUT/vm/$f" "$OUT/"; done
 # Next to the console's photographs, if any.
 [[ -d "$OUT/vm/shots" ]] && find "$OUT/vm/shots" -type f -exec mv {} "$OUT/shots/" \;
 rm -rf "$OUT/vm"
 vm "Remove-Item -Recurse -Force $REMOTE -ErrorAction SilentlyContinue" > /dev/null
 
 [[ -f "$OUT/summary.txt" ]] && cat "$OUT/summary.txt"
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" && -f "$OUT/timings.tsv" ]]; then
+  { printf '### Windows UI smoke tests: seconds per case, slowest first\n\n| Case | Seconds |\n| --- | ---: |\n'
+    awk -F '\t' '{ printf "| %s | %s |\n", $1, $2 }' "$OUT/timings.tsv"; } >> "$GITHUB_STEP_SUMMARY"
+fi
 [[ "$state" == "done" && -f "$OUT/results.tsv" ]] || { say "The driver didn't finish"; exit 1; }
 ! cut -f2 "$OUT/results.tsv" | grep -q FAIL

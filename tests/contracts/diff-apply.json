@@ -1,0 +1,144 @@
+{
+  "comment": "Each view is DiffView as crates/core/src/diff.rs serializes it: `diff(original, revised)`, or `stream_view` when `streaming` is true. Each `applied` entry is the text `apply` (Rust) and `applyView` (ui/src/lib/diff.ts) rebuild with those change ids rejected. Read by `diff::tests::shared_fixture_views_and_rejections` and ui/src/lib/contracts.test.ts.",
+  "cases": [
+    {
+      "name": "several changes",
+      "original": "Rhyan said their going to the QuillPoint offsite tomorow.",
+      "revised": "Rhyan said they're going to the QuillPoint offsite tomorrow.",
+      "streaming": false,
+      "view": {
+        "segments": [
+          { "type": "equal", "text": "Rhyan said " },
+          { "type": "change", "id": 0, "old": "their", "new": "they're", "kind": "grammar", "oldStart": 11 },
+          { "type": "equal", "text": " going to the QuillPoint offsite " },
+          { "type": "change", "id": 1, "old": "tomorow", "new": "tomorrow", "kind": "spelling", "oldStart": 49 },
+          { "type": "equal", "text": "." }
+        ],
+        "pending": "",
+        "changeCount": 2
+      },
+      "applied": [
+        { "rejected": [], "text": "Rhyan said they're going to the QuillPoint offsite tomorrow." },
+        { "rejected": [0, 1], "text": "Rhyan said their going to the QuillPoint offsite tomorow." },
+        { "rejected": [1], "text": "Rhyan said they're going to the QuillPoint offsite tomorow." },
+        { "rejected": [0], "text": "Rhyan said their going to the QuillPoint offsite tomorrow." }
+      ]
+    },
+    {
+      "name": "an insertion",
+      "original": "Kyndal reviewed OKRs",
+      "revised": "Kyndal reviewed the OKRs",
+      "streaming": false,
+      "view": {
+        "segments": [
+          { "type": "equal", "text": "Kyndal reviewed " },
+          { "type": "change", "id": 0, "old": "", "new": "the ", "kind": "grammar", "oldStart": 16 },
+          { "type": "equal", "text": "OKRs" }
+        ],
+        "pending": "",
+        "changeCount": 1
+      },
+      "applied": [
+        { "rejected": [], "text": "Kyndal reviewed the OKRs" },
+        { "rejected": [0], "text": "Kyndal reviewed OKRs" }
+      ]
+    },
+    {
+      "name": "a deletion",
+      "original": "Meet at at 1234 Glenmoor Ct.",
+      "revised": "Meet at 1234 Glenmoor Ct.",
+      "streaming": false,
+      "view": {
+        "segments": [
+          { "type": "equal", "text": "Meet at " },
+          { "type": "change", "id": 0, "old": "at ", "new": "", "kind": "grammar", "oldStart": 8 },
+          { "type": "equal", "text": "1234 Glenmoor Ct." }
+        ],
+        "pending": "",
+        "changeCount": 1
+      },
+      "applied": [
+        { "rejected": [], "text": "Meet at 1234 Glenmoor Ct." },
+        { "rejected": [0], "text": "Meet at at 1234 Glenmoor Ct." }
+      ]
+    },
+    {
+      "name": "adjacent changes, one at the start",
+      "original": "teh brwn fox",
+      "revised": "the brown fox",
+      "streaming": false,
+      "view": {
+        "segments": [
+          { "type": "change", "id": 0, "old": "teh", "new": "the", "kind": "spelling", "oldStart": 0 },
+          { "type": "equal", "text": " " },
+          { "type": "change", "id": 1, "old": "brwn", "new": "brown", "kind": "spelling", "oldStart": 4 },
+          { "type": "equal", "text": " fox" }
+        ],
+        "pending": "",
+        "changeCount": 2
+      },
+      "applied": [
+        { "rejected": [], "text": "the brown fox" },
+        { "rejected": [0], "text": "teh brown fox" },
+        { "rejected": [1], "text": "the brwn fox" },
+        { "rejected": [0, 1], "text": "teh brwn fox" }
+      ]
+    },
+    {
+      "name": "non-ASCII text",
+      "original": "Brynlee a dit qu'elle était allé au café 👍 teh 日本語 text",
+      "revised": "Brynlee a dit qu'elle était allée au café 👍 the 日本語 text",
+      "streaming": false,
+      "view": {
+        "segments": [
+          { "type": "equal", "text": "Brynlee a dit qu'elle était " },
+          { "type": "change", "id": 0, "old": "allé", "new": "allée", "kind": "spelling", "oldStart": 28 },
+          { "type": "equal", "text": " au café 👍 " },
+          { "type": "change", "id": 1, "old": "teh", "new": "the", "kind": "spelling", "oldStart": 43 },
+          { "type": "equal", "text": " 日本語 text" }
+        ],
+        "pending": "",
+        "changeCount": 2
+      },
+      "applied": [
+        { "rejected": [], "text": "Brynlee a dit qu'elle était allée au café 👍 the 日本語 text" },
+        { "rejected": [0], "text": "Brynlee a dit qu'elle était allé au café 👍 the 日本語 text" },
+        { "rejected": [0, 1], "text": "Brynlee a dit qu'elle était allé au café 👍 teh 日本語 text" }
+      ]
+    },
+    {
+      "name": "no changes",
+      "original": "Nothing to fix here.",
+      "revised": "Nothing to fix here.",
+      "streaming": false,
+      "view": {
+        "segments": [{ "type": "equal", "text": "Nothing to fix here." }],
+        "pending": "",
+        "changeCount": 0
+      },
+      "applied": [{ "rejected": [], "text": "Nothing to fix here." }]
+    },
+    {
+      "name": "a revision still streaming in, with pending text",
+      "original": "This are teh draft. It has mistakes.",
+      "revised": "This is the dra",
+      "streaming": true,
+      "view": {
+        "segments": [
+          { "type": "equal", "text": "This " },
+          { "type": "change", "id": 0, "old": "are", "new": "is", "kind": "grammar", "oldStart": 5 },
+          { "type": "equal", "text": " " },
+          { "type": "change", "id": 1, "old": "teh", "new": "the", "kind": "spelling", "oldStart": 9 },
+          { "type": "equal", "text": " " }
+        ],
+        "pending": "draft. It has mistakes.",
+        "changeCount": 2
+      },
+      "applied": [
+        { "rejected": [], "text": "This is the draft. It has mistakes." },
+        { "rejected": [1], "text": "This is teh draft. It has mistakes." },
+        { "rejected": [0, 1], "text": "This are teh draft. It has mistakes." }
+      ]
+    }
+  ]
+}

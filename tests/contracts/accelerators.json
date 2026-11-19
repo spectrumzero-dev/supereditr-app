@@ -1,0 +1,388 @@
+{
+  "comment": "Accelerator strings as Settings records them. `event` is the keydown (missing modifier flags are false; `keyCode` is the Windows virtual key, read only on Windows). `accelerator` is what `acceleratorFromEvent` (ui/src/lib/accelerator.ts) returns on each of `platforms`, or null when the recorder refuses the key; a doubled accelerator is the chord pressed twice, which ui/src/settings/ShortcutInput.svelte joins with a space on macOS. `parsed` is what the Rust parsers read from it: `macKeycode` for shortcut_check::parse (null: refused), `windowsVk` for keys::chord (null: refused), `canDouble` for double_press::parse of the chord written twice, `doubleKey` for double_press::parse of a doubled accelerator. `windowsKeyNames` pairs a virtual key with the name both `windowsKeyName` (accelerator.ts) and keys::name (src-tauri/src/keys.rs) give it. Read by src-tauri/src/accelerator_contract.rs and ui/src/lib/contracts.test.ts.",
+  "cases": [
+    {
+      "name": "a letter with Control and Alt",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "KeyE", "key": "e", "ctrlKey": true, "altKey": true },
+      "accelerator": "Control+Alt+E",
+      "parsed": { "modifiers": ["Control", "Alt"], "macKeycode": 14, "windowsVk": "0x45", "canDouble": true }
+    },
+    {
+      "name": "a letter with Command",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "KeyA", "key": "a", "metaKey": true },
+      "accelerator": "Command+A",
+      "parsed": { "modifiers": ["Command"], "macKeycode": 0, "windowsVk": "0x41", "canDouble": true }
+    },
+    {
+      "name": "a letter with Control",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "KeyR", "key": "r", "ctrlKey": true },
+      "accelerator": "Control+R",
+      "parsed": { "modifiers": ["Control"], "macKeycode": 15, "windowsVk": "0x52", "canDouble": true }
+    },
+    {
+      "name": "a letter with Alt",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "KeyB", "key": "∫", "altKey": true },
+      "accelerator": "Alt+B",
+      "parsed": { "modifiers": ["Alt"], "macKeycode": 11, "windowsVk": "0x42", "canDouble": true }
+    },
+    {
+      "name": "a letter with Control and Shift",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "KeyZ", "key": "Z", "ctrlKey": true, "shiftKey": true },
+      "accelerator": "Control+Shift+Z",
+      "parsed": { "modifiers": ["Control", "Shift"], "macKeycode": 6, "windowsVk": "0x5A", "canDouble": true }
+    },
+    {
+      "name": "every modifier, in the recorder's order",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "KeyK", "key": "k", "ctrlKey": true, "altKey": true, "shiftKey": true, "metaKey": true },
+      "accelerator": "Control+Alt+Shift+Command+K",
+      "parsed": { "modifiers": ["Control", "Alt", "Shift", "Command"], "macKeycode": 40, "windowsVk": "0x4B", "canDouble": true }
+    },
+    {
+      "name": "a digit with Shift and Command",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "Digit2", "key": "@", "metaKey": true, "shiftKey": true },
+      "accelerator": "Shift+Command+2",
+      "parsed": { "modifiers": ["Shift", "Command"], "macKeycode": 19, "windowsVk": "0x32", "canDouble": true }
+    },
+    {
+      "name": "digit 0 with Control",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "Digit0", "key": "0", "ctrlKey": true },
+      "accelerator": "Control+0",
+      "parsed": { "modifiers": ["Control"], "macKeycode": 29, "windowsVk": "0x30", "canDouble": true }
+    },
+    {
+      "name": "a lone function key",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "F5", "key": "F5" },
+      "accelerator": "F5",
+      "parsed": { "modifiers": [], "macKeycode": 96, "windowsVk": "0x74", "canDouble": false }
+    },
+    {
+      "name": "a function key with Shift alone",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "F6", "key": "F6", "shiftKey": true },
+      "accelerator": "Shift+F6",
+      "parsed": { "modifiers": ["Shift"], "macKeycode": 97, "windowsVk": "0x75", "canDouble": false }
+    },
+    {
+      "name": "F12 with Alt",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "F12", "key": "F12", "altKey": true },
+      "accelerator": "Alt+F12",
+      "parsed": { "modifiers": ["Alt"], "macKeycode": 111, "windowsVk": "0x7B", "canDouble": false }
+    },
+    {
+      "name": "F13",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "F13", "key": "F13" },
+      "accelerator": "F13",
+      "parsed": { "modifiers": [], "macKeycode": 105, "windowsVk": "0x7C", "canDouble": false }
+    },
+    {
+      "name": "F20, the last function key recorded off Windows",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "F20", "key": "F20" },
+      "accelerator": "F20",
+      "parsed": { "modifiers": [], "macKeycode": 90, "windowsVk": "0x83", "canDouble": false }
+    },
+    {
+      "name": "Space",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "Space", "key": " ", "ctrlKey": true, "altKey": true },
+      "accelerator": "Control+Alt+Space",
+      "parsed": { "modifiers": ["Control", "Alt"], "macKeycode": 49, "windowsVk": "0x20", "canDouble": false }
+    },
+    {
+      "name": "Enter",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "Enter", "key": "Enter", "altKey": true, "metaKey": true },
+      "accelerator": "Alt+Command+Enter",
+      "parsed": { "modifiers": ["Alt", "Command"], "macKeycode": 36, "windowsVk": "0x0D", "canDouble": false }
+    },
+    {
+      "name": "Period",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "Period", "key": ">", "ctrlKey": true, "shiftKey": true },
+      "accelerator": "Control+Shift+Period",
+      "parsed": { "modifiers": ["Control", "Shift"], "macKeycode": 47, "windowsVk": "0xBE", "canDouble": false }
+    },
+    {
+      "name": "Comma",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "Comma", "key": "≤", "altKey": true, "metaKey": true },
+      "accelerator": "Alt+Command+Comma",
+      "parsed": { "modifiers": ["Alt", "Command"], "macKeycode": 43, "windowsVk": "0xBC", "canDouble": false }
+    },
+    {
+      "name": "Slash",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "Slash", "key": "/", "ctrlKey": true },
+      "accelerator": "Control+Slash",
+      "parsed": { "modifiers": ["Control"], "macKeycode": 44, "windowsVk": "0xBF", "canDouble": false }
+    },
+    {
+      "name": "Backslash",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "Backslash", "key": "\\", "ctrlKey": true, "altKey": true },
+      "accelerator": "Control+Alt+Backslash",
+      "parsed": { "modifiers": ["Control", "Alt"], "macKeycode": 42, "windowsVk": "0xDC", "canDouble": false }
+    },
+    {
+      "name": "Semicolon",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "Semicolon", "key": ";", "ctrlKey": true },
+      "accelerator": "Control+Semicolon",
+      "parsed": { "modifiers": ["Control"], "macKeycode": 41, "windowsVk": "0xBA", "canDouble": false }
+    },
+    {
+      "name": "Quote",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "Quote", "key": "'", "ctrlKey": true },
+      "accelerator": "Control+Quote",
+      "parsed": { "modifiers": ["Control"], "macKeycode": 39, "windowsVk": "0xDE", "canDouble": false }
+    },
+    {
+      "name": "BracketLeft",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "BracketLeft", "key": "[", "ctrlKey": true },
+      "accelerator": "Control+BracketLeft",
+      "parsed": { "modifiers": ["Control"], "macKeycode": 33, "windowsVk": "0xDB", "canDouble": false }
+    },
+    {
+      "name": "BracketRight",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "BracketRight", "key": "]", "ctrlKey": true },
+      "accelerator": "Control+BracketRight",
+      "parsed": { "modifiers": ["Control"], "macKeycode": 30, "windowsVk": "0xDD", "canDouble": false }
+    },
+    {
+      "name": "Minus",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "Minus", "key": "-", "altKey": true },
+      "accelerator": "Alt+Minus",
+      "parsed": { "modifiers": ["Alt"], "macKeycode": 27, "windowsVk": "0xBD", "canDouble": false }
+    },
+    {
+      "name": "Equal",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "Equal", "key": "=", "altKey": true },
+      "accelerator": "Alt+Equal",
+      "parsed": { "modifiers": ["Alt"], "macKeycode": 24, "windowsVk": "0xBB", "canDouble": false }
+    },
+    {
+      "name": "Backquote",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "Backquote", "key": "`", "ctrlKey": true },
+      "accelerator": "Control+Backquote",
+      "parsed": { "modifiers": ["Control"], "macKeycode": 50, "windowsVk": "0xC0", "canDouble": false }
+    },
+    {
+      "name": "a plain letter would capture typing",
+      "platforms": ["macos", "linux", "windows"],
+      "event": { "code": "KeyE", "key": "e", "keyCode": "0x45" },
+      "accelerator": null
+    },
+    {
+      "name": "a letter with Shift alone would capture typing",
+      "platforms": ["macos", "linux", "windows"],
+      "event": { "code": "KeyE", "key": "E", "keyCode": "0x45", "shiftKey": true },
+      "accelerator": null
+    },
+    {
+      "name": "a modifier key on its own",
+      "platforms": ["macos", "linux", "windows"],
+      "event": { "code": "ShiftLeft", "key": "Shift", "keyCode": "0x10", "shiftKey": true },
+      "accelerator": null
+    },
+    {
+      "name": "Escape is not recorded",
+      "platforms": ["macos", "linux", "windows"],
+      "event": { "code": "Escape", "key": "Escape", "keyCode": "0x1B", "ctrlKey": true },
+      "accelerator": null
+    },
+    {
+      "name": "arrow keys are not recorded off Windows",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "ArrowLeft", "key": "ArrowLeft", "ctrlKey": true, "altKey": true },
+      "accelerator": null
+    },
+    {
+      "name": "Tab is not recorded off Windows",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "Tab", "key": "Tab", "ctrlKey": true, "altKey": true },
+      "accelerator": null
+    },
+    {
+      "name": "F21 is not recorded off Windows",
+      "platforms": ["macos", "linux"],
+      "event": { "code": "F21", "key": "F21" },
+      "accelerator": null
+    },
+    {
+      "name": "Windows: the letter the layout types, not the US position",
+      "platforms": ["windows"],
+      "event": { "code": "KeyQ", "key": "a", "keyCode": "0x41", "ctrlKey": true, "altKey": true },
+      "accelerator": "Control+Alt+A",
+      "parsed": { "modifiers": ["Control", "Alt"], "macKeycode": 0, "windowsVk": "0x41", "canDouble": true }
+    },
+    {
+      "name": "Windows: a digit",
+      "platforms": ["windows"],
+      "event": { "code": "Digit7", "key": "7", "keyCode": "0x37", "altKey": true },
+      "accelerator": "Alt+7",
+      "parsed": { "modifiers": ["Alt"], "macKeycode": 26, "windowsVk": "0x37", "canDouble": true }
+    },
+    {
+      "name": "Windows: a punctuation key by its virtual key",
+      "platforms": ["windows"],
+      "event": { "code": "BracketLeft", "key": "ü", "keyCode": "0xBA", "ctrlKey": true, "shiftKey": true },
+      "accelerator": "Control+Shift+VkBA",
+      "parsed": { "modifiers": ["Control", "Shift"], "macKeycode": null, "windowsVk": "0xBA", "canDouble": false }
+    },
+    {
+      "name": "Windows: the key beside left Shift on ISO keyboards",
+      "platforms": ["windows"],
+      "event": { "code": "IntlBackslash", "key": "<", "keyCode": "0xE2", "altKey": true, "shiftKey": true },
+      "accelerator": "Alt+Shift+VkE2",
+      "parsed": { "modifiers": ["Alt", "Shift"], "macKeycode": null, "windowsVk": "0xE2", "canDouble": false }
+    },
+    {
+      "name": "Windows: a function key",
+      "platforms": ["windows"],
+      "event": { "code": "F2", "key": "F2", "keyCode": "0x71", "ctrlKey": true, "shiftKey": true },
+      "accelerator": "Control+Shift+F2",
+      "parsed": { "modifiers": ["Control", "Shift"], "macKeycode": 120, "windowsVk": "0x71", "canDouble": false }
+    },
+    {
+      "name": "Windows: F24",
+      "platforms": ["windows"],
+      "event": { "code": "F24", "key": "F24", "keyCode": "0x87" },
+      "accelerator": "F24",
+      "parsed": { "modifiers": [], "macKeycode": null, "windowsVk": "0x87", "canDouble": false }
+    },
+    {
+      "name": "Windows: Space",
+      "platforms": ["windows"],
+      "event": { "code": "Space", "key": " ", "keyCode": "0x20", "ctrlKey": true, "altKey": true },
+      "accelerator": "Control+Alt+Space",
+      "parsed": { "modifiers": ["Control", "Alt"], "macKeycode": 49, "windowsVk": "0x20", "canDouble": false }
+    },
+    {
+      "name": "Windows: Enter",
+      "platforms": ["windows"],
+      "event": { "code": "Enter", "key": "Enter", "keyCode": "0x0D", "ctrlKey": true },
+      "accelerator": "Control+Enter",
+      "parsed": { "modifiers": ["Control"], "macKeycode": 36, "windowsVk": "0x0D", "canDouble": false }
+    },
+    {
+      "name": "Windows: Tab",
+      "platforms": ["windows"],
+      "event": { "code": "Tab", "key": "Tab", "keyCode": "0x09", "ctrlKey": true, "altKey": true },
+      "accelerator": "Control+Alt+Tab",
+      "parsed": { "modifiers": ["Control", "Alt"], "macKeycode": 48, "windowsVk": "0x09", "canDouble": false }
+    },
+    {
+      "name": "Windows: an arrow key",
+      "platforms": ["windows"],
+      "event": { "code": "ArrowLeft", "key": "ArrowLeft", "keyCode": "0x25", "ctrlKey": true, "altKey": true },
+      "accelerator": "Control+Alt+ArrowLeft",
+      "parsed": { "modifiers": ["Control", "Alt"], "macKeycode": null, "windowsVk": "0x25", "canDouble": false }
+    },
+    {
+      "name": "Windows: Home",
+      "platforms": ["windows"],
+      "event": { "code": "Home", "key": "Home", "keyCode": "0x24", "altKey": true },
+      "accelerator": "Alt+Home",
+      "parsed": { "modifiers": ["Alt"], "macKeycode": null, "windowsVk": "0x24", "canDouble": false }
+    },
+    {
+      "name": "Windows: PageDown",
+      "platforms": ["windows"],
+      "event": { "code": "PageDown", "key": "PageDown", "keyCode": "0x22", "ctrlKey": true, "shiftKey": true },
+      "accelerator": "Control+Shift+PageDown",
+      "parsed": { "modifiers": ["Control", "Shift"], "macKeycode": null, "windowsVk": "0x22", "canDouble": false }
+    },
+    {
+      "name": "Windows: Insert",
+      "platforms": ["windows"],
+      "event": { "code": "Insert", "key": "Insert", "keyCode": "0x2D", "ctrlKey": true },
+      "accelerator": "Control+Insert",
+      "parsed": { "modifiers": ["Control"], "macKeycode": null, "windowsVk": "0x2D", "canDouble": false }
+    },
+    {
+      "name": "Windows: the Windows key is written as Command",
+      "platforms": ["windows"],
+      "event": { "code": "KeyE", "key": "e", "keyCode": "0x45", "metaKey": true },
+      "accelerator": "Command+E",
+      "parsed": { "modifiers": ["Command"], "macKeycode": 14, "windowsVk": "0x45", "canDouble": true }
+    },
+    {
+      "name": "Windows: a control key on its own",
+      "platforms": ["windows"],
+      "event": { "code": "ControlLeft", "key": "Control", "keyCode": "0x11", "ctrlKey": true },
+      "accelerator": null
+    }
+  ],
+  "doubled": [
+    {
+      "name": "a letter pressed twice with Command",
+      "event": { "code": "KeyE", "key": "e", "metaKey": true },
+      "accelerator": "Command+E Command+E",
+      "parsed": { "modifiers": ["Command"], "macKeycode": 14, "windowsVk": null, "doubleKey": "E" }
+    },
+    {
+      "name": "a digit pressed twice with Control and Alt",
+      "event": { "code": "Digit3", "key": "3", "ctrlKey": true, "altKey": true },
+      "accelerator": "Control+Alt+3 Control+Alt+3",
+      "parsed": { "modifiers": ["Control", "Alt"], "macKeycode": 20, "windowsVk": null, "doubleKey": "3" }
+    },
+    {
+      "name": "a letter pressed twice with Shift and Command",
+      "event": { "code": "KeyJ", "key": "J", "metaKey": true, "shiftKey": true },
+      "accelerator": "Shift+Command+J Shift+Command+J",
+      "parsed": { "modifiers": ["Shift", "Command"], "macKeycode": 38, "windowsVk": null, "doubleKey": "J" }
+    }
+  ],
+  "windowsKeyNames": [
+    { "vk": "0x30", "name": "0" },
+    { "vk": "0x39", "name": "9" },
+    { "vk": "0x41", "name": "A" },
+    { "vk": "0x5A", "name": "Z" },
+    { "vk": "0x70", "name": "F1" },
+    { "vk": "0x7B", "name": "F12" },
+    { "vk": "0x87", "name": "F24" },
+    { "vk": "0x20", "name": "Space" },
+    { "vk": "0x0D", "name": "Enter" },
+    { "vk": "0x09", "name": "Tab" },
+    { "vk": "0x2D", "name": "Insert" },
+    { "vk": "0x24", "name": "Home" },
+    { "vk": "0x23", "name": "End" },
+    { "vk": "0x21", "name": "PageUp" },
+    { "vk": "0x22", "name": "PageDown" },
+    { "vk": "0x25", "name": "ArrowLeft" },
+    { "vk": "0x26", "name": "ArrowUp" },
+    { "vk": "0x27", "name": "ArrowRight" },
+    { "vk": "0x28", "name": "ArrowDown" },
+    { "vk": "0xBA", "name": "VkBA" },
+    { "vk": "0xBB", "name": "VkBB" },
+    { "vk": "0xBC", "name": "VkBC" },
+    { "vk": "0xBD", "name": "VkBD" },
+    { "vk": "0xBE", "name": "VkBE" },
+    { "vk": "0xBF", "name": "VkBF" },
+    { "vk": "0xC0", "name": "VkC0" },
+    { "vk": "0xDB", "name": "VkDB" },
+    { "vk": "0xDC", "name": "VkDC" },
+    { "vk": "0xDD", "name": "VkDD" },
+    { "vk": "0xDE", "name": "VkDE" },
+    { "vk": "0xDF", "name": "VkDF" },
+    { "vk": "0xE1", "name": "VkE1" },
+    { "vk": "0xE2", "name": "VkE2" }
+  ]
+}

@@ -9,7 +9,8 @@
 //!    only the words it fixes, so nothing around them is rewritten; anything else is one paste over
 //!    the whole selection, with its formatting as HTML.
 //! 4. Read the field back. Unconfirmed after a paste means the paste may have landed: uncertain,
-//!    never retried, so the text is never written twice.
+//!    never retried, so the text is never written twice. The fix then stays on the clipboard, so
+//!    a paste that lands late can't insert the user's old clipboard instead.
 //!
 //! Corrections are never written through AT-SPI's editable-text calls, which break undo.
 
@@ -105,6 +106,12 @@ async fn attempt(services: &Services<'_>, capture: &Capture, text: &str, proofre
                 transaction.restore();
                 return outcome;
             }
+            InPlace::Unlanded(outcome) => {
+                // The paste may still land late. Leave the fix on the clipboard rather than
+                // restoring, so a late paste can't insert the user's old clipboard instead.
+                transaction.leave();
+                return outcome;
+            }
             InPlace::Done => {
                 let landed = landed(services, field, text).await;
                 match transaction.restore() {
@@ -135,12 +142,17 @@ async fn attempt(services: &Services<'_>, capture: &Capture, text: &str, proofre
         transaction.restore();
         return ReplaceOutcome::CopyOnly(PlatformError::ReplaceFailed);
     }
-    let landed = landed(services, field, text).await;
+    if !landed(services, field, text).await {
+        // The paste may still land late. Leave the suggestion on the clipboard rather than
+        // restoring, so a late paste can't insert the user's old clipboard instead.
+        transaction.leave();
+        return ReplaceOutcome::Uncertain(PlatformError::Unverified);
+    }
     match transaction.restore() {
         Restore::Restored => {}
         other => trace(format_args!("replace {}: clipboard {other:?}", capture.bundle_id)),
     }
-    if landed { ReplaceOutcome::Applied } else { ReplaceOutcome::Uncertain(PlatformError::Unverified) }
+    ReplaceOutcome::Applied
 }
 
 /// The writes that apply `text` in place, when it is a proofread of a few local changes and each
@@ -178,6 +190,8 @@ enum InPlace {
     /// Nothing was written and the selection is as captured: the whole selection can be replaced.
     Untouched,
     Stopped(ReplaceOutcome),
+    /// A change was pasted but didn't show up in time: the paste may still land late.
+    Unlanded(ReplaceOutcome),
 }
 
 /// Applies a proofread as `steps`, last first: each selects the words it changes in the element
@@ -214,10 +228,10 @@ async fn in_place(
                 steps.len()
             ));
             // With nothing applied, the first edit may still have landed unseen.
-            InPlace::Stopped(ReplaceOutcome::Uncertain(match i {
+            ReplaceOutcome::Uncertain(match i {
                 0 => PlatformError::Unverified,
                 applied => PlatformError::Partial { applied, total: steps.len() },
-            }))
+            })
         };
         let id = &field.objects[step.object];
         let (start, end) = range(step);
@@ -228,7 +242,7 @@ async fn in_place(
         };
         if moved != Moved::Yes {
             if i > 0 {
-                return stopped("the words to fix couldn’t be selected");
+                return InPlace::Stopped(stopped("the words to fix couldn’t be selected"));
             }
             // Nothing is written yet. An app that refused still has the selection as captured, and
             // all of it can be replaced. One that didn't answer in time may move its selection
@@ -252,7 +266,7 @@ async fn in_place(
             super::wait_for_shortcut_release();
         }
         if transaction.put_text(&step.new, None).is_err() {
-            return stopped("the clipboard didn’t take the fix");
+            return InPlace::Stopped(stopped("the clipboard didn’t take the fix"));
         }
         tokio::time::sleep(SELECTION_SETTLE).await;
         if !services.fields.selected(id, start, end).await {
@@ -263,11 +277,11 @@ async fn in_place(
                     trace(format_args!("paste {}: nothing written: the selection moved again", capture.bundle_id));
                     InPlace::Stopped(ReplaceOutcome::CopyOnly(PlatformError::Stale))
                 }
-                _ => stopped("the selection moved off the words to fix"),
+                _ => InPlace::Stopped(stopped("the selection moved off the words to fix")),
             };
         }
         if services.desktop.send_shortcut(window, Shortcut::ctrl("V")).await.is_err() {
-            return stopped("the paste couldn’t be sent");
+            return InPlace::Stopped(stopped("the paste couldn’t be sent"));
         }
         let written = start + step.new.chars().count() as i32;
         let pasted = Instant::now();
@@ -276,7 +290,7 @@ async fn in_place(
                 break;
             }
             if pasted.elapsed() >= PASTE_WAIT {
-                return stopped("a change didn’t land");
+                return InPlace::Unlanded(stopped("a change didn’t land"));
             }
             services.fields.changed(Duration::from_millis(20)).await;
         }
@@ -414,7 +428,24 @@ mod tests {
         let outcome = world.replace(&capture, "They’re going");
         assert!(matches!(outcome, ReplaceOutcome::Uncertain(PlatformError::Unverified)));
         assert_eq!(world.keys_sent(), ["CTRL V"], "one paste, never a second");
-        assert_eq!(world.clipboard.get("text/plain;charset=utf-8").unwrap(), b"Rhyan's own copy");
+        assert_eq!(
+            world.clipboard.get("text/plain;charset=utf-8").unwrap(),
+            "They’re going".as_bytes(),
+            "a late Ctrl+V must paste the suggestion, not the user's old clipboard"
+        );
+    }
+
+    #[test]
+    fn a_change_pasted_in_place_that_cant_be_confirmed_stays_on_the_clipboard() {
+        // The app takes the selection, but the field never shows the pasted words.
+        let world = World::new("chromium").with_field(formatted("Their going realy soon", "npm ci"));
+        let capture = captured(&world);
+        let fixed = "They’re going really soon\nnpm ci";
+        let outcome = world.proofread(&capture, fixed);
+        assert!(matches!(outcome, ReplaceOutcome::Uncertain(PlatformError::Unverified)), "{outcome:?}");
+        assert_eq!(world.keys_sent(), ["CTRL V"], "one paste, never a second");
+        let held = String::from_utf8(world.clipboard.get("text/plain;charset=utf-8").unwrap()).unwrap();
+        assert!(held != "Rhyan's own copy" && fixed.contains(&held), "the change stays on the clipboard: {held}");
     }
 
     #[test]

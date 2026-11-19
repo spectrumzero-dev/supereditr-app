@@ -29,10 +29,6 @@ fn written(id: &str) -> String {
     let ms = Duration::from_millis;
     // Stand-ins for types that only exist on one platform, with the same `Debug`.
     #[derive(Debug)]
-    enum Stopped {
-        Renderer,
-    }
-    #[derive(Debug)]
     enum Action {
         Review,
     }
@@ -136,7 +132,7 @@ fn written(id: &str) -> String {
                 .to_string()
         }
         "hyprland-reloaded" => HyprlandReloaded { binds: 2 }.to_string(),
-        "webview-stopped" => WebviewStopped { window: "overlay", process: &Stopped::Renderer }.to_string(),
+        "webview-stopped" => WebviewStopped { window: "overlay", process: RENDERER }.to_string(),
         "webview-made-again" => WebviewMadeAgain { window: "overlay", took: ms(850) }.to_string(),
         "hotkey-pressed" => HotkeyPressed { id: 1, action: &Some(Action::Review) }.to_string(),
         other => panic!("tests/contracts/log-lines.json lists {other}, which these tests don't write"),
@@ -188,6 +184,22 @@ fn each_driver_pattern_matches_its_line() {
     }
 }
 
+/// Whether `source` has `pattern` as a whole literal: with a quote or a regex slash right before and
+/// right after it. A pattern found only inside a longer literal isn't what the driver matches.
+fn has_whole_literal(source: &str, pattern: &str) -> bool {
+    let delimiter = |c: Option<char>| matches!(c, Some('\'' | '"' | '/'));
+    source.match_indices(pattern).any(|(at, found)| {
+        delimiter(source[..at].chars().next_back()) && delimiter(source[at + found.len()..].chars().next())
+    })
+}
+
+#[test]
+fn a_pattern_inside_a_longer_literal_is_not_the_drivers() {
+    assert!(has_whole_literal("if ($line -match ': applied in ') {", ": applied in "));
+    assert!(!has_whole_literal("if ($line -match ': applied in $') {", ": applied in "));
+    assert!(!has_whole_literal("grep 'replace foot: applied in '", ": applied in "));
+}
+
 #[test]
 fn each_driver_pattern_is_in_the_driver() {
     for line in lines() {
@@ -197,8 +209,8 @@ fn each_driver_pattern_is_in_the_driver() {
             let source = std::fs::read_to_string(repository().join(file)).unwrap_or_else(|e| panic!("{file}: {e}"));
             let pattern = text(matcher, "pattern");
             assert!(
-                source.contains(pattern),
-                "{}: {file} no longer has {pattern:?}; update tests/contracts/log-lines.json to what it matches now",
+                has_whole_literal(&source, pattern),
+                "{}: {file} no longer has {pattern:?} as a whole literal; update tests/contracts/log-lines.json to what it matches now",
                 text(&line, "id")
             );
         }

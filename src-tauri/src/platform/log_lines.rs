@@ -394,12 +394,20 @@ impl Display for HyprlandReloaded {
 #[cfg_attr(not(windows), allow(dead_code))]
 pub struct WebviewStopped<'a> {
     pub window: &'a str,
-    pub process: &'a dyn Debug,
+    /// [`BROWSER`] or [`RENDERER`].
+    pub process: &'a str,
 }
+
+/// A window's WebView2 browser process, in [`WebviewStopped`].
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const BROWSER: &str = "Browser";
+/// A window's WebView2 renderer, in [`WebviewStopped`]. The Windows driver waits for this word.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const RENDERER: &str = "Renderer";
 
 impl Display for WebviewStopped<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "webview: the {} window's {:?} process stopped", self.window, self.process)
+        write!(f, "webview: the {} window's {} process stopped", self.window, self.process)
     }
 }
 

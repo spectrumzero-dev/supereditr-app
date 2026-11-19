@@ -7,10 +7,13 @@ use std::collections::HashMap;
 use std::time::Instant;
 use supereditr_core::Config;
 use supereditr_core::detect::{self, Candidate};
-use supereditr_core::provider::{ChatRequest, ProviderKind, ProviderProfile, preferred_model};
+use supereditr_core::provider::{ChatRequest, CheckProblem, ProviderKind, ProviderProfile, Providers, preferred_model};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 type CmdResult<T> = Result<T, String>;
+
+#[cfg(test)]
+mod tests;
 
 // --- Overlay -------------------------------------------------------------------------------
 
@@ -160,31 +163,64 @@ pub fn save_settings(
     config: Config,
     revision: Option<u64>,
 ) -> CmdResult<Saved> {
-    if config.presets.is_empty() {
-        return Err("Keep at least one style.".into());
-    }
-    let previous = state.config();
-    let Some(revision) = state.save_config_based_on(config.clone(), revision).map_err(|e| e.to_string())? else {
+    let Some((revision, effects)) = save_from_settings(&state, config.clone(), revision)? else {
         return Ok(Saved { revision: None, problems: Vec::new() });
     };
     let revision = Some(revision);
-    if previous.active_provider != config.active_provider {
+    if effects.show_ai_status {
         crate::show_ai_status(&app);
     }
-    if previous.words != config.words {
-        prepare_words(&state, config.words.clone());
+    if effects.prepare_words {
+        prepare_words(&state, config.words);
     }
-    if previous.excluded_apps != config.excluded_apps {
+    if effects.refresh_app_toggle {
         crate::app_toggle::refresh(&app);
     }
-    if previous.hotkeys.review != config.hotkeys.review
-        || previous.hotkeys.quick_fix != config.hotkeys.quick_fix
-        || previous.presets.iter().map(|p| &p.shortcut).ne(config.presets.iter().map(|p| &p.shortcut))
-    {
+    if effects.register_shortcuts {
         return Ok(Saved { revision, problems: hotkeys::register_from_config(&app) });
     }
     // The shortcuts weren't touched, so any the desktop refused still are.
     Ok(Saved { revision, problems: refused_shortcuts() })
+}
+
+/// Saves a config from Settings, unless it was read before another save. Returns the new revision
+/// and what the change needs done, or None when the save was refused.
+pub(crate) fn save_from_settings(
+    state: &AppState,
+    config: Config,
+    revision: Option<u64>,
+) -> CmdResult<Option<(u64, SettingsEffects)>> {
+    if config.presets.is_empty() {
+        return Err("Keep at least one style.".into());
+    }
+    let previous = state.config();
+    let effects = settings_effects(&previous, &config);
+    let saved = state.save_config_based_on(config, revision).map_err(|e| e.to_string())?;
+    Ok(saved.map(|revision| (revision, effects)))
+}
+
+/// What a settings change needs done besides saving it.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct SettingsEffects {
+    /// Show the AI in use in the menu-bar menu again.
+    pub show_ai_status: bool,
+    /// Rebuild the offline checker with the new word list.
+    pub prepare_words: bool,
+    /// Update the menu bar's "Turn off in …" item.
+    pub refresh_app_toggle: bool,
+    /// Register the shortcuts again.
+    pub register_shortcuts: bool,
+}
+
+pub(crate) fn settings_effects(old: &Config, new: &Config) -> SettingsEffects {
+    SettingsEffects {
+        show_ai_status: old.active_provider != new.active_provider,
+        prepare_words: old.words != new.words,
+        refresh_app_toggle: old.excluded_apps != new.excluded_apps,
+        register_shortcuts: old.hotkeys.review != new.hotkeys.review
+            || old.hotkeys.quick_fix != new.hotkeys.quick_fix
+            || old.presets.iter().map(|p| &p.shortcut).ne(new.presets.iter().map(|p| &p.shortcut)),
+    }
 }
 
 /// Shortcuts the desktop left unbound because something else uses their keys, as Settings shows
@@ -203,22 +239,33 @@ pub fn set_api_key(
     profile_id: String,
     key: Option<String>,
 ) -> CmdResult<()> {
+    if store_api_key(&state, &secrets::CredentialStore, &profile_id, key)? {
+        crate::show_ai_status(&app);
+    }
+    Ok(())
+}
+
+/// Saves a provider's key, or deletes it when `key` is None or blank. Returns whether that provider
+/// is the AI in use, whose status the menu-bar menu then shows again.
+pub(crate) fn store_api_key(
+    state: &AppState,
+    secrets: &dyn secrets::Secrets,
+    profile_id: &str,
+    key: Option<String>,
+) -> CmdResult<bool> {
     let kind =
         state.config().providers.iter().find(|p| p.id == profile_id).map(|p| p.kind).ok_or("Unknown provider.")?;
     match key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()) {
         Some(key) => {
-            secrets::set(kind, &profile_id, &key)?;
-            state.set_cached_key(kind, &profile_id, Some(key));
+            secrets.set(kind, profile_id, &key)?;
+            state.set_cached_key(kind, profile_id, Some(key));
         }
         None => {
-            secrets::delete(kind, &profile_id);
-            state.set_cached_key(kind, &profile_id, None);
+            secrets.delete(kind, profile_id);
+            state.set_cached_key(kind, profile_id, None);
         }
     }
-    if state.config().active_provider.as_deref() == Some(profile_id.as_str()) {
-        crate::show_ai_status(&app);
-    }
-    Ok(())
+    Ok(state.config().active_provider.as_deref() == Some(profile_id))
 }
 
 #[derive(Serialize)]
@@ -269,18 +316,31 @@ pub async fn scan_accounts(state: State<'_, AppState>) -> CmdResult<Vec<Candidat
 /// the active provider if it passes its check (otherwise it is added, and the error returned).
 #[tauri::command]
 pub async fn adopt_candidate(app: AppHandle, state: State<'_, AppState>, index: usize) -> CmdResult<ProviderProfile> {
+    let profile = adopt(&state, &secrets::CredentialStore, &state.engine.providers, index).await?;
+    crate::show_ai_status(&app);
+    Ok(profile)
+}
+
+/// `adopt_candidate` without the menu bar: adds the scanned account at `index` (or finds the
+/// provider already added from it) and makes it the AI in use if it passes its check.
+pub(crate) async fn adopt(
+    state: &AppState,
+    secrets: &dyn secrets::Secrets,
+    servers: &impl Servers,
+    index: usize,
+) -> CmdResult<ProviderProfile> {
     let candidate =
         state.candidates.lock().unwrap().get(index).cloned().ok_or("That result has expired. Scan again.")?;
     // Already added: switch to it rather than adding a duplicate.
-    if let Some(existing) = matching_profile(&state, &candidate) {
-        activate_provider(app, state.clone(), existing.id.clone()).await?;
+    if let Some(existing) = matching_profile(state, &candidate) {
+        activate(state, servers, existing.id.clone()).await?;
         return Ok(ProviderProfile { api_key: None, ..existing });
     }
     let mut profile = ProviderProfile::new(candidate.kind);
     profile.base_url = candidate.base_url.clone();
     profile.api_key = candidate.api_key.clone();
-    profile.id = unique_id(&state, candidate.kind);
-    if let Ok(models) = state.engine.providers.list_models(&profile).await {
+    profile.id = unique_id(state, candidate.kind);
+    if let Some(models) = servers.models(&profile).await {
         if !models.is_empty() {
             profile.model = preferred_model(candidate.kind, &models);
         }
@@ -288,20 +348,39 @@ pub async fn adopt_candidate(app: AppHandle, state: State<'_, AppState>, index: 
         profile.model = preferred_model(candidate.kind, &candidate.models);
     }
     if let Some(key) = &candidate.api_key {
-        secrets::set(profile.kind, &profile.id, key)?;
+        secrets.set(profile.kind, &profile.id, key)?;
         state.set_cached_key(profile.kind, &profile.id, Some(key.clone()));
     }
     let mut config = state.config();
     config.providers.push(ProviderProfile { api_key: None, ..profile.clone() });
     state.save_config(config).map_err(|e| e.to_string())?;
     // Added either way, but in use only if it works.
-    activate_provider(app, state.clone(), profile.id.clone()).await?;
+    activate(state, servers, profile.id.clone()).await?;
     Ok(ProviderProfile { api_key: None, ..profile })
+}
+
+/// What the AI providers' servers say, over the network in the app ([`Providers`]) and made up in
+/// tests.
+pub(crate) trait Servers: Sync {
+    /// The models the server lists, or None when it couldn't be asked.
+    fn models(&self, profile: &ProviderProfile) -> impl Future<Output = Option<Vec<String>>> + Send;
+    /// Whether the AI can answer reviews, with the models it offers (see `Providers::check`).
+    fn check(&self, profile: &ProviderProfile) -> impl Future<Output = Result<Vec<String>, CheckProblem>> + Send;
+}
+
+impl Servers for Providers {
+    async fn models(&self, profile: &ProviderProfile) -> Option<Vec<String>> {
+        self.list_models(profile).await.ok()
+    }
+
+    async fn check(&self, profile: &ProviderProfile) -> Result<Vec<String>, CheckProblem> {
+        Providers::check(self, profile).await
+    }
 }
 
 /// Whether an AI is ready to review: its key is saved and its server answers (a model-list
 /// request), or for the Claude subscription, the `claude` program runs.
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderCheck {
     ready: bool,
@@ -320,6 +399,10 @@ impl ProviderCheck {
 }
 
 pub async fn check(state: &AppState, profile_id: &str) -> ProviderCheck {
+    check_with(state, &state.engine.providers, profile_id).await
+}
+
+async fn check_with(state: &AppState, servers: &impl Servers, profile_id: &str) -> ProviderCheck {
     let Some(profile) = state.profile(profile_id) else {
         return ProviderCheck {
             ready: false,
@@ -328,7 +411,7 @@ pub async fn check(state: &AppState, profile_id: &str) -> ProviderCheck {
             models: Vec::new(),
         };
     };
-    match state.engine.providers.check(&profile).await {
+    match servers.check(&profile).await {
         // The saved model must be one the server offers; activation picks one if it isn't.
         Ok(models) if !models.contains(&profile.model) => ProviderCheck {
             ready: false,
@@ -387,14 +470,21 @@ pub async fn activate_provider(
     state: State<'_, AppState>,
     profile_id: String,
 ) -> CmdResult<ProviderCheck> {
-    let mut result = check(&state, &profile_id).await;
+    let result = activate(&state, &state.engine.providers, profile_id).await?;
+    crate::show_ai_status(&app);
+    Ok(result)
+}
+
+/// `activate_provider` without the menu bar.
+pub(crate) async fn activate(state: &AppState, servers: &impl Servers, profile_id: String) -> CmdResult<ProviderCheck> {
+    let mut result = check_with(state, servers, &profile_id).await;
     // Reachable, but its saved model isn't offered: switch to the fastest one it has.
     if !result.ready && !result.models.is_empty() {
         let mut config = state.config();
         if let Some(p) = config.providers.iter_mut().find(|p| p.id == profile_id) {
             p.model = preferred_model(p.kind, &result.models);
             state.save_config(config).map_err(|e| e.to_string())?;
-            result = check(&state, &profile_id).await;
+            result = check_with(state, servers, &profile_id).await;
         }
     }
     if !result.ready {
@@ -403,7 +493,6 @@ pub async fn activate_provider(
     let mut config = state.config();
     config.active_provider = Some(profile_id);
     state.save_config(config).map_err(|e| e.to_string())?;
-    crate::show_ai_status(&app);
     Ok(result)
 }
 
@@ -446,12 +535,6 @@ pub fn remove_provider(app: AppHandle, state: State<'_, AppState>, profile_id: S
     state.save_config(config).map_err(|e| e.to_string())?;
     crate::show_ai_status(&app);
     Ok(())
-}
-
-#[tauri::command]
-pub async fn list_models(state: State<'_, AppState>, profile_id: String) -> CmdResult<Vec<String>> {
-    let profile = state.profile(&profile_id).ok_or("Unknown provider.")?;
-    state.engine.providers.list_models(&profile).await.map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]
@@ -519,25 +602,62 @@ pub struct BuiltinAi {
 /// `shortcut_check`.
 #[tauri::command]
 pub fn check_shortcut(app: AppHandle, state: State<'_, AppState>, accelerator: String, slot: String) -> Option<String> {
-    let config = state.config();
-    let others = hotkeys::others(&config, &slot);
+    shortcut_problem(
+        &state.config(),
+        &accelerator,
+        &slot,
+        crate::shortcut_check::user_hotkeys,
+        || desktop_use(&accelerator),
+        || hotkeys::taken_by_another_app(&app, &accelerator),
+    )
+}
+
+/// What the Linux desktop uses a shortcut for, if anything.
+fn desktop_use(accelerator: &str) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    return platform::shortcut_taken(accelerator);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = accelerator;
+        None
+    }
+}
+
+/// `check_shortcut`, with what the system knows asked through the last three arguments:
+/// `user_hotkeys`, the shortcuts the user set in macOS (not asked on Windows); `desktop_use`, what
+/// the Linux desktop uses it for (asked only on Linux); and `taken_by_another_app`. Each is asked
+/// only when the checks before it found nothing.
+pub(crate) fn shortcut_problem(
+    config: &Config,
+    accelerator: &str,
+    slot: &str,
+    user_hotkeys: impl FnOnce() -> Vec<crate::shortcut_check::UserHotkey>,
+    desktop_use: impl FnOnce() -> Option<String>,
+    taken_by_another_app: impl FnOnce() -> bool,
+) -> Option<String> {
+    let others = hotkeys::others(config, slot);
     #[cfg(windows)]
-    let problem = crate::keys::windows_conflict(&accelerator, &others);
+    let problem = {
+        let _ = user_hotkeys;
+        crate::keys::windows_conflict(accelerator, &others)
+    };
     #[cfg(not(windows))]
-    let problem = crate::shortcut_check::conflict(&accelerator, &others, &crate::shortcut_check::user_hotkeys());
+    let problem = crate::shortcut_check::conflict(accelerator, &others, &user_hotkeys());
     if problem.is_some() {
         return problem;
     }
     #[cfg(target_os = "linux")]
-    if let Some(what) = platform::shortcut_taken(&accelerator) {
+    if let Some(what) = desktop_use() {
         return Some(format!("Your desktop already uses this for “{what}”."));
     }
+    #[cfg(not(target_os = "linux"))]
+    let _ = desktop_use;
     let taken = if cfg!(windows) {
         "Windows or another app uses this shortcut."
     } else {
         "Another app already uses this shortcut."
     };
-    hotkeys::taken_by_another_app(&app, &accelerator).then(|| taken.into())
+    taken_by_another_app().then(|| taken.into())
 }
 
 /// The built-in styles as first installed, for resetting the Styles page.
@@ -737,11 +857,6 @@ pub fn accessibility_status(prompt: bool) -> bool {
     platform::accessibility_trusted(prompt)
 }
 
-#[tauri::command]
-pub fn open_accessibility_settings() {
-    platform::open_accessibility_settings();
-}
-
 /// Names and icons for the installed apps among `bundle_ids`, keyed by bundle ID; an app that
 /// isn't installed is left out. Synchronous, so it runs on the main thread, where AppKit draws.
 #[tauri::command]
@@ -794,9 +909,4 @@ pub fn close_update_window(window: tauri::WebviewWindow) {
 #[tauri::command]
 pub fn drag_app(window: tauri::WebviewWindow) -> CmdResult<()> {
     crate::permission_guide::drag_app(&window)
-}
-
-#[tauri::command]
-pub fn set_paused(app: AppHandle, paused: bool) {
-    app.state::<AppState>().paused.store(paused, std::sync::atomic::Ordering::Relaxed);
 }

@@ -250,8 +250,9 @@ function Review($label, $image, $shot, $mode = 'apply', $beforeApply = $null) {
   } else {
     if ($beforeApply) { & $beforeApply }
     Key 'alt+enter'
-    # A focus that didn't come back ends the apply before anything is replaced.
-    $script:Result = Bare (Wait-Log $mark " replace ${img}: |^\d+\.\d+ focus not back" 6)
+    # A focus that didn't come back ends the apply before anything is replaced. A replace done
+    # anyway says so between the app's name and the colon (log_lines.rs, Replaced).
+    $script:Result = Bare (Wait-Log $mark " replace ${img}( anyway[^:]*)?: |^\d+\.\d+ focus not back" 6)
   }
   Wait-Closed 3 | Out-Null
   Start-Sleep -Milliseconds 400
@@ -390,7 +391,9 @@ function Notepad-Case {
   [Desk]::Front($w) | Out-Null
   Key 'ctrl+z'
   Start-Sleep -Milliseconds 500
+  # A slow undo gets three seconds more; a second Ctrl+Z is never pressed.
   $t = Notepad-Text $w
+  for ($i = 0; $i -lt 12 -and $t -ne $Sample; $i++) { Start-Sleep -Milliseconds 250; $t = Notepad-Text $w }
   Check 'Notepad: one Ctrl+Z puts the original back' ($t -eq $Sample) $t
   Shot 'notepad-undone'
   # The footer's replace key is a button: a click on it does what Alt+Enter does.

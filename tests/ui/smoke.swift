@@ -53,12 +53,27 @@ func check(_ ok: Bool, _ name: String, _ detail: @autoclosure () -> String = "")
     log("\(ok ? "PASS" : "FAIL") \(name)\(ok ? "" : ": \(detail())")")
     if !ok { failures.append(name) }
 }
-/// SuperEditr's last line about how it applied a fix in the app: in place, partly in place, or the
-/// whole selection and why. "none" before the first.
 var captureLogPath = ""
-func appliedPath(_ bundleID: String) -> String {
-    let lines = (try? String(contentsOfFile: captureLogPath, encoding: .utf8))?.split(separator: "\n") ?? []
-    let path = lines.last { $0.contains("\(bundleID): appl") }.map(String.init) ?? "none"
+/// capture.log's lines after the first `mark` (a `logMark()`), so a check reads only what a step
+/// added, never an earlier step's line. SuperEditr moves the log to capture.old.log past 256 KB:
+/// when it has done so since the mark, the lines after the mark there come first.
+func logSince(_ mark: Int) -> [Substring] {
+    let read = { (path: String) in ((try? String(contentsOfFile: path, encoding: .utf8)) ?? "").split(separator: "\n") }
+    let lines = read(captureLogPath)
+    if lines.count >= mark { return Array(lines.dropFirst(mark)) }
+    let old = read((captureLogPath as NSString).deletingLastPathComponent + "/capture.old.log")
+    return Array(old.dropFirst(mark)) + lines
+}
+/// How many lines capture.log has now, for `logSince`.
+func logMark() -> Int { logSince(0).count }
+/// The last line since `mark` that contains `text`, with its timestamp; nil when there is none.
+func lastLogLine(since mark: Int, containing text: String) -> String? {
+    logSince(mark).last { $0.contains(text) }.map(String.init)
+}
+/// SuperEditr's last line about how it applied a fix in the app: in place, partly in place, or the
+/// whole selection and why. "none" before the first, or with `since`, before the first after it.
+func appliedPath(_ bundleID: String, since mark: Int = 0) -> String {
+    let path = logSince(mark).last { $0.contains("\(bundleID): appl") }.map(String.init) ?? "none"
     return path.split(separator: " ", maxSplits: 1).last.map(String.init) ?? path  // without the timestamp
 }
 func skipEnvironment(_ reason: String) -> Never {
@@ -1546,9 +1561,12 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                                  launchArguments: ["--user-data-dir=\(work)/chrome", "--no-first-run", "--no-default-browser-check"])
     check(chromeOpened, "Chrome opens the page with its fields")
     let captureLog = home + "/Library/Logs/SuperEditr/capture.log"
-    func lastChromeRead() -> String {
-        let lines = (try? String(contentsOfFile: captureLog, encoding: .utf8))?.split(separator: "\n") ?? []
-        return lines.last { $0.contains("com.google.Chrome: read") }.map(String.init) ?? "none"
+    /// The last read of Chrome's text since `mark`, taken before the review, so an earlier review's
+    /// read never stands in for it. The read is logged before the panel shows; it gets two seconds.
+    /// Without one, the latest line about Chrome, which says why.
+    func lastChromeRead(since mark: Int) -> String {
+        waitFor(2) { lastLogLine(since: mark, containing: "com.google.Chrome: read") }
+            ?? "none since the review began; latest line about Chrome: \(lastLogLine(since: mark, containing: chrome) ?? "none")"
     }
     // Keys go only to the test's own Chrome; stop here rather than type into another one.
     if chromeOpened {
@@ -1638,14 +1656,17 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             check(selectAll() || selectAll(), "the \(field)'s text is selected")
             let start = focusedElement().flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
             check(start.contains(typo), "the \(field) starts with the typo", "it reads \"\(start)\"")
+            let reviewMark = logMark()
             press(keyE, .maskCommand)
             pump(0.1)
             press(keyE, .maskCommand)
             let panel = waitFor(5) { overlay() }
-            check(panel != nil, "⌘E E reviews the \(field)", "no overlay within 5 s")
+            check(panel != nil, "⌘E E reviews the \(field)", "no overlay within 5 s; latest line about Chrome: \(lastLogLine(since: reviewMark, containing: chrome) ?? "none")")
             guard panel != nil else { continue }
             pump(1.5)  // the rule-based checker's result
-            let read = lastChromeRead()
+            // A slow checker gets a few seconds more before ↩: the fix must be in the panel to apply.
+            _ = waitFor(3) { panelText().range(of: #"\b\d+ changes?\b"#, options: .regularExpression) != nil ? true : nil }
+            let read = lastChromeRead(since: reviewMark)
             check(read.contains("via Accessibility"), "the \(field) is read through Accessibility", "last read: \(read)")
             screenshot(window: overlay(), to: outDir + "/web-\(index)-review.png")
             press(keyReturn)
@@ -1730,13 +1751,15 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 check(ok, "\(name): \(what)", detail())
                 row.append("\(short) \(ok ? "ok" : "FAIL")")
             }
+            let reviewMark = logMark()
             let opened = reviewField(field)
             expect(opened, "review", "⌘E E opens a review of the whole field with a fix",
-                   "no review of the whole field with a fix within 9 s; panel text: \(panelText())")
+                   "no review of the whole field with a fix within 9 s; panel text: \(panelText()); latest line about Chrome: \(lastLogLine(since: reviewMark, containing: chrome) ?? "none")")
             if opened {
-                let read = lastChromeRead()
+                let read = lastChromeRead(since: reviewMark)
                 expect(read.contains("via Accessibility"), "read", "it is read through Accessibility", "last read: \(read)")
-                let lines = ((try? String(contentsOfFile: captureLog, encoding: .utf8)) ?? "").split(separator: "\n")
+                // This review's read finds the code: an earlier field's line doesn't count.
+                let lines = logSince(reviewMark)
                 let found = lines.last { $0.contains("code in the field") }.map(String.init) ?? "none"
                 expect(found.contains("2 pieces"), "code found", "both code spans are found", "last code line: \(found)")
                 log("NOTE \(name): \(lines.last { $0.contains("code placed") }.map(String.init) ?? "no code placed")")
@@ -1761,7 +1784,11 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 expect(value != nil, "fixed", "↩ writes the fix", "the field reads \(String(reflecting: attribute(field, kAXValueAttribute) as? String ?? ""))")
                 expect(composerFixes.allSatisfy(visible(value ?? "").contains), "both fixes", "both changes are applied",
                        "the field reads \(String(reflecting: value ?? ""))")
-                let path = appliedPath("com.google.Chrome")
+                // This apply's line, written once it is done: an earlier field's doesn't count.
+                let path = waitFor(3) { () -> String? in
+                    let now = appliedPath("com.google.Chrome", since: reviewMark)
+                    return now.contains("applied in place: 2 edits") ? now : nil
+                } ?? appliedPath("com.google.Chrome", since: reviewMark)
                 expect(path.contains("applied in place: 2 edits"), "in place", "the proofread is applied in place", "the log says: \(path)")
                 expect(codes.allSatisfy(visible(value ?? "").contains), "code kept", "the code is left as written",
                        "the field reads \(String(reflecting: value ?? ""))")
@@ -1838,18 +1865,20 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
                 formatsRows.append("\(editor): not selected")
                 continue
             }
+            let reviewMark = logMark()
             press(keyE, .maskCommand)
             pump(0.1)
             press(keyE, .maskCommand)
             let opened = waitFor(5, { overlay() }) != nil
                 && waitFor(4) { panelText().range(of: #"\b\d+ changes?\b"#, options: .regularExpression) != nil ? true : nil } != nil
-            check(opened, "\(name): ⌘E E opens a review with a fix", "panel text: \(panelText())")
+            check(opened, "\(name): ⌘E E opens a review with a fix",
+                  "panel text: \(panelText()); latest line about Chrome: \(lastLogLine(since: reviewMark, containing: chrome) ?? "none")")
             guard opened else {
                 formatsRows.append("\(editor): no review")
                 press(keyEscape)
                 continue
             }
-            let read = lastChromeRead()
+            let read = lastChromeRead(since: reviewMark)
             try? "\(read)\n\n\(panelText())".write(toFile: outDir + "/formats-\(id)-review.txt", atomically: true, encoding: .utf8)
             // Every line break read: the whole field, plus the empty paragraph when Chrome's own text
             // leaves it out. Slate puts a zero-width character in an empty paragraph, so there Chrome's
@@ -1870,7 +1899,11 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             check(fixed, "\(name): the fixes land", "the field holds \(String(reflecting: after.text))")
             check(after.structure == before.structure, "\(name): every structure and the code survive the fix",
                   "before \(before.structure); after \(after.structure)")
-            let path = appliedPath("com.google.Chrome")
+            // This apply's line, written once it is done: an earlier field's doesn't count.
+            let path = waitFor(3) { () -> String? in
+                let now = appliedPath("com.google.Chrome", since: reviewMark)
+                return now == "none" ? nil : now
+            } ?? "none"
             log("NOTE \(name): \(path)")
             formatsRows.append("\(editor): \(fixed ? "fixed" : "NOT fixed"), \(after.structure == before.structure ? "structure kept" : "STRUCTURE LOST"), \(path.contains("applied in place:") ? "in place" : "whole")")
             screenshot(window: nil, rect: windows(bundleID: chrome).first?.frame, to: outDir + "/formats-\(id)-applied.png")
@@ -1931,15 +1964,17 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         pump(3)  // long enough for the page to load, with no tree yet
         press(keyA, .maskCommand)
         pump(0.5)
+        let reviewMark = logMark()
         press(keyE, .maskCommand)
         pump(0.1)
         press(keyE, .maskCommand)
         // The review opens once the tree is there, so this waits longer than the others.
         let panel = waitFor(10) { overlay() }
-        check(panel != nil, "⌘E E reviews a field in a Chromium app that has just started", "no overlay within 10 s")
+        check(panel != nil, "⌘E E reviews a field in a Chromium app that has just started",
+              "no overlay within 10 s; latest line about Chrome: \(lastLogLine(since: reviewMark, containing: chrome) ?? "none")")
         if panel != nil {
             pump(1.5)  // the rule-based checker's result
-            let read = lastChromeRead()
+            let read = lastChromeRead(since: reviewMark)
             check(read.contains("via Accessibility"), "the first review reads the field through Accessibility", "last read: \(read)")
             let replaceKey = waitFor(3) { () -> String? in
                 let text = panelText()
@@ -1975,18 +2010,21 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
         pump(3)
         press(keyA, .maskCommand)
         pump(0.5)
+        let reviewMark = logMark()
         press(keyE, .maskCommand)
         pump(0.1)
         press(keyE, .maskCommand)
         let panel = waitFor(10) { overlay() }
-        check(panel != nil, "⌘E E reviews read-only text", "no overlay within 10 s")
+        // The latest line about Chrome: what the read found, or why it failed.
+        let latest = { lastLogLine(since: reviewMark, containing: chrome) ?? "none since the review began" }
+        check(panel != nil, "⌘E E reviews read-only text", "no overlay within 10 s; latest line about Chrome: \(latest())")
         if panel != nil {
             pump(1.5)  // the rule-based checker's result
             let saysWhy = waitFor(3) { () -> String? in
                 let text = panelText()
                 return text.contains("replace text here") ? text : nil
             }
-            check(saysWhy != nil, "the panel says the text can't be replaced", "panel text: \(panelText())")
+            check(saysWhy != nil, "the panel says the text can't be replaced", "panel text: \(panelText()); latest line about Chrome: \(latest())")
             check(saysWhy.map { !$0.contains("⌥↩") && $0.contains("⌘C") } ?? false, "the panel offers ⌘C and not ⌥↩", "panel text: \(saysWhy ?? "")")
             screenshot(window: overlay(), to: outDir + "/read-only.png")
             let untouched = "On the clipboard before ⌥↩."
@@ -2138,12 +2176,18 @@ check(webBoxBuilt, "the test builds an app with a web view")
 if webBoxBuilt {
     /// The web view app's window title: "box: " and the box's text, once the page has loaded.
     func boxText() -> String { mainWindow(webBoxID).flatMap { attribute($0, kAXTitleAttribute) as? String } ?? "" }
+    /// capture.log's length when the latest review of the web view app began.
+    var webBoxMark = logMark()
+    /// The web view app's last read since its latest review began, never an earlier review's, and
+    /// the latest line about the app since then: after a read, what came of it, such as a copy or
+    /// a failure, which the read's own line doesn't say.
     func lastWebBoxRead() -> String {
-        let log = home + "/Library/Logs/SuperEditr/capture.log"
-        let lines = (try? String(contentsOfFile: log, encoding: .utf8))?.split(separator: "\n") ?? []
-        return lines.last { $0.contains("\(webBoxID): read") }.map(String.init) ?? "none"
+        let read = lastLogLine(since: webBoxMark, containing: "\(webBoxID): read") ?? "none since the review began"
+        let latest = lastLogLine(since: webBoxMark, containing: webBoxID) ?? "none"
+        return latest == read ? read : "\(read); latest line about the app: \(latest)"
     }
     func reviewWebBox(_ what: String) -> Bool {
+        webBoxMark = logMark()
         press(keyE, .maskCommand)
         pump(0.1)
         press(keyE, .maskCommand)
@@ -2205,7 +2249,7 @@ if webBoxBuilt {
             screenshot(window: overlay(), to: outDir + "/web-view-box-review.png")
             press(keyReturn, .maskAlternate)
             let fixed = waitFor(5) { boxText().contains("tomorrow") ? boxText() : nil }
-            check(fixed != nil, "⌥↩ replaces the text in the box", "the box holds: \(boxText())")
+            check(fixed != nil, "⌥↩ replaces the text in the box", "the box holds: \(boxText()); last read: \(lastWebBoxRead())")
             log("NOTE the web view's box: \(lastWebBoxRead())")
             if overlay() != nil {
                 log("NOTE after replacing in the web view's box the panel says: \(panelText())")
@@ -2254,6 +2298,8 @@ for (index, how) in ["directly", "after closing the instruction box"].enumerated
     check(enterPanel != nil, "⌘E E reviews the draft for ↩ \(how)", "no overlay within 5 s")
     guard enterPanel != nil else { quitOpened("com.apple.TextEdit"); continue }
     pump(1.5)  // the rule-based checker's result
+    // A slow checker gets a few seconds more before ↩: the fix must be in the panel to apply.
+    _ = waitFor(3) { panelText().range(of: #"\b\d+ changes?\b"#, options: .regularExpression) != nil ? true : nil }
     if index == 1 {
         press(keySlash)
         pump(0.5)
@@ -2328,6 +2374,8 @@ check(selectedSentence == "Their going to love this, it work good.", "⌘E E sel
       "TextEdit's selection: \(selectedSentence.map { "\"\($0)\"" } ?? "none")")
 if sentencePanel != nil {
     pump(1.5)  // the rule-based checker's result
+    // The web view's text can take a moment to reach Accessibility; a few seconds more at most.
+    _ = waitFor(3) { panelText().contains("love this") ? true : nil }
     screenshot(window: overlay(), to: outDir + "/sentence-before-caret.png")
     let reviewed = panelText()
     check(reviewed.contains("love this") && !reviewed.contains("We met at noon"), "the review covers only that sentence",

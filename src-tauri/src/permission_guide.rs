@@ -27,7 +27,7 @@ static DROPPED: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
 const AFTER_DROP: Duration = Duration::from_secs(30);
 
 fn recently_dropped() -> bool {
-    DROPPED.lock().unwrap().is_some_and(|at| at.elapsed() < AFTER_DROP)
+    platform::lock(&DROPPED).is_some_and(|at| at.elapsed() < AFTER_DROP)
 }
 
 #[cfg(target_os = "macos")]
@@ -219,7 +219,7 @@ pub fn start(app: &AppHandle) {
         return;
     }
     DISMISSED.store(false, Ordering::Relaxed);
-    *DROPPED.lock().unwrap() = None;
+    *platform::lock(&DROPPED) = None;
     if RUNNING.swap(true, Ordering::Relaxed) {
         return;
     }
@@ -306,7 +306,7 @@ pub fn drag_app(window: &WebviewWindow) -> Result<(), String> {
             drag::Image::Raw(icon),
             |result, _| {
                 if matches!(result, drag::DragResult::Dropped) {
-                    *DROPPED.lock().unwrap() = Some(Instant::now());
+                    *platform::lock(&DROPPED) = Some(Instant::now());
                 }
             },
             Default::default(),

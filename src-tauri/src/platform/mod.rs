@@ -4,6 +4,33 @@
 //! macOS is implemented with the Accessibility API, Core Graphics events and NSPasteboard, Linux
 //! with AT-SPI in `linux/`, and Windows with UI Automation in `windows/`. Other systems get
 //! `unsupported.rs`, which reads and writes nothing.
+//!
+//! # What every platform module provides
+//!
+//! The module for the system being built is chosen below by `cfg` and re-exported whole, so the
+//! rest of the app calls `platform::name` without a `cfg` of its own. Each module (`macos`, `linux`,
+//! `windows` and `unsupported`) provides these, with the same names and signatures:
+//!
+//! - **Capture**: [`Capture`] (with `protected`, `same_field` and `copy_only_hint`), `capture`,
+//!   `playground_capture`, `focused_app_identity`, and `selection_app_switched`.
+//! - **Replace**: `replace`, which returns a [`ReplaceOutcome`]; `return_to_field` and
+//!   `return_focus`, which give focus back to the app the text came from; and `copy_to_clipboard`.
+//!   Windows also has `replace_anyway`, which the panel offers after a `ClipboardUnrestorable`.
+//! - **Panel**: `init_overlay`, once at start-up; `take_review_keys`; `mouse_location`; and
+//!   `watch_window` with [`WindowWatch`], `pressed_on_window` and `mouse_button_down`, which this
+//!   file provides for a platform that can't watch another app's window.
+//! - **Hotkeys**: `pause_double_presses` and `start_double_press_tap`, which also passes the panel
+//!   its keys; and, on every system but Linux, `set_double_presses`.
+//! - **App info and start-up**: `own_pid`, `own_bundle`, `frontmost_pid`, `app_identity`,
+//!   `accessibility_trusted`, `open_accessibility_settings`, `SettingsWindow` with
+//!   `system_settings_window`, `set_in_dock`, `lasting_app_path`, `reload_autostart`,
+//!   `desktop_set_up`, `run_helper_command`, and the log: `log_path`, `set_trace` and `trace`.
+//!
+//! A module also has functions of its own that the app calls only inside a `cfg` for that system:
+//! macOS's selection watcher and window glide, Linux's desktop setup and panel placement
+//! (`place_overlay`, `focus_overlay`), and Windows's `hotkey`, `overlay`, `webview` and `login`.
+//! The `const` items after the module selection check the signatures of some of the shared
+//! functions at compile time.
 
 use serde::Serialize;
 use std::sync::{Mutex, MutexGuard};
@@ -38,6 +65,17 @@ pub use windows::*;
 mod unsupported;
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 pub use unsupported::*;
+
+// The contract's signatures, checked against whichever module was chosen above.
+const _: fn(&Capture, &str, bool) -> ReplaceOutcome = replace;
+#[cfg(windows)]
+const _: fn(&Capture, &str) -> ReplaceOutcome = replace_anyway;
+const _: fn(&tauri::WebviewWindow) = init_overlay;
+const _: fn(&tauri::AppHandle, bool) = set_in_dock;
+const _: fn(&str) -> bool = lasting_app_path;
+const _: fn() = reload_autostart;
+const _: fn() -> bool = desktop_set_up;
+const _: fn(&[String]) -> Option<i32> = run_helper_command;
 
 /// Screen rectangle, origin at the top-left of the primary display: in points on macOS, in
 /// physical pixels on Windows.
@@ -198,7 +236,7 @@ impl std::fmt::Display for SelectionGesture {
 pub enum ReplaceMethod {
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Accessibility,
-    #[cfg_attr(not(any(target_os = "macos", target_os = "linux", windows)), allow(dead_code))]
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Paste,
     /// Typed as key events, for a proofread applied in place in a web field.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -221,6 +259,9 @@ pub enum ReplaceOutcome {
     ClipboardKept(PlatformError),
 }
 
+/// How a write that reports only success or an error ends, for a platform whose replacement returns
+/// a `Result` (macOS): a write that may have landed is uncertain, a clipboard that couldn't be put
+/// aside is kept, and any other error is a refusal before writing.
 impl From<Result<ReplaceMethod, PlatformError>> for ReplaceOutcome {
     fn from(result: Result<ReplaceMethod, PlatformError>) -> Self {
         match result {

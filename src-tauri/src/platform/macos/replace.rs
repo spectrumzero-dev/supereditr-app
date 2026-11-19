@@ -11,7 +11,7 @@ use super::keys::post_key;
 use super::seam::{Clock, Desktop, Field, Pasteboard, Services, System};
 use super::text::{html_with_code, is_invisible, is_line_break, markdown_with_code};
 use super::{Capture, accessibility_trusted, pasteboard, trace};
-use crate::platform::{PlatformError, ReplaceMethod, log_lines};
+use crate::platform::{PlatformError, ReplaceMethod, ReplaceOutcome, log_lines};
 use core_foundation::base::{CFType, TCFType};
 use core_graphics::event::{CGEvent, CGEventFlags};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
@@ -25,14 +25,14 @@ use supereditr_core::policy::{self, Selection};
 /// `proofread` with a few local changes is applied in place, one edit per change, so formatting
 /// around them is never touched; anything else, or an app that doesn't let SuperEditr move the
 /// selection, replaces the whole selection.
-pub fn replace(capture: &Capture, text: &str, proofread: bool) -> Result<ReplaceMethod, PlatformError> {
-    replace_with(
+pub fn replace(capture: &Capture, text: &str, proofread: bool) -> ReplaceOutcome {
+    ReplaceOutcome::from(replace_with(
         &System::services(),
         capture,
         capture.element.as_ref().map(|element| element as &dyn Field),
         text,
         proofread,
-    )
+    ))
 }
 
 /// [`replace`], against `services` and `field`, the captured field.

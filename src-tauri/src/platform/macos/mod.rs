@@ -137,6 +137,64 @@ pub fn open_accessibility_settings() {
         .spawn();
 }
 
+/// A mode of the program that runs instead of the app, named by its first argument. macOS has none.
+pub fn run_helper_command(_args: &[String]) -> Option<i32> {
+    None
+}
+
+/// SuperEditr is a menu-bar app, out of the Dock and ⌘Tab, except while Settings is open: then it
+/// behaves like a normal app so the user can switch back to it.
+pub fn set_in_dock(app: &tauri::AppHandle, in_dock: bool) {
+    let _ = app.set_activation_policy(if in_dock {
+        tauri::ActivationPolicy::Regular
+    } else {
+        tauri::ActivationPolicy::Accessory
+    });
+}
+
+/// Whether a Launch Agent pointing at this executable keeps working after a restart: it's inside an
+/// app bundle, and not on a mounted disk image or in the temporary copy macOS runs a downloaded app
+/// from until it's moved (App Translocation).
+pub fn lasting_app_path(exe: &str) -> bool {
+    exe.contains(".app/Contents/MacOS/") && !exe.starts_with("/Volumes/") && !exe.contains("/AppTranslocation/")
+}
+
+/// After the login item is turned on. The Launch Agent needs nothing more.
+pub fn reload_autostart() {}
+
+/// Whether the desktop setup is done, so Settings needn't open at launch. macOS has no setup page.
+pub fn desktop_set_up() -> bool {
+    false
+}
+
+tauri_nspanel::tauri_panel! {
+    panel!(OverlayPanel {
+        config: {
+            can_become_key_window: true,
+            can_become_main_window: false,
+            is_floating_panel: true,
+            hides_on_deactivate: false
+        }
+    })
+}
+
+/// Converts the overlay window to a panel once at start-up.
+pub fn init_overlay(window: &tauri::WebviewWindow) {
+    use tauri_nspanel::{CollectionBehavior, PanelLevel, StyleMask, WebviewWindowExt};
+    if let Ok(panel) = window.to_panel::<OverlayPanel>() {
+        panel.set_level(PanelLevel::PopUpMenu.value());
+        let _ = panel.set_style_mask(StyleMask::empty().borderless().nonactivating_panel().value());
+        // It opens on the Space the user is on, and stays there: on a move to another Space it
+        // slides away with the text it reviews, and closes once the move ends
+        // (`review::on_space_change`). On every Space, it would float over the switch.
+        panel.set_collection_behavior(
+            CollectionBehavior::new().move_to_active_space().full_screen_auxiliary().transient().value(),
+        );
+        panel.set_has_shadow(false);
+        panel.set_opaque(false);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::ax::AXUIElementCreateSystemWide;

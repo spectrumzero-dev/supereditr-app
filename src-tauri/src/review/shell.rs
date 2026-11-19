@@ -217,7 +217,7 @@ impl Host for Live<'_> {
             let returned = platform::return_to_field(&captured);
             (captured.text != text).then(|| {
                 if returned {
-                    ReplaceOutcome::from(replace_text(&captured, &text, proofread, anyway))
+                    replace_text(&captured, &text, proofread, anyway)
                 } else {
                     ReplaceOutcome::CopyOnly(PlatformError::FocusNotReturned)
                 }
@@ -233,7 +233,7 @@ impl Host for Live<'_> {
         proofread: bool,
     ) -> impl Future<Output = Result<ReplaceOutcome, String>> + Send {
         let replaced = tauri::async_runtime::spawn_blocking(move || platform::replace(&captured, &text, proofread));
-        async move { replaced.await.map(ReplaceOutcome::from).map_err(|e| e.to_string()) }
+        async move { replaced.await.map_err(|e| e.to_string()) }
     }
 
     fn copy_to_clipboard(&self, text: &str) {
@@ -308,12 +308,7 @@ async fn capture(app: &AppHandle, allow_clipboard: bool, select_sentence: bool) 
 
 /// The platform's replacement. `anyway` is asked for only where the panel offered it (Windows): the
 /// clipboard isn't put aside, and the fix stays on it.
-fn replace_text(
-    captured: &Capture,
-    text: &str,
-    proofread: bool,
-    anyway: bool,
-) -> Result<platform::ReplaceMethod, PlatformError> {
+fn replace_text(captured: &Capture, text: &str, proofread: bool, anyway: bool) -> ReplaceOutcome {
     #[cfg(windows)]
     if anyway {
         return platform::replace_anyway(captured, text);

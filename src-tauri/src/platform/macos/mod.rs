@@ -14,6 +14,7 @@ mod keys;
 mod log;
 mod pasteboard;
 mod replace;
+mod seam;
 mod settings_window;
 #[cfg(test)]
 mod testing;

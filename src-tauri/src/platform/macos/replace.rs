@@ -1,204 +1,22 @@
 //! Writing a fix: an Accessibility write, a checked paste, or edits applied in place, each confirmed
 //! by reading the field back.
 //!
-//! The decisions run against four small traits, so they can be tested against a pretend Mac
+//! The decisions run against the traits in `seam.rs`, so they can be tested against a pretend Mac
 //! (`testing.rs`): the [`Field`] being written, the [`Desktop`] that takes key events, the
 //! [`Pasteboard`], and a [`Clock`] for every wait. [`replace`] runs them against the real ones.
 
-use super::apps::{focused_app, is_chromium_based};
+use super::apps::focused_app;
 use super::ax::{AXUIElementCreateApplication, AXValueCreate, CFRange, Element, kAXValueCFRangeType};
-use super::capture::press_menu_item;
-use super::keys::{Key, post_command_key, post_key};
-use super::text::{Formatting, code_in, html_with_code, is_invisible, is_line_break, markdown_with_code};
+use super::keys::post_key;
+use super::seam::{Clock, Desktop, Field, Pasteboard, Services, System};
+use super::text::{html_with_code, is_invisible, is_line_break, markdown_with_code};
 use super::{Capture, accessibility_trusted, pasteboard, trace};
 use crate::platform::{PlatformError, ReplaceMethod};
 use core_foundation::base::{CFType, TCFType};
-use core_foundation::string::CFString;
 use core_graphics::event::{CGEvent, CGEventFlags};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use std::ffi::c_void;
-use std::time::{Duration, Instant};
-
-// --- What replacing needs from the Mac ---------------------------------------------------------
-
-/// The field a fix is written into, as Accessibility shows it. [`Element`] is the real one.
-pub(super) trait Field {
-    /// `AXValue`: the field's whole text.
-    fn value(&self) -> Option<String>;
-    /// `AXSelectedText`, exactly as the app reports it.
-    fn selected(&self) -> Option<String>;
-    /// The selection as a capture reads it ([`Element::selected_text`]), to compare with what was
-    /// captured.
-    fn selection(&self) -> Option<String>;
-    /// `AXSelectedTextRange`: where the selection starts and how long it is, in UTF-16 units.
-    fn selected_range(&self) -> Option<(isize, isize)>;
-    /// A Chromium rich field's text with its empty paragraphs put back ([`Element::web_text`]).
-    fn web_text(&self) -> Option<String>;
-    /// Whether the app lets `AXSelectedText` be written.
-    fn can_set_selected_text(&self) -> bool;
-    /// Writes `text` over the selection through Accessibility. True when the app accepted the write,
-    /// which doesn't mean it applied it.
-    fn set_selected_text(&self, text: &str) -> bool;
-    /// Sets the selection to UTF-16 units `start..start + length`, without waiting.
-    fn select(&self, start: usize, length: usize) -> bool;
-    /// True while the app `pid` is in front with focus in this field or inside it.
-    fn has_focus(&self, pid: i32) -> bool;
-    /// The code and other formatting in a web field. Finding it also logs what was found.
-    fn formatting(&self) -> Formatting;
-}
-
-/// Key events to the app, and what the log says about its windows.
-pub(super) trait Desktop {
-    /// Whether SuperEditr has Accessibility permission.
-    fn trusted(&self) -> bool;
-    /// Chrome-family browsers and apps built on Chromium, whose pastes can be dropped.
-    fn chromium_based(&self, bundle_id: &str, pid: i32) -> bool;
-    /// Pastes in the app `pid`, and says how, for the log.
-    fn paste(&self, pid: i32) -> &'static str;
-    /// Types `text` over the app's selection as key events; empty text deletes it.
-    fn type_text(&self, pid: i32, text: &str) -> bool;
-    /// Which of the app's windows has focus, for the log.
-    fn window_state(&self, pid: i32) -> String;
-}
-
-/// The general pasteboard, as a paste uses it.
-pub(super) trait Pasteboard {
-    /// Everything on the clipboard, to put back after a paste.
-    type Snapshot;
-    fn snapshot(&self) -> Self::Snapshot;
-    /// Writes the fix, marked transient, with an HTML version when given one. Returns the change
-    /// count after the write.
-    fn write_transient(&self, text: &str, html: Option<&str>) -> isize;
-    fn change_count(&self) -> isize;
-    /// Puts `snapshot` back once the app has had a moment to read the fix, unless something else
-    /// wrote to the clipboard since change count `ours`.
-    fn restore_soon(&self, snapshot: Self::Snapshot, ours: isize);
-}
-
-/// The time every wait is measured by.
-pub(super) trait Clock {
-    fn now(&self) -> Instant;
-    fn sleep(&self, wait: Duration);
-}
-
-/// What a replace runs against.
-pub(super) struct Services<'a, P: Pasteboard> {
-    pub(super) desktop: &'a dyn Desktop,
-    pub(super) pasteboard: &'a P,
-    pub(super) clock: &'a dyn Clock,
-}
-
-/// The real Mac: Accessibility permission, key events, the general pasteboard and the clock.
-struct System;
-
-impl Field for Element {
-    fn value(&self) -> Option<String> {
-        self.string("AXValue")
-    }
-
-    fn selected(&self) -> Option<String> {
-        self.string("AXSelectedText")
-    }
-
-    fn selection(&self) -> Option<String> {
-        self.selected_text()
-    }
-
-    fn selected_range(&self) -> Option<(isize, isize)> {
-        self.range("AXSelectedTextRange").map(|range| (range.location, range.length))
-    }
-
-    fn web_text(&self) -> Option<String> {
-        Element::web_text(self)
-    }
-
-    fn can_set_selected_text(&self) -> bool {
-        self.settable("AXSelectedText")
-    }
-
-    fn set_selected_text(&self, text: &str) -> bool {
-        let value = CFString::new(text);
-        self.set("AXSelectedText", value.as_CFTypeRef())
-    }
-
-    fn select(&self, start: usize, length: usize) -> bool {
-        set_selection(self, start, length)
-    }
-
-    fn has_focus(&self, pid: i32) -> bool {
-        field_focused(pid, self)
-    }
-
-    fn formatting(&self) -> Formatting {
-        code_in(self)
-    }
-}
-
-impl Desktop for System {
-    fn trusted(&self) -> bool {
-        accessibility_trusted(false)
-    }
-
-    fn chromium_based(&self, bundle_id: &str, pid: i32) -> bool {
-        is_chromium_based(bundle_id, pid)
-    }
-
-    /// The app's own Paste menu item first. The app can be left without a key window (after the
-    /// panel had focus for an instruction, or the user clicked it); browsers and Electron apps then
-    /// drop a posted ⌘V, but a menu item acts on the app's main window.
-    fn paste(&self, pid: i32) -> &'static str {
-        let app = Element::from_create(unsafe { AXUIElementCreateApplication(pid) });
-        if app.as_ref().and_then(|app| press_menu_item(app, "v")) == Some(true) {
-            "the app's Paste menu item"
-        } else {
-            post_command_key(pid, Key::V);
-            "⌘V to the app's process"
-        }
-    }
-
-    fn type_text(&self, pid: i32, text: &str) -> bool {
-        type_text(pid, text)
-    }
-
-    fn window_state(&self, pid: i32) -> String {
-        key_window_state(pid)
-    }
-}
-
-impl Pasteboard for System {
-    type Snapshot = pasteboard::Snapshot;
-
-    fn snapshot(&self) -> pasteboard::Snapshot {
-        pasteboard::Snapshot::take()
-    }
-
-    fn write_transient(&self, text: &str, html: Option<&str>) -> isize {
-        pasteboard::write_transient_string(text, html)
-    }
-
-    fn change_count(&self) -> isize {
-        pasteboard::change_count()
-    }
-
-    /// Gives the app a moment to finish reading the pasteboard. A newer copy from another app
-    /// always wins over the restore.
-    fn restore_soon(&self, snapshot: pasteboard::Snapshot, ours: isize) {
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(120));
-            snapshot.restore_if_unchanged_since(ours);
-        });
-    }
-}
-
-impl Clock for System {
-    fn now(&self) -> Instant {
-        Instant::now()
-    }
-
-    fn sleep(&self, wait: Duration) {
-        std::thread::sleep(wait);
-    }
-}
+use std::time::Duration;
 
 // --- Replacing ---------------------------------------------------------------------------------
 
@@ -207,13 +25,18 @@ impl Clock for System {
 /// around them is never touched; anything else, or an app that doesn't let SuperEditr move the
 /// selection, replaces the whole selection.
 pub fn replace(capture: &Capture, text: &str, proofread: bool) -> Result<ReplaceMethod, PlatformError> {
-    let services = Services { desktop: &System, pasteboard: &System, clock: &System };
-    replace_with(&services, capture, capture.element.as_ref().map(|element| element as &dyn Field), text, proofread)
+    replace_with(
+        &System::services(),
+        capture,
+        capture.element.as_ref().map(|element| element as &dyn Field),
+        text,
+        proofread,
+    )
 }
 
 /// [`replace`], against `services` and `field`, the captured field.
-pub(super) fn replace_with<P: Pasteboard>(
-    services: &Services<'_, P>,
+pub(super) fn replace_with<D: Desktop, P: Pasteboard>(
+    services: &Services<'_, D, P>,
     capture: &Capture,
     field: Option<&dyn Field>,
     text: &str,
@@ -291,7 +114,7 @@ fn selection_unchanged(capture: &Capture, field: &dyn Field) -> bool {
 }
 
 /// True while the app `pid` is in front with focus in `element` or inside it.
-fn field_focused(pid: i32, element: &Element) -> bool {
+pub(super) fn field_focused(pid: i32, element: &Element) -> bool {
     focused_app()
         .filter(|(_, front)| *front == pid)
         .and_then(|(app, _)| app.element("AXFocusedUIElement"))
@@ -356,8 +179,8 @@ fn verify_replacement(
     }
 }
 
-fn paste<P: Pasteboard>(
-    services: &Services<'_, P>,
+fn paste<D: Desktop, P: Pasteboard>(
+    services: &Services<'_, D, P>,
     capture: &Capture,
     field: &dyn Field,
     text: &str,
@@ -525,7 +348,7 @@ pub(super) fn set_selection(element: &Element, start: usize, length: usize) -> b
 /// Types `text` into the app `pid`, replacing its selection: key events carrying the text, 20 UTF-16
 /// units at a time (the most one event holds), with no clipboard round trip. Empty text deletes the
 /// selection with the Delete key.
-fn type_text(pid: i32, text: &str) -> bool {
+pub(super) fn type_text(pid: i32, text: &str) -> bool {
     const DELETE: u16 = 51;
     if text.is_empty() {
         return post_key(pid, DELETE, CGEventFlags::empty());
@@ -569,8 +392,8 @@ fn wait_until(clock: &dyn Clock, wait: Duration, done: impl Fn() -> bool) -> boo
 /// SuperEditr move its selection, or the field doesn't line up with the edits): the caller then
 /// replaces the whole selection. Once an edit is written there is no going back: a later failure
 /// stops and reports a partial fix.
-fn replace_in_place<P: Pasteboard>(
-    services: &Services<'_, P>,
+fn replace_in_place<D: Desktop, P: Pasteboard>(
+    services: &Services<'_, D, P>,
     capture: &Capture,
     field: &dyn Field,
     text: &str,
@@ -704,7 +527,7 @@ fn replace_in_place<P: Pasteboard>(
 
 /// Whether `pid` is the front app, whether SuperEditr's panel still has focus, and whether the
 /// app's window is main and focused, for the log.
-fn key_window_state(pid: i32) -> String {
+pub(super) fn key_window_state(pid: i32) -> String {
     let front = focused_app().is_some_and(|(_, front)| front == pid);
     let own = Element::from_create(unsafe { AXUIElementCreateApplication(std::process::id() as i32) })
         .is_some_and(|me| me.element("AXFocusedWindow").is_some());
@@ -785,7 +608,10 @@ mod tests {
         assert!(writes.iter().all(|w| !w.contains("going")), "{writes:?}");
         assert!(world.keys_sent().is_empty());
         // The caret ends after the fixed text, where replacing the whole selection leaves it.
-        assert_eq!(world.selected_range(), Some(("Rhyan said they’re going to".encode_utf16().count() as isize, 0)));
+        assert_eq!(
+            world.field().selected_range(),
+            Some(("Rhyan said they’re going to".encode_utf16().count() as isize, 0))
+        );
     }
 
     #[test]

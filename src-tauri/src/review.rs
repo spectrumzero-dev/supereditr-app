@@ -322,7 +322,8 @@ fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<Strin
     Ok(())
 }
 
-/// What a review of `captured` with `preset` and `steer` asks the engine.
+/// What a review of `captured` with `preset` and `steer` asks the engine: the panel's runs and
+/// quick fix both build their job here, so a setting reaches every review the same way.
 fn job_for(
     config: &Config,
     profile: Option<ProviderProfile>,
@@ -568,18 +569,7 @@ pub async fn quick_fix(app: &AppHandle) {
             "Quick fix works in text you’re editing. Use your review shortcut to review this text instead.".into(),
         );
     }
-    let job = Job {
-        text: captured.text.clone(),
-        preset: config.default_preset().clone(),
-        steer: None,
-        profile: state.active_profile(),
-        style_notes: config.style_notes.clone(),
-        dialect: config.dialect.clone(),
-        words: config.words.clone(),
-        code: captured.protected(),
-        local_checks: true,
-        builtin_ai: true,
-    };
+    let job = job_for(&config, state.active_profile(), &captured, config.default_preset().clone(), None);
     let mut outcome = None;
     let mut failure = None;
     state
@@ -695,21 +685,16 @@ pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
             state.watch_generation.fetch_add(1, Ordering::Relaxed);
         }
         WatchEvent::MaybeSelection { settle, gesture } => {
-            if crate::follow::gesture_ended(app) {
-                return trace_auto(gesture, None, &AutoOutcome::WindowDragged);
-            }
-            let config = state.config();
-            if !config.auto_popup {
-                return trace_auto(gesture, None, &AutoOutcome::TurnedOff);
-            }
-            if state.paused.load(Ordering::Relaxed) {
-                return trace_auto(gesture, None, &AutoOutcome::Paused);
-            }
-            if Instant::now() < *state.quiet_until.lock().unwrap() {
-                return trace_auto(gesture, None, &AutoOutcome::JustApplied);
-            }
-            if state.session.lock().unwrap().as_ref().is_some_and(|s| s.keyboard) {
-                return trace_auto(gesture, None, &AutoOutcome::ReviewOpen);
+            // In this order: ending the gesture may close a panel, which the last check reads. Each
+            // lock is read in its own statement, so none is held while another is taken.
+            let window_dragged = crate::follow::gesture_ended(app);
+            let turned_on = state.config().auto_popup;
+            let paused = state.paused.load(Ordering::Relaxed);
+            let just_applied = Instant::now() < *state.quiet_until.lock().unwrap();
+            let review_open = state.session.lock().unwrap().as_ref().is_some_and(|s| s.keyboard);
+            let gate = AutoGate { window_dragged, turned_on, paused, just_applied, review_open };
+            if let Some(outcome) = auto_gate(&gate) {
+                return trace_auto(gesture, None, &outcome);
             }
             let generation = state.watch_generation.fetch_add(1, Ordering::Relaxed) + 1;
             let app = app.clone();
@@ -826,6 +811,39 @@ impl std::fmt::Display for AutoOutcome {
             Self::AlreadyShowing => write!(f, "skipped: the same text is already showing"),
             Self::Secret => write!(f, "skipped: the selection looks like it holds a secret"),
         }
+    }
+}
+
+/// What an automatic suggestion knows the moment a selection may have been made, before it waits
+/// for the selection to settle and reads it.
+struct AutoGate {
+    /// The gesture was a drag of the reviewed window by its title bar.
+    window_dragged: bool,
+    /// Automatic suggestions are on in Settings.
+    turned_on: bool,
+    /// They are paused for now (`AppState::paused`).
+    paused: bool,
+    /// A fix was written into the app a moment ago, and its own selection changes are still arriving.
+    just_applied: bool,
+    /// A review opened with the shortcut is showing, which a selection never replaces.
+    review_open: bool,
+}
+
+/// Whether an automatic suggestion goes on to read the selection; `None` when it does, otherwise
+/// the first rule that stops it, for capture.log.
+fn auto_gate(gate: &AutoGate) -> Option<AutoOutcome> {
+    if gate.window_dragged {
+        Some(AutoOutcome::WindowDragged)
+    } else if !gate.turned_on {
+        Some(AutoOutcome::TurnedOff)
+    } else if gate.paused {
+        Some(AutoOutcome::Paused)
+    } else if gate.just_applied {
+        Some(AutoOutcome::JustApplied)
+    } else if gate.review_open {
+        Some(AutoOutcome::ReviewOpen)
+    } else {
+        None
     }
 }
 
@@ -969,6 +987,93 @@ mod tests {
         let kept = ReplaceOutcome::ClipboardKept(PlatformError::ClipboardNotKept("image/png".into()));
         assert!(!copies_suggestion(&kept), "the user's clipboard couldn't be put aside");
         assert!(!copies_suggestion(&ReplaceOutcome::Applied));
+    }
+
+    /// A moment when every rule lets the automatic suggestion go on.
+    fn open_gate() -> AutoGate {
+        AutoGate { window_dragged: false, turned_on: true, paused: false, just_applied: false, review_open: false }
+    }
+
+    fn gate_reason(gate: AutoGate) -> Option<String> {
+        auto_gate(&gate).map(|outcome| outcome.to_string())
+    }
+
+    #[test]
+    fn an_automatic_suggestion_goes_on_when_no_rule_stops_it() {
+        assert!(auto_gate(&open_gate()).is_none());
+    }
+
+    #[test]
+    fn an_automatic_suggestion_stops_after_the_reviewed_window_was_dragged() {
+        let gate = AutoGate { window_dragged: true, ..open_gate() };
+        assert_eq!(gate_reason(gate).unwrap(), "skipped: the reviewed window was dragged");
+    }
+
+    #[test]
+    fn an_automatic_suggestion_stops_when_they_are_turned_off() {
+        let gate = AutoGate { turned_on: false, ..open_gate() };
+        assert_eq!(gate_reason(gate).unwrap(), "skipped: automatic suggestions are turned off");
+    }
+
+    #[test]
+    fn an_automatic_suggestion_stops_while_they_are_paused() {
+        let gate = AutoGate { paused: true, ..open_gate() };
+        assert_eq!(gate_reason(gate).unwrap(), "skipped: automatic suggestions are paused");
+    }
+
+    #[test]
+    fn an_automatic_suggestion_stops_right_after_a_fix_was_applied() {
+        let gate = AutoGate { just_applied: true, ..open_gate() };
+        assert_eq!(gate_reason(gate).unwrap(), "skipped: a fix was just applied");
+    }
+
+    #[test]
+    fn an_automatic_suggestion_never_replaces_a_review_opened_with_the_shortcut() {
+        let gate = AutoGate { review_open: true, ..open_gate() };
+        assert_eq!(gate_reason(gate).unwrap(), "skipped: a review opened with the shortcut is showing");
+    }
+
+    #[test]
+    fn the_first_rule_that_stops_an_automatic_suggestion_is_the_one_logged() {
+        let all =
+            AutoGate { window_dragged: true, turned_on: false, paused: true, just_applied: true, review_open: true };
+        assert!(matches!(auto_gate(&all), Some(AutoOutcome::WindowDragged)));
+        let all_but_dragged = AutoGate { window_dragged: false, ..all };
+        assert!(matches!(auto_gate(&all_but_dragged), Some(AutoOutcome::TurnedOff)));
+        let only_late_rules = AutoGate { turned_on: true, paused: false, ..all_but_dragged };
+        assert!(matches!(auto_gate(&only_late_rules), Some(AutoOutcome::JustApplied)));
+    }
+
+    fn quillpoint_config() -> Config {
+        Config {
+            style_notes: "Write for QuillPoint's KPI readers.".into(),
+            dialect: "en-GB".into(),
+            words: vec!["Brynlee".into(), "Kyndal".into()],
+            ..Config::default()
+        }
+    }
+
+    fn quillpoint_capture() -> Capture {
+        let bounds = platform::Rect { x: 10.0, y: 10.0, width: 300.0, height: 20.0 };
+        platform::playground_capture("Brynlee and Kyndal sent the OKR updaet.".into(), bounds)
+    }
+
+    #[test]
+    fn a_job_carries_the_selection_the_style_and_the_writing_settings() {
+        let config = quillpoint_config();
+        let captured = quillpoint_capture();
+        let profile = Some(ProviderProfile::new(ProviderKind::Anthropic));
+        let preset = config.preset("proofread").unwrap().clone();
+        let job = job_for(&config, profile.clone(), &captured, preset.clone(), Some("Keep it short".into()));
+        assert!(job.text == captured.text);
+        assert!(job.preset == preset);
+        assert_eq!(job.steer.as_deref(), Some("Keep it short"));
+        assert!(job.profile == profile);
+        assert_eq!(job.style_notes, config.style_notes);
+        assert_eq!(job.dialect, config.dialect);
+        assert_eq!(job.words, config.words);
+        assert_eq!(job.code, captured.protected());
+        assert!(job.local_checks && job.builtin_ai);
     }
 
     #[test]

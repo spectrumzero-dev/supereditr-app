@@ -5,9 +5,9 @@ use crate::{apps, hotkeys, overlay, platform, review, secrets};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::time::Instant;
+use supereditr_core::Config;
 use supereditr_core::detect::{self, Candidate};
 use supereditr_core::provider::{ChatRequest, ProviderKind, ProviderProfile, preferred_model};
-use supereditr_core::{Config, Event, Job};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 type CmdResult<T> = Result<T, String>;
@@ -794,45 +794,6 @@ pub fn close_update_window(window: tauri::WebviewWindow) {
 #[tauri::command]
 pub fn drag_app(window: tauri::WebviewWindow) -> CmdResult<()> {
     crate::permission_guide::drag_app(&window)
-}
-
-#[derive(Clone, Serialize)]
-struct PreviewPayload {
-    id: u64,
-    event: Event,
-}
-
-/// Runs a review on text typed into the Settings playground, so setup can be tested without
-/// leaving the window.
-#[tauri::command]
-pub async fn preview_review(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    id: u64,
-    text: String,
-    preset_id: String,
-) -> CmdResult<()> {
-    let config = state.config();
-    let preset = config.preset(&preset_id).cloned().unwrap_or_else(|| config.default_preset().clone());
-    let job = Job {
-        text,
-        preset,
-        steer: None,
-        profile: state.active_profile(),
-        style_notes: config.style_notes.clone(),
-        dialect: config.dialect.clone(),
-        words: config.words.clone(),
-        code: Vec::new(),
-        local_checks: true,
-        builtin_ai: true,
-    };
-    state
-        .engine
-        .run(job, &mut |event| {
-            let _ = app.emit_to("settings", "settings:preview", PreviewPayload { id, event });
-        })
-        .await;
-    Ok(())
 }
 
 #[tauri::command]

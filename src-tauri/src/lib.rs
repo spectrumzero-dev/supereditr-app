@@ -728,7 +728,6 @@ pub fn run() {
             commands::guide_accessibility,
             commands::close_guide,
             commands::drag_app,
-            commands::preview_review,
             commands::set_paused,
             commands::update_status,
             commands::update_now,

@@ -1,4 +1,4 @@
-import type { AppInfo, BuiltinAi, Candidate, ProviderCheck, Config, EngineEvent, LinuxSetup, Preset, ProviderKind, PickedApps, ProviderProfile, Saved, SettingsPayload } from "../lib/types";
+import type { AppInfo, BuiltinAi, Candidate, ProviderCheck, Config, LinuxSetup, Preset, ProviderKind, PickedApps, ProviderProfile, Saved, SettingsPayload } from "../lib/types";
 
 export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -134,7 +134,6 @@ export const api = {
   pickApps: () => invoke<PickedApps>("pick_apps"),
   /** Opens System Settings → Accessibility with the drag-and-drop guide beside it. */
   guideAccessibility: () => invoke<void>("guide_accessibility"),
-  preview: (id: number, text: string, presetId: string) => invoke<void>("preview_review", { id, text, presetId }),
   openUrl: async (url: string) => {
     if (!inTauri) return void window.open(url, "_blank");
     const { invoke } = await import("@tauri-apps/api/core");
@@ -146,5 +145,3 @@ export const api = {
     return listen<T>(event, (e) => handler(e.payload));
   },
 };
-
-export type PreviewEvent = { id: number; event: EngineEvent };

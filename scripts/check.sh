@@ -16,23 +16,20 @@ if [[ "$(uname)" == Darwin ]]; then xcrun swiftc -typecheck tests/ui/smoke.swift
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 # The tests write the TypeScript definitions of the IPC payloads from the Rust types
-# (src-tauri/src/ipc_contract.rs). Here they write to a fresh directory, which is compared with the
-# committed ui/src/lib/generated: a failed build or test leaves the committed files alone, and a
-# definition no type writes any more shows as a difference too. `git diff --no-index` needs no
-# repository, and the files are checked out with LF line endings everywhere (.gitattributes).
+# (src-tauri/src/ipc_contract.rs). Here they write to a directory of this run's own, which is
+# compared with the committed ui/src/lib/generated and never changes it: a definition no type writes
+# any more shows as a difference too. `git diff --no-index` needs no repository, and the files are
+# checked out with LF line endings everywhere (.gitattributes).
 generated=ui/src/lib/generated
-fresh=target/ipc-types
-rm -rf "$fresh"
-mkdir -p "$fresh"
+mkdir -p target
+fresh="$(mktemp -d target/ipc-types.XXXXXX)"
+trap 'rm -rf "$fresh"' EXIT
 # An absolute path, in Windows form under Git Bash: each crate's tests run in its own directory.
 TS_RS_EXPORT_DIR="$(pwd -W 2> /dev/null || pwd)/$fresh" cargo test --workspace
 if ! git diff --no-index --stat --exit-code -- "$generated" "$fresh"; then
-  rm -f "$generated"/*.ts
-  cp "$fresh"/*.ts "$generated"/
-  echo "$generated was out of date and has been rewritten from the Rust types: commit the changes." >&2
+  echo "$generated is out of date. To rewrite it from the Rust types: rm $generated/*.ts && cargo test --workspace" >&2
   exit 1
 fi
-rm -rf "$fresh"
 npm --prefix ui run check
 npm --prefix ui test
 npm --prefix ui run build

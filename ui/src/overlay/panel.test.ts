@@ -69,11 +69,11 @@ describe("what a key does", () => {
     expect(keyAction(reviewing, cmd("r"))).toEqual(handled({ type: "retry" }));
   });
 
-  // Current behaviour: the app's key table lowercases C and R before taking them from the app, but
-  // the panel matches only lowercase, so ⌘C and R with caps lock on reach the panel and do nothing.
-  it("matches C and R in lowercase only", () => {
-    expect(keyAction(reviewing, cmd("C"))).toBeNull();
-    expect(keyAction(reviewing, key("R"))).toBeNull();
+  // The app takes ⌘C and R from the app under review in either case, so the panel must act on both.
+  it("takes a letter the same with caps lock on", () => {
+    expect(keyAction(reviewing, cmd("C"))).toEqual(handled({ type: "copy" }));
+    expect(keyAction(reviewing, key("R"))).toEqual(handled({ type: "retry" }));
+    expect(keyAction({ ...reviewing, keepOffer: "Kyndal" }, key("A"))).toEqual(handled({ type: "keep", word: "Kyndal" }));
   });
 
   it("adds the offered word on A", () => {
@@ -105,13 +105,12 @@ describe("what a key does", () => {
     expect(keyAction({ ...reviewing, presets: presets(3) }, key("5"))).toBeNull();
   });
 
-  // Current behaviour: the app takes ⌘8 and ⌘9 and the panel runs the eighth and ninth styles,
-  // though it shows chips for the first seven only, so those two styles have keys but no chip.
-  it("runs the eighth and ninth styles, which have no chip", () => {
+  it("gives a style past the last chip no key", () => {
     const nine = { ...reviewing, presets: presets(9) };
-    expect(keyAction(nine, cmd("8"))).toEqual(handled({ type: "runPreset", presetId: "style-8" }));
-    expect(keyAction(nine, key("9"))).toEqual({ action: { type: "runPreset", presetId: "style-9" }, preventDefault: false });
     expect(viewOf({ ...base, presets: nine.presets }).chips).toHaveLength(7);
+    expect(keyAction(nine, cmd("7"))).toEqual(handled({ type: "runPreset", presetId: "style-7" }));
+    expect(keyAction(nine, cmd("8"))).toBeNull();
+    expect(keyAction(nine, key("9"))).toBeNull();
   });
 
   it("does nothing on zero", () => {

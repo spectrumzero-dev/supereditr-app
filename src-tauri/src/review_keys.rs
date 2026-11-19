@@ -26,9 +26,9 @@ pub struct Key {
     pub shift_key: bool,
 }
 
-/// Shortcuts with ⌘ or ⌃ alone that the panel uses: switching style (1–9), copying (C), trying again (R)
-/// and Settings (,).
-const PANEL_SHORTCUTS: [&str; 12] = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "c", "r", ","];
+/// Shortcuts with ⌘ or ⌃ alone that the panel uses: switching style (1–7, one for each chip the panel
+/// shows; `CHIPS` in ui/src/overlay/panel.ts), copying (C), trying again (R) and Settings (,).
+const PANEL_SHORTCUTS: [&str; 10] = ["1", "2", "3", "4", "5", "6", "7", "c", "r", ","];
 
 impl Key {
     /// Whether the panel takes this key from the app. Every key that types or edits text does, as
@@ -98,8 +98,11 @@ mod tests {
 
     #[test]
     fn only_the_panels_own_shortcuts_are_kept_from_the_app() {
-        for name in ["1", "9", "c", "C", "r", ","] {
+        for name in ["1", "7", "c", "C", "r", ","] {
             assert!(key(name, true, false).for_panel(), "⌘{name}");
+        }
+        for name in ["8", "9", "0"] {
+            assert!(!key(name, true, false).for_panel(), "⌘{name} picks no style, so it reaches the app");
         }
         assert!(key("2", false, true).for_panel(), "⌃2");
         assert!(key("Enter", true, false).for_panel(), "⌘↩ would send the message in a chat app");

@@ -1,11 +1,15 @@
 //! Writing a fix: an Accessibility write, a checked paste, or edits applied in place, each confirmed
 //! by reading the field back.
+//!
+//! The decisions run against four small traits, so they can be tested against a pretend Mac
+//! (`testing.rs`): the [`Field`] being written, the [`Desktop`] that takes key events, the
+//! [`Pasteboard`], and a [`Clock`] for every wait. [`replace`] runs them against the real ones.
 
 use super::apps::{focused_app, is_chromium_based};
 use super::ax::{AXUIElementCreateApplication, AXValueCreate, CFRange, Element, kAXValueCFRangeType};
-use super::capture::{press_menu_item, selection_unchanged};
+use super::capture::press_menu_item;
 use super::keys::{Key, post_command_key, post_key};
-use super::text::{code_in, html_with_code, is_invisible, is_line_break, markdown_with_code};
+use super::text::{Formatting, code_in, html_with_code, is_invisible, is_line_break, markdown_with_code};
 use super::{Capture, accessibility_trusted, pasteboard, trace};
 use crate::platform::{PlatformError, ReplaceMethod};
 use core_foundation::base::{CFType, TCFType};
@@ -15,22 +19,217 @@ use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use std::ffi::c_void;
 use std::time::{Duration, Instant};
 
+// --- What replacing needs from the Mac ---------------------------------------------------------
+
+/// The field a fix is written into, as Accessibility shows it. [`Element`] is the real one.
+pub(super) trait Field {
+    /// `AXValue`: the field's whole text.
+    fn value(&self) -> Option<String>;
+    /// `AXSelectedText`, exactly as the app reports it.
+    fn selected(&self) -> Option<String>;
+    /// The selection as a capture reads it ([`Element::selected_text`]), to compare with what was
+    /// captured.
+    fn selection(&self) -> Option<String>;
+    /// `AXSelectedTextRange`: where the selection starts and how long it is, in UTF-16 units.
+    fn selected_range(&self) -> Option<(isize, isize)>;
+    /// A Chromium rich field's text with its empty paragraphs put back ([`Element::web_text`]).
+    fn web_text(&self) -> Option<String>;
+    /// Whether the app lets `AXSelectedText` be written.
+    fn can_set_selected_text(&self) -> bool;
+    /// Writes `text` over the selection through Accessibility. True when the app accepted the write,
+    /// which doesn't mean it applied it.
+    fn set_selected_text(&self, text: &str) -> bool;
+    /// Sets the selection to UTF-16 units `start..start + length`, without waiting.
+    fn select(&self, start: usize, length: usize) -> bool;
+    /// True while the app `pid` is in front with focus in this field or inside it.
+    fn has_focus(&self, pid: i32) -> bool;
+    /// The code and other formatting in a web field. Finding it also logs what was found.
+    fn formatting(&self) -> Formatting;
+}
+
+/// Key events to the app, and what the log says about its windows.
+pub(super) trait Desktop {
+    /// Whether SuperEditr has Accessibility permission.
+    fn trusted(&self) -> bool;
+    /// Chrome-family browsers and apps built on Chromium, whose pastes can be dropped.
+    fn chromium_based(&self, bundle_id: &str, pid: i32) -> bool;
+    /// Pastes in the app `pid`, and says how, for the log.
+    fn paste(&self, pid: i32) -> &'static str;
+    /// Types `text` over the app's selection as key events; empty text deletes it.
+    fn type_text(&self, pid: i32, text: &str) -> bool;
+    /// Which of the app's windows has focus, for the log.
+    fn window_state(&self, pid: i32) -> String;
+}
+
+/// The general pasteboard, as a paste uses it.
+pub(super) trait Pasteboard {
+    /// Everything on the clipboard, to put back after a paste.
+    type Snapshot;
+    fn snapshot(&self) -> Self::Snapshot;
+    /// Writes the fix, marked transient, with an HTML version when given one. Returns the change
+    /// count after the write.
+    fn write_transient(&self, text: &str, html: Option<&str>) -> isize;
+    fn change_count(&self) -> isize;
+    /// Puts `snapshot` back once the app has had a moment to read the fix, unless something else
+    /// wrote to the clipboard since change count `ours`.
+    fn restore_soon(&self, snapshot: Self::Snapshot, ours: isize);
+}
+
+/// The time every wait is measured by.
+pub(super) trait Clock {
+    fn now(&self) -> Instant;
+    fn sleep(&self, wait: Duration);
+}
+
+/// What a replace runs against.
+pub(super) struct Services<'a, P: Pasteboard> {
+    pub(super) desktop: &'a dyn Desktop,
+    pub(super) pasteboard: &'a P,
+    pub(super) clock: &'a dyn Clock,
+}
+
+/// The real Mac: Accessibility permission, key events, the general pasteboard and the clock.
+struct System;
+
+impl Field for Element {
+    fn value(&self) -> Option<String> {
+        self.string("AXValue")
+    }
+
+    fn selected(&self) -> Option<String> {
+        self.string("AXSelectedText")
+    }
+
+    fn selection(&self) -> Option<String> {
+        self.selected_text()
+    }
+
+    fn selected_range(&self) -> Option<(isize, isize)> {
+        self.range("AXSelectedTextRange").map(|range| (range.location, range.length))
+    }
+
+    fn web_text(&self) -> Option<String> {
+        Element::web_text(self)
+    }
+
+    fn can_set_selected_text(&self) -> bool {
+        self.settable("AXSelectedText")
+    }
+
+    fn set_selected_text(&self, text: &str) -> bool {
+        let value = CFString::new(text);
+        self.set("AXSelectedText", value.as_CFTypeRef())
+    }
+
+    fn select(&self, start: usize, length: usize) -> bool {
+        set_selection(self, start, length)
+    }
+
+    fn has_focus(&self, pid: i32) -> bool {
+        field_focused(pid, self)
+    }
+
+    fn formatting(&self) -> Formatting {
+        code_in(self)
+    }
+}
+
+impl Desktop for System {
+    fn trusted(&self) -> bool {
+        accessibility_trusted(false)
+    }
+
+    fn chromium_based(&self, bundle_id: &str, pid: i32) -> bool {
+        is_chromium_based(bundle_id, pid)
+    }
+
+    /// The app's own Paste menu item first. The app can be left without a key window (after the
+    /// panel had focus for an instruction, or the user clicked it); browsers and Electron apps then
+    /// drop a posted ⌘V, but a menu item acts on the app's main window.
+    fn paste(&self, pid: i32) -> &'static str {
+        let app = Element::from_create(unsafe { AXUIElementCreateApplication(pid) });
+        if app.as_ref().and_then(|app| press_menu_item(app, "v")) == Some(true) {
+            "the app's Paste menu item"
+        } else {
+            post_command_key(pid, Key::V);
+            "⌘V to the app's process"
+        }
+    }
+
+    fn type_text(&self, pid: i32, text: &str) -> bool {
+        type_text(pid, text)
+    }
+
+    fn window_state(&self, pid: i32) -> String {
+        key_window_state(pid)
+    }
+}
+
+impl Pasteboard for System {
+    type Snapshot = pasteboard::Snapshot;
+
+    fn snapshot(&self) -> pasteboard::Snapshot {
+        pasteboard::Snapshot::take()
+    }
+
+    fn write_transient(&self, text: &str, html: Option<&str>) -> isize {
+        pasteboard::write_transient_string(text, html)
+    }
+
+    fn change_count(&self) -> isize {
+        pasteboard::change_count()
+    }
+
+    /// Gives the app a moment to finish reading the pasteboard. A newer copy from another app
+    /// always wins over the restore.
+    fn restore_soon(&self, snapshot: pasteboard::Snapshot, ours: isize) {
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(120));
+            snapshot.restore_if_unchanged_since(ours);
+        });
+    }
+}
+
+impl Clock for System {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn sleep(&self, wait: Duration) {
+        std::thread::sleep(wait);
+    }
+}
+
+// --- Replacing ---------------------------------------------------------------------------------
+
 /// Replaces the captured selection with `text`, verifying the result where the app allows it. A
 /// `proofread` with a few local changes is applied in place, one edit per change, so formatting
 /// around them is never touched; anything else, or an app that doesn't let SuperEditr move the
 /// selection, replaces the whole selection.
 pub fn replace(capture: &Capture, text: &str, proofread: bool) -> Result<ReplaceMethod, PlatformError> {
-    if !accessibility_trusted(false) {
+    let services = Services { desktop: &System, pasteboard: &System, clock: &System };
+    replace_with(&services, capture, capture.element.as_ref().map(|element| element as &dyn Field), text, proofread)
+}
+
+/// [`replace`], against `services` and `field`, the captured field.
+pub(super) fn replace_with<P: Pasteboard>(
+    services: &Services<'_, P>,
+    capture: &Capture,
+    field: Option<&dyn Field>,
+    text: &str,
+    proofread: bool,
+) -> Result<ReplaceMethod, PlatformError> {
+    if !services.desktop.trusted() {
         return Err(PlatformError::NotTrusted);
     }
-    let Some(element) = &capture.element else {
+    let Some(field) = field else {
         // Without a field to re-check, a paste could land somewhere else.
         return Err(PlatformError::CopyOnly);
     };
     {
         // Never write into a different field or over a changed selection.
-        let still_focused = field_focused(capture, element);
-        if !still_focused || !selection_unchanged(capture) {
+        let still_focused = field.has_focus(capture.pid);
+        if !still_focused || !selection_unchanged(capture, field) {
             trace(format_args!(
                 "{}: not written: focus moved ({}) or selection changed",
                 capture.bundle_id, !still_focused
@@ -51,22 +250,29 @@ pub fn replace(capture: &Capture, text: &str, proofread: bool) -> Result<Replace
         match plan {
             None => {}
             Some(Ok(edits)) if !edits.is_empty() => {
-                if let Some(method) = replace_in_place(capture, element, text, &edits)? {
+                if let Some(method) = replace_in_place(services, capture, field, text, &edits)? {
                     return Ok(method);
                 }
             }
             Some(Ok(_)) => {}
             Some(Err(reason)) => trace(format_args!("{}: applying the whole selection: {reason}", capture.bundle_id)),
         }
-        if !capture.web && element.settable("AXSelectedText") {
-            let before = element.string("AXValue");
-            let value = CFString::new(text);
-            if element.set("AXSelectedText", value.as_CFTypeRef()) {
-                if verify_replacement(element, capture, before.as_deref(), text, None, Duration::from_millis(150)) {
+        if !capture.web && field.can_set_selected_text() {
+            let before = field.value();
+            if field.set_selected_text(text) {
+                if verify_replacement(
+                    services.clock,
+                    field,
+                    capture,
+                    before.as_deref(),
+                    text,
+                    None,
+                    Duration::from_millis(150),
+                ) {
                     return Ok(ReplaceMethod::Accessibility);
                 }
                 // The write may have been applied without being verifiable; never paste on top of it.
-                if element.string("AXValue") != before || !selection_unchanged(capture) {
+                if field.value() != before || !selection_unchanged(capture, field) {
                     trace(format_args!(
                         "{}: Accessibility write changed the field but didn't verify",
                         capture.bundle_id
@@ -76,13 +282,18 @@ pub fn replace(capture: &Capture, text: &str, proofread: bool) -> Result<Replace
             }
         }
     }
-    paste(capture, element, text)
+    paste(services, capture, field, text)
 }
 
-/// True while the captured app is in front with focus in `element` or inside it.
-fn field_focused(capture: &Capture, element: &Element) -> bool {
+/// True while the captured selection is still exactly what the user selected.
+fn selection_unchanged(capture: &Capture, field: &dyn Field) -> bool {
+    field.selection().as_deref() == Some(capture.text.as_str())
+}
+
+/// True while the app `pid` is in front with focus in `element` or inside it.
+fn field_focused(pid: i32, element: &Element) -> bool {
     focused_app()
-        .filter(|(_, pid)| *pid == capture.pid)
+        .filter(|(_, front)| *front == pid)
         .and_then(|(app, _)| app.element("AXFocusedUIElement"))
         .is_some_and(|focus| is_same_or_descendant(&focus, element))
 }
@@ -108,16 +319,17 @@ fn is_same_or_descendant(candidate: &Element, ancestor: &Element) -> bool {
 /// `pasted`, when given, is what was put on the clipboard if it differs from `text`: an editor that
 /// keeps the Markdown for code as written shows it with its backticks.
 fn verify_replacement(
-    element: &Element,
+    clock: &dyn Clock,
+    field: &dyn Field,
     capture: &Capture,
     before: Option<&str>,
     text: &str,
     pasted: Option<&str>,
     wait: Duration,
 ) -> bool {
-    let deadline = Instant::now() + wait;
+    let deadline = clock.now() + wait;
     loop {
-        if let Some(value) = element.string("AXValue").filter(|value| Some(value.as_str()) != before) {
+        if let Some(value) = field.value().filter(|value| Some(value.as_str()) != before) {
             let landed = match capture.range {
                 Some((location, _)) => {
                     let units: Vec<u16> = value.encode_utf16().collect();
@@ -133,46 +345,41 @@ fn verify_replacement(
             let found = |full: &str| {
                 std::iter::once(text).chain(pasted).any(|t| full.contains(t) || visible(full).contains(&visible(t)))
             };
-            if landed || found(&value) || element.web_text().is_some_and(|full| found(&full)) {
+            if landed || found(&value) || field.web_text().is_some_and(|full| found(&full)) {
                 return true;
             }
         }
-        if Instant::now() >= deadline {
+        if clock.now() >= deadline {
             return false;
         }
-        std::thread::sleep(Duration::from_millis(10));
+        clock.sleep(Duration::from_millis(10));
     }
 }
 
-fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMethod, PlatformError> {
-    let before = element.string("AXValue");
-    let snapshot = pasteboard::Snapshot::take();
+fn paste<P: Pasteboard>(
+    services: &Services<'_, P>,
+    capture: &Capture,
+    field: &dyn Field,
+    text: &str,
+) -> Result<ReplaceMethod, PlatformError> {
+    let (desktop, pasteboard, clock) = (services.desktop, services.pasteboard, services.clock);
+    let before = field.value();
+    let snapshot = pasteboard.snapshot();
     // Code the app formatted is pasted as code again: a plain-text paste would turn it into prose.
     let code = supereditr_core::diff::carry_ranges(&capture.text, text, &capture.code);
     let html = (!code.is_empty()).then(|| html_with_code(text, &code));
     let plain = if code.is_empty() { text.to_string() } else { markdown_with_code(text, &code) };
-    let ours = pasteboard::write_transient_string(&plain, html.as_deref());
-    let window = key_window_state(capture.pid);
-    let started = Instant::now();
-    // The app's own Paste menu item first. The app can be left without a key window (after the
-    // panel had focus for an instruction, or the user clicked it); browsers and Electron apps then
-    // drop a posted ⌘V, but a menu item acts on the app's main window.
-    let app = Element::from_create(unsafe { AXUIElementCreateApplication(capture.pid) });
-    let press = || {
-        if app.as_ref().and_then(|app| press_menu_item(app, "v")) == Some(true) {
-            "the app's Paste menu item"
-        } else {
-            post_command_key(capture.pid, Key::V);
-            "⌘V to the app's process"
-        }
-    };
+    let ours = pasteboard.write_transient(&plain, html.as_deref());
+    let window = desktop.window_state(capture.pid);
+    let started = clock.now();
     // Chrome 156 drops a paste when its asynchronous clipboard-change notice arrives after the
     // paste started (crbug.com/568453825); the restore after a previous paste makes that likely,
     // and waiting before the paste didn't help in testing. A dropped paste never lands late, and
     // the paste after one always landed, so paste again, but only while the field and the
     // selection are untouched: a slow paste that did land replaces the selection, so it is never
     // pasted twice. Other apps get one paste and the full wait.
-    let windows: &[u64] = if is_chromium_based(&capture.bundle_id, capture.pid) { &[250, 500, 600] } else { &[600] };
+    let windows: &[u64] =
+        if desktop.chromium_based(&capture.bundle_id, capture.pid) { &[250, 500, 600] } else { &[600] };
     let mut how = "";
     let mut attempts = 0;
     let mut landed = false;
@@ -180,17 +387,24 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
         // Retry only while focus is still in the field, and the field, the selection and the
         // clipboard (still our text) are as left.
         if i > 0
-            && (!field_focused(capture, element)
-                || element.string("AXValue") != before
-                || !selection_unchanged(capture)
-                || pasteboard::change_count() != ours)
+            && (!field.has_focus(capture.pid)
+                || field.value() != before
+                || !selection_unchanged(capture, field)
+                || pasteboard.change_count() != ours)
         {
             break;
         }
-        how = press();
+        how = desktop.paste(capture.pid);
         attempts += 1;
-        landed =
-            verify_replacement(element, capture, before.as_deref(), text, Some(&plain), Duration::from_millis(*wait));
+        landed = verify_replacement(
+            clock,
+            field,
+            capture,
+            before.as_deref(),
+            text,
+            Some(&plain),
+            Duration::from_millis(*wait),
+        );
         if landed {
             break;
         }
@@ -201,8 +415,8 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
         text.chars().count(),
         if attempts == 1 { "attempt" } else { "attempts" },
         if landed { "verified" } else { "not verified" },
-        started.elapsed(),
-        if element.string("AXValue") == before { "unchanged" } else { "changed" },
+        clock.now().duration_since(started),
+        if field.value() == before { "unchanged" } else { "changed" },
     ));
     if html.is_some() {
         // Whether the editor kept the code as code: the walk logs what the field now has.
@@ -212,19 +426,14 @@ fn paste(capture: &Capture, element: &Element, text: &str) -> Result<ReplaceMeth
             code.len(),
             capture.code.len()
         ));
-        code_in(element);
+        field.formatting();
     }
     if !landed {
         // The paste may still land late. Leave the suggestion on the clipboard rather than
         // restoring, so a late paste can't insert the user's old clipboard instead.
         return Err(PlatformError::Unverified);
     }
-    // Give the app a moment to finish reading the pasteboard. A newer copy from another app always
-    // wins over the restore.
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(120));
-        snapshot.restore_if_unchanged_since(ours);
-    });
+    pasteboard.restore_soon(snapshot, ours);
     Ok(ReplaceMethod::Paste)
 }
 
@@ -338,16 +547,16 @@ fn type_text(pid: i32, text: &str) -> bool {
 }
 
 /// Polls `done` until it holds or `wait` runs out.
-fn wait_until(wait: Duration, done: impl Fn() -> bool) -> bool {
-    let deadline = Instant::now() + wait;
+fn wait_until(clock: &dyn Clock, wait: Duration, done: impl Fn() -> bool) -> bool {
+    let deadline = clock.now() + wait;
     loop {
         if done() {
             return true;
         }
-        if Instant::now() >= deadline {
+        if clock.now() >= deadline {
             return false;
         }
-        std::thread::sleep(Duration::from_millis(10));
+        clock.sleep(Duration::from_millis(10));
     }
 }
 
@@ -360,13 +569,15 @@ fn wait_until(wait: Duration, done: impl Fn() -> bool) -> bool {
 /// SuperEditr move its selection, or the field doesn't line up with the edits): the caller then
 /// replaces the whole selection. Once an edit is written there is no going back: a later failure
 /// stops and reports a partial fix.
-fn replace_in_place(
+fn replace_in_place<P: Pasteboard>(
+    services: &Services<'_, P>,
     capture: &Capture,
-    element: &Element,
+    field: &dyn Field,
     text: &str,
     edits: &[supereditr_core::edits::Edit],
 ) -> Result<Option<ReplaceMethod>, PlatformError> {
-    let started = Instant::now();
+    let clock = services.clock;
+    let started = clock.now();
     let fallback = |reason: &str| {
         trace(format_args!("{}: applying the whole selection: {reason}", capture.bundle_id));
         Ok(None)
@@ -385,12 +596,10 @@ fn replace_in_place(
         })
     };
     // The selection as the app counts positions in it, still as captured (`replace` checked).
-    let (Some(range), Some(selected), Some(before)) =
-        (element.range("AXSelectedTextRange"), element.string("AXSelectedText"), element.string("AXValue"))
-    else {
+    let (Some(range), Some(selected), Some(before)) = (field.selected_range(), field.selected(), field.value()) else {
         return fallback("the field doesn't report its text or selection");
     };
-    let (location, length) = (range.location.max(0) as usize, range.length.max(0) as usize);
+    let (location, length) = (range.0.max(0) as usize, range.1.max(0) as usize);
     // Where each edit is, checked against the selection before anything moves.
     let Some(places) =
         edits.iter().map(|edit| place(edit, &capture.text, &selected, location)).collect::<Option<Vec<_>>>()
@@ -405,27 +614,26 @@ fn replace_in_place(
     // Selects `text` at `start` and confirms it by reading the selection back, setting it again
     // until it reads back or `wait` runs out.
     let select_text = |start: usize, text: &str, wait: Duration| {
-        let deadline = Instant::now() + wait;
+        let deadline = clock.now() + wait;
         loop {
-            if !set_selection(element, start, text.encode_utf16().count()) {
+            if !field.select(start, text.encode_utf16().count()) {
                 return false;
             }
-            if wait_until(Duration::from_millis(100), || element.string("AXSelectedText").as_deref() == Some(text)) {
+            if wait_until(clock, Duration::from_millis(100), || field.selected().as_deref() == Some(text)) {
                 return true;
             }
-            if Instant::now() >= deadline {
+            if clock.now() >= deadline {
                 return false;
             }
         }
     };
     // Selects the text an edit checks; for an insertion, then puts the caret in place.
     let select = |place: &Place, wait: Duration| {
-        select_text(place.check, &place.text, wait)
-            && (place.start != place.end || set_selection(element, place.start, 0))
+        select_text(place.check, &place.text, wait) && (place.start != place.end || field.select(place.start, 0))
     };
     let restore = || {
-        set_selection(element, location, length)
-            && wait_until(Duration::from_millis(200), || selection_unchanged(capture))
+        field.select(location, length)
+            && wait_until(clock, Duration::from_millis(200), || selection_unchanged(capture, field))
     };
     if !select(&places[0], Duration::from_millis(200)) {
         if !restore() {
@@ -434,27 +642,27 @@ fn replace_in_place(
         }
         return fallback("the app doesn't let SuperEditr move the selection");
     }
-    let native = !capture.web && element.settable("AXSelectedText");
+    let native = !capture.web && field.can_set_selected_text();
     for (i, (edit, place)) in edits.iter().zip(&places).enumerate() {
-        if i > 0 && !wait_until(AFTER_EDIT, || field_focused(capture, element)) {
+        if i > 0 && !wait_until(clock, AFTER_EDIT, || field.has_focus(capture.pid)) {
             return stopped(i, "focus left the field");
         }
         if i > 0 && !select(place, AFTER_EDIT) {
             return stopped(i, "the text to fix no longer matched");
         }
-        let value = element.string("AXValue");
+        let value = field.value();
         let wrote = if native {
-            element.set("AXSelectedText", CFString::new(&edit.new).as_CFTypeRef())
+            field.set_selected_text(&edit.new)
         } else {
-            type_text(capture.pid, &edit.new)
+            services.desktop.type_text(capture.pid, &edit.new)
         };
         // Landed once the field changes and what was written reads back where it should be.
         let landed = wrote
-            && wait_until(AFTER_EDIT, || element.string("AXValue") != value)
+            && wait_until(clock, AFTER_EDIT, || field.value() != value)
             && (edit.new.is_empty() || select_text(place.start, &edit.new, AFTER_EDIT));
         if !landed {
             // Nothing written yet: the whole replace can still go ahead, once the selection is back.
-            if i == 0 && element.string("AXValue").as_deref() == Some(before.as_str()) && restore() {
+            if i == 0 && field.value().as_deref() == Some(before.as_str()) && restore() {
                 return fallback("the first change didn't land");
             }
             return stopped(i, "a change didn't land");
@@ -463,13 +671,13 @@ fn replace_in_place(
     // The caret after the fixed text, where replacing the whole selection leaves it.
     let grown: isize =
         edits.iter().map(|e| e.new.encode_utf16().count() as isize - e.old.encode_utf16().count() as isize).sum();
-    set_selection(element, (location + length).saturating_add_signed(grown), 0);
-    let verified = verify_replacement(element, capture, Some(&before), text, None, AFTER_EDIT);
+    field.select((location + length).saturating_add_signed(grown), 0);
+    let verified = verify_replacement(clock, field, capture, Some(&before), text, None, AFTER_EDIT);
     let code = if capture.code.is_empty() {
         String::new()
     } else {
         let visible = |s: &str| s.chars().filter(|c| !is_invisible(*c)).collect::<String>();
-        let pieces: Vec<String> = code_in(element).code.iter().map(|p| visible(&p.text)).collect();
+        let pieces: Vec<String> = field.formatting().code.iter().map(|p| visible(&p.text)).collect();
         let kept = capture
             .code
             .iter()
@@ -484,7 +692,7 @@ fn replace_in_place(
         "{}: applied in place: {} edits in {} ms by {}; {}{code}",
         capture.bundle_id,
         edits.len(),
-        started.elapsed().as_millis(),
+        clock.now().duration_since(started).as_millis(),
         if native { "Accessibility writes" } else { "typing" },
         if verified { "verified" } else { "not verified" },
     ));
@@ -516,6 +724,7 @@ pub fn copy_to_clipboard(text: &str) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::testing::*;
     use super::*;
 
     #[test]
@@ -547,5 +756,247 @@ mod tests {
         assert_eq!((replacement.check, replacement.start, replacement.end), (7, 7, 11));
         // A selection that doesn't hold what was read gives no place.
         assert!(place(&edits[1], read, "Hithat is code", 5).is_none());
+    }
+
+    /// A native text field in QuillPoint, with a sentence's two typos selected.
+    fn notes() -> World {
+        World::new("com.example.QuillPoint").with_text("Rhyan said their going too the store.", "their going too")
+    }
+
+    #[test]
+    fn an_accessibility_write_that_reads_back_is_applied() {
+        let world = notes();
+        let capture = world.capture();
+        assert!(matches!(world.replace(&capture, "they’re going to"), Ok(ReplaceMethod::Accessibility)));
+        assert_eq!(world.writes(), ["they’re going to"]);
+        assert_eq!(world.field_text(), "Rhyan said they’re going to the store.");
+        assert!(world.keys_sent().is_empty(), "nothing is pasted");
+        assert!(world.put_on_clipboard().is_empty(), "the clipboard isn't touched");
+    }
+
+    #[test]
+    fn a_proofread_in_a_native_field_is_written_change_by_change() {
+        let world = notes();
+        let capture = world.capture();
+        assert!(matches!(world.proofread(&capture, "they’re going to"), Ok(ReplaceMethod::Accessibility)));
+        assert_eq!(world.field_text(), "Rhyan said they’re going to the store.");
+        let writes = world.writes();
+        assert_eq!(writes.len(), 2, "one write per change, never the whole selection: {writes:?}");
+        assert!(writes.iter().all(|w| !w.contains("going")), "{writes:?}");
+        assert!(world.keys_sent().is_empty());
+        // The caret ends after the fixed text, where replacing the whole selection leaves it.
+        assert_eq!(world.selected_range(), Some(("Rhyan said they’re going to".encode_utf16().count() as isize, 0)));
+    }
+
+    #[test]
+    fn a_proofread_of_formatted_web_text_is_typed_change_by_change() {
+        let world = World::new("com.example.QuillPoint")
+            .with_text("Brynlee sent the the KPI notes realy late.", "Brynlee sent the the KPI notes realy late.")
+            .formatted();
+        let capture = world.capture();
+        let fixed = "Brynlee sent the KPI notes really late.";
+        assert!(matches!(world.proofread(&capture, fixed), Ok(ReplaceMethod::Typing)));
+        assert_eq!(world.field_text(), fixed);
+        assert!(world.writes().is_empty(), "a web field is never written through Accessibility");
+        let keys = world.keys_sent();
+        assert_eq!(keys.len(), 2, "{keys:?}");
+        assert!(keys.iter().all(|k| k.starts_with("typed")), "typed, not pasted: {keys:?}");
+        assert!(world.put_on_clipboard().is_empty());
+    }
+
+    #[test]
+    fn a_proofread_of_plain_web_text_is_pasted_whole() {
+        let world = notes().web();
+        let capture = world.capture();
+        assert!(matches!(world.proofread(&capture, "they’re going to"), Ok(ReplaceMethod::Paste)));
+        assert_eq!(world.keys_sent(), ["⌘V"]);
+        assert_eq!(world.put_on_clipboard(), [("they’re going to".to_string(), None)]);
+        assert_eq!(world.field_text(), "Rhyan said they’re going to the store.");
+    }
+
+    #[test]
+    fn an_app_that_keeps_its_selection_gets_the_whole_selection_without_a_long_wait() {
+        let world = notes().keeping_its_selection();
+        let capture = world.capture();
+        assert!(matches!(world.proofread(&capture, "they’re going to"), Ok(ReplaceMethod::Accessibility)));
+        assert_eq!(world.writes(), ["they’re going to"], "one write of the whole selection");
+        assert_eq!(world.field_text(), "Rhyan said they’re going to the store.");
+        assert!(world.waited() < Duration::from_millis(500), "{:?}", world.waited());
+    }
+
+    #[test]
+    fn an_edit_the_app_silently_ignores_falls_back_to_a_paste() {
+        // The app takes every Accessibility write and applies none: in place, then whole.
+        let world = notes().writes_are(Write::Ignored);
+        let capture = world.capture();
+        assert!(matches!(world.proofread(&capture, "they’re going to"), Ok(ReplaceMethod::Paste)));
+        assert_eq!(world.writes().len(), 2, "the first change in place, then the whole selection");
+        assert_eq!(world.keys_sent(), ["⌘V"]);
+        assert_eq!(world.field_text(), "Rhyan said they’re going to the store.");
+        assert_eq!(world.clipboard_text(), "Rhyan's own copy", "the user's clipboard comes back");
+    }
+
+    #[test]
+    fn an_accessibility_write_that_changed_the_field_unconfirmed_is_never_pasted_over() {
+        let world = notes().writes_are(Write::Garbled);
+        let capture = world.capture();
+        assert!(matches!(world.replace(&capture, "they’re going to"), Err(PlatformError::Unverified)));
+        assert!(world.keys_sent().is_empty(), "a paste would write the fix twice");
+        assert!(world.put_on_clipboard().is_empty());
+    }
+
+    #[test]
+    fn a_first_change_in_place_that_lands_wrong_is_never_written_over() {
+        let world = notes().writes_are(Write::Garbled);
+        let capture = world.capture();
+        assert!(matches!(world.proofread(&capture, "they’re going to"), Err(PlatformError::Unverified)));
+        assert_eq!(world.writes().len(), 1, "nothing after the change that landed wrong");
+        assert!(world.keys_sent().is_empty());
+    }
+
+    #[test]
+    fn a_later_change_that_cant_go_ahead_is_a_partial_fix() {
+        let world = notes();
+        let capture = world.capture();
+        world.after_write(World::focus_elsewhere);
+        let outcome = world.proofread(&capture, "they’re going to");
+        assert!(matches!(outcome, Err(PlatformError::Partial { applied: 1, total: 2 })), "{outcome:?}");
+        assert_eq!(world.writes().len(), 1);
+        assert!(world.keys_sent().is_empty());
+    }
+
+    #[test]
+    fn a_field_whose_selected_text_cant_be_set_is_pasted_into() {
+        let world = notes().not_settable();
+        let capture = world.capture();
+        assert!(matches!(world.replace(&capture, "they’re going to"), Ok(ReplaceMethod::Paste)));
+        assert!(world.writes().is_empty());
+        assert_eq!(world.keys_sent(), ["⌘V"]);
+        assert_eq!(world.field_text(), "Rhyan said they’re going to the store.");
+    }
+
+    #[test]
+    fn a_paste_that_lands_is_applied_and_the_clipboard_comes_back() {
+        let world = notes().web();
+        let capture = world.capture();
+        assert!(matches!(world.replace(&capture, "they’re going to"), Ok(ReplaceMethod::Paste)));
+        assert_eq!(world.keys_sent(), ["⌘V"]);
+        assert_eq!(world.field_text(), "Rhyan said they’re going to the store.");
+        assert_eq!(world.clipboard_text(), "Rhyan's own copy");
+        assert_eq!(world.clipboard_html().as_deref(), Some("<b>Rhyan's own copy</b>"), "every representation");
+    }
+
+    #[test]
+    fn a_paste_that_cant_be_confirmed_leaves_the_fix_on_the_clipboard() {
+        let world = notes().web().pastes(Pastes::Never);
+        let capture = world.capture();
+        assert!(matches!(world.replace(&capture, "they’re going to"), Err(PlatformError::Unverified)));
+        assert_eq!(world.keys_sent(), ["⌘V"], "one paste, never a second");
+        assert_eq!(
+            world.clipboard_text(),
+            "they’re going to",
+            "a late paste must paste the suggestion, not the user's old clipboard"
+        );
+    }
+
+    #[test]
+    fn chromium_gets_a_dropped_paste_again_while_the_field_is_untouched() {
+        let world = notes().web().chromium().pastes(Pastes::AfterDropping(1));
+        let capture = world.capture();
+        assert!(matches!(world.replace(&capture, "they’re going to"), Ok(ReplaceMethod::Paste)));
+        assert_eq!(world.keys_sent(), ["⌘V", "⌘V"]);
+        assert_eq!(world.field_text(), "Rhyan said they’re going to the store.", "pasted once");
+        assert_eq!(world.clipboard_text(), "Rhyan's own copy");
+
+        // Three tries at most, then the fix stays on the clipboard.
+        let world = notes().web().chromium().pastes(Pastes::Never);
+        let capture = world.capture();
+        assert!(matches!(world.replace(&capture, "they’re going to"), Err(PlatformError::Unverified)));
+        assert_eq!(world.keys_sent(), ["⌘V", "⌘V", "⌘V"]);
+        assert_eq!(world.clipboard_text(), "they’re going to");
+    }
+
+    #[test]
+    fn a_copy_made_during_an_unconfirmed_paste_stops_a_second_one() {
+        let world = notes().web().chromium().pastes(Pastes::Never);
+        let capture = world.capture();
+        world.after_paste(|world| world.user_copies("Kyndal's newer copy"));
+        assert!(matches!(world.replace(&capture, "they’re going to"), Err(PlatformError::Unverified)));
+        assert_eq!(world.keys_sent(), ["⌘V"], "a second paste would paste the user's copy");
+        assert_eq!(world.clipboard_text(), "Kyndal's newer copy", "the user's copy stays");
+    }
+
+    #[test]
+    fn focus_leaving_during_an_unconfirmed_paste_stops_a_second_one() {
+        let world = notes().web().chromium().pastes(Pastes::Never);
+        let capture = world.capture();
+        world.after_paste(World::focus_elsewhere);
+        assert!(matches!(world.replace(&capture, "they’re going to"), Err(PlatformError::Unverified)));
+        assert_eq!(world.keys_sent(), ["⌘V"]);
+    }
+
+    #[test]
+    fn a_changed_selection_is_stale_and_nothing_is_written() {
+        let world = notes();
+        let capture = world.capture();
+        world.select_now(0, 5);
+        assert!(matches!(world.replace(&capture, "they’re going to"), Err(PlatformError::Stale)));
+        assert!(world.writes().is_empty());
+        assert!(world.keys_sent().is_empty());
+        assert!(world.put_on_clipboard().is_empty());
+    }
+
+    #[test]
+    fn focus_in_another_field_is_stale_and_nothing_is_written() {
+        let world = notes();
+        let capture = world.capture();
+        world.focus_elsewhere();
+        assert!(matches!(world.proofread(&capture, "they’re going to"), Err(PlatformError::Stale)));
+        assert!(world.writes().is_empty());
+        assert!(world.keys_sent().is_empty());
+    }
+
+    #[test]
+    fn copy_only_captures_are_never_written() {
+        let world = notes();
+        let capture = world.capture();
+        assert!(matches!(world.replace_without_a_field(&capture, "they’re going to"), Err(PlatformError::CopyOnly)));
+        assert!(world.writes().is_empty());
+        assert!(world.keys_sent().is_empty());
+    }
+
+    #[test]
+    fn without_accessibility_permission_nothing_is_written() {
+        let world = notes().untrusted();
+        let capture = world.capture();
+        assert!(matches!(world.replace(&capture, "they’re going to"), Err(PlatformError::NotTrusted)));
+        assert!(world.writes().is_empty());
+        assert!(world.keys_sent().is_empty());
+    }
+
+    #[test]
+    fn code_the_app_formatted_is_pasted_as_code_again() {
+        let world = World::new("com.example.QuillPoint")
+            .with_text("Run make deploy realy soon.", "Run make deploy realy soon.")
+            .web();
+        let mut capture = world.capture();
+        capture.code = vec![(4, 15)];
+        let fixed = "Run make deploy really soon.";
+        assert!(matches!(world.replace(&capture, fixed), Ok(ReplaceMethod::Paste)));
+        let put = world.put_on_clipboard();
+        assert_eq!(put.len(), 1);
+        assert_eq!(put[0].0, "Run `make deploy` really soon.", "the plain text marks the code as Markdown");
+        let html = put[0].1.as_deref().expect("an HTML version");
+        assert!(html.contains("<code>make deploy</code>"), "{html}");
+        assert_eq!(world.clipboard_text(), "Rhyan's own copy");
+    }
+
+    #[test]
+    fn a_paste_is_confirmed_by_chromiums_rebuilt_text_when_its_value_drops_empty_paragraphs() {
+        let text = "Teh plan.\n\nShip it.";
+        let world = World::new("com.google.Chrome").with_text(text, text).web().chromium().dropping_empty_paragraphs();
+        let capture = world.capture();
+        assert!(matches!(world.replace(&capture, "The plan.\n\nShip it."), Ok(ReplaceMethod::Paste)));
+        assert_eq!(world.keys_sent(), ["⌘V"]);
     }
 }

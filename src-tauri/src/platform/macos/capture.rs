@@ -449,14 +449,6 @@ fn capture_clipboard(app: &Element, pid: i32, bundle_id: String, app_name: Strin
     })
 }
 
-/// True while the captured selection is still exactly what the user selected.
-pub fn selection_unchanged(capture: &Capture) -> bool {
-    match &capture.element {
-        Some(element) => element.selected_text().as_deref() == Some(capture.text.as_str()),
-        None => true,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

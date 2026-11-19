@@ -15,6 +15,8 @@ mod log;
 mod pasteboard;
 mod replace;
 mod settings_window;
+#[cfg(test)]
+mod testing;
 mod text;
 mod watch;
 mod window;

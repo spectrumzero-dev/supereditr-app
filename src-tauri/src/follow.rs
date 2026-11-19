@@ -203,8 +203,8 @@ pub fn hold_for_click(app: &AppHandle) -> bool {
     static CLICKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let state = app.state::<AppState>();
     let (id, pid, window) = {
-        let session = state.session.lock().unwrap();
-        let Some(current) = session.as_ref() else { return false };
+        let review = state.review.lock().unwrap();
+        let Some(current) = review.session() else { return false };
         let Some(following) = current.following.as_ref().filter(|f| f._watch.is_some()) else { return false };
         (current.id, current.capture.pid, following.follow.window)
     };
@@ -214,8 +214,8 @@ pub fn hold_for_click(app: &AppHandle) -> bool {
     platform::trace(format_args!("follow: a press on the reviewed window holds the close"));
     let click = CLICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
     {
-        let mut session = state.session.lock().unwrap();
-        let Some(following) = session.as_mut().filter(|s| s.id == id).and_then(|s| s.following.as_mut()) else {
+        let mut review = state.review.lock().unwrap();
+        let Some(following) = review.current_mut(id).and_then(|s| s.following.as_mut()) else {
             return false;
         };
         following.hold.click(click);
@@ -226,8 +226,8 @@ pub fn hold_for_click(app: &AppHandle) -> bool {
         loop {
             let verdict = {
                 let state = app.state::<AppState>();
-                let mut session = state.session.lock().unwrap();
-                match session.as_mut().filter(|s| s.id == id).and_then(|s| s.following.as_mut()) {
+                let mut review = state.review.lock().unwrap();
+                match review.current_mut(id).and_then(|s| s.following.as_mut()) {
                     Some(following) => {
                         following.check_moved();
                         following.hold.deadline(click, platform::mouse_button_down())
@@ -255,8 +255,8 @@ pub fn hold_for_click(app: &AppHandle) -> bool {
 pub fn gesture_ended(app: &AppHandle) -> bool {
     let state = app.state::<AppState>();
     let (id, verdict, frame) = {
-        let mut session = state.session.lock().unwrap();
-        let Some(current) = session.as_mut() else { return false };
+        let mut review = state.review.lock().unwrap();
+        let Some(current) = review.session_mut() else { return false };
         let Some(following) = current.following.as_mut() else { return false };
         let frame = following.check_moved();
         let Some(verdict) = following.hold.gesture_ended() else { return false };
@@ -290,8 +290,8 @@ pub fn window_changed(app: &AppHandle, id: u64, change: WindowChange) {
         WindowChange::Gone => return crate::review::dismiss(app, Some(id)),
         WindowChange::Moving => {
             {
-                let mut session = state.session.lock().unwrap();
-                let Some(following) = session.as_mut().filter(|s| s.id == id).and_then(|s| s.following.as_mut()) else {
+                let mut review = state.review.lock().unwrap();
+                let Some(following) = review.current_mut(id).and_then(|s| s.following.as_mut()) else {
                     return;
                 };
                 // A move after a press on the window makes the press a drag.
@@ -303,8 +303,8 @@ pub fn window_changed(app: &AppHandle, id: u64, change: WindowChange) {
         WindowChange::Moved(frame) => frame,
     };
     let (anchor, height, dragged) = {
-        let mut session = state.session.lock().unwrap();
-        let Some(current) = session.as_mut().filter(|s| s.id == id) else { return };
+        let mut review = state.review.lock().unwrap();
+        let Some(current) = review.current_mut(id) else { return };
         let Some(anchor) = current.anchor.or_else(overlay::pointer_anchor) else { return };
         let Some(following) = current.following.as_mut() else { return };
         if following.follow.offset(frame) != (0.0, 0.0) {
@@ -333,8 +333,8 @@ pub fn window_changed(app: &AppHandle, id: u64, change: WindowChange) {
 pub fn settings_event(app: &AppHandle, window: &WebviewWindow, event: &WindowEvent) {
     let id = {
         let state = app.state::<AppState>();
-        let session = state.session.lock().unwrap();
-        match session.as_ref().filter(|s| s.capture.playground) {
+        let review = state.review.lock().unwrap();
+        match review.session().filter(|s| s.capture.playground) {
             Some(current) => current.id,
             None => return,
         }

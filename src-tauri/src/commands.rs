@@ -45,9 +45,7 @@ pub fn resize_overlay(app: AppHandle, height: f64) {
 
 #[tauri::command]
 pub fn focus_overlay(app: AppHandle, state: State<'_, AppState>) {
-    if let Some(session) = state.session.lock().unwrap().as_mut() {
-        session.keyboard = true;
-    }
+    state.review.lock().unwrap().take_keyboard();
     overlay::show(&app, true);
 }
 

@@ -407,7 +407,12 @@ pub async fn check(state: &AppState, profile_id: &str) -> ProviderCheck {
 }
 
 async fn check_with(state: &AppState, servers: &impl Servers, profile_id: &str) -> ProviderCheck {
-    let Some(profile) = state.profile(profile_id) else {
+    check_profile(servers, state.profile(profile_id).as_ref()).await
+}
+
+/// Checks `profile` as given, saved or not.
+async fn check_profile(servers: &impl Servers, profile: Option<&ProviderProfile>) -> ProviderCheck {
+    let Some(profile) = profile else {
         return ProviderCheck {
             ready: false,
             problem: Some("This AI was removed.".into()),
@@ -415,7 +420,7 @@ async fn check_with(state: &AppState, servers: &impl Servers, profile_id: &str) 
             models: Vec::new(),
         };
     };
-    match servers.check(&profile).await {
+    match servers.check(profile).await {
         // The saved model must be one the server offers; activation picks one if it isn't.
         Ok(models) if !models.contains(&profile.model) => ProviderCheck {
             ready: false,
@@ -482,29 +487,26 @@ pub async fn activate_provider(
 /// `activate_provider` without the menu bar.
 pub(crate) async fn activate(state: &AppState, servers: &impl Servers, profile_id: String) -> CmdResult<ProviderCheck> {
     let mut result = check_with(state, servers, &profile_id).await;
-    // Reachable, but its saved model isn't offered: switch to the fastest one it has.
-    if !result.ready && !result.models.is_empty() {
-        let mut config = state.config();
-        if let Some(p) = config.providers.iter_mut().find(|p| p.id == profile_id) {
-            let switched = preferred_model(p.kind, &result.models);
-            let previous = std::mem::replace(&mut p.model, switched.clone());
-            state.save_config(config).map_err(|e| e.to_string())?;
-            result = check_with(state, servers, &profile_id).await;
-            if !result.ready {
-                // A failed activation changes nothing: the model goes back, unless it was changed
-                // again meanwhile.
-                let mut config = state.config();
-                if let Some(p) = config.providers.iter_mut().find(|p| p.id == profile_id && p.model == switched) {
-                    p.model = previous;
-                    state.save_config(config).map_err(|e| e.to_string())?;
-                }
-            }
-        }
+    // Reachable, but its saved model isn't offered: switch to the fastest one it has. The switch is
+    // checked on a copy and saved only with the activation, so a failed one changes nothing.
+    let mut switched = None;
+    if !result.ready
+        && !result.models.is_empty()
+        && let Some(mut candidate) = state.profile(&profile_id)
+    {
+        candidate.model = preferred_model(candidate.kind, &result.models);
+        result = check_profile(servers, Some(&candidate)).await;
+        switched = Some(candidate.model);
     }
     if !result.ready {
         return Err(result.problem.unwrap_or_else(|| "This AI isn’t working yet.".into()));
     }
     let mut config = state.config();
+    if let Some(model) = switched
+        && let Some(p) = config.providers.iter_mut().find(|p| p.id == profile_id)
+    {
+        p.model = model;
+    }
     config.active_provider = Some(profile_id);
     state.save_config(config).map_err(|e| e.to_string())?;
     Ok(result)

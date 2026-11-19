@@ -257,14 +257,8 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
 
     fn show_notice_with(&self, message: String, copy: Option<String>, keys: bool) {
         let id = self.state.next_session_id();
-        let replaced = {
-            let mut review = self.state.review.lock().unwrap();
-            let replaced = review.show_notice();
-            // Under the lock, as `begin` sends its review: the panel gets the two in the order they
-            // replaced each other, so it never shows a notice that a newer review has replaced.
-            self.shell.emit("overlay", "overlay:status", StatusPayload { id, kind: "notice", message, copy });
-            replaced
-        };
+        let replaced = self.state.review.lock().unwrap().show_notice();
+        self.shell.emit("overlay", "overlay:status", StatusPayload { id, kind: "notice", message, copy });
         drop(replaced);
         self.shell.position(None, 126.0);
         // Does nothing outside macOS.
@@ -344,13 +338,8 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
             following,
         };
         // Dropped once the lock is released: that stops watching its window, through the platform.
-        let replaced = {
-            let mut review = state.review.lock().unwrap();
-            let replaced = review.begin(session);
-            // Under the lock, as a notice is sent (`show_notice_with`).
-            self.shell.emit("overlay", "overlay:session", payload);
-            replaced
-        };
+        let replaced = state.review.lock().unwrap().begin(session);
+        self.shell.emit("overlay", "overlay:session", payload);
         drop(replaced);
         self.shell.position(anchor, INITIAL_HEIGHT);
         self.shell.show(!auto);

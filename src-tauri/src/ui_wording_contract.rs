@@ -108,6 +108,10 @@ fn each_entry_is_listed_once_with_a_known_maker() {
 fn each_rust_entry_is_made_as_the_fixture_says() {
     for entry in entries().iter().filter(|e| e["made_by"] == "rust") {
         let id = text(entry, "id");
+        // Quick fix has a shortcut to collide with only on macOS, where the driver checks this.
+        if id == "shortcut-taken" && !cfg!(target_os = "macos") {
+            continue;
+        }
         assert_eq!(made(id), text(entry, "text"), "{id}: update tests/contracts/ui-wording.json and the drivers");
     }
 }

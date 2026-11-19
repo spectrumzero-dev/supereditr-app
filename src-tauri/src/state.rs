@@ -17,14 +17,11 @@ pub struct AppState {
     /// The main thread takes this lock: `review::on_review_hotkey`, run there by the global shortcut
     /// and the tray menu, takes it to hand the keys to an automatic review, and so do the
     /// synchronous commands (`dismiss`, `focus_overlay`, `resize_overlay`). Whoever holds it
-    /// therefore holds up the main thread, so it is held only to read or change `ReviewState`, plus
-    /// what must stay in order with that change and only queues work: starting a run's task, and
-    /// sending the panel a review, a notice or the keys (`emit`, and `overlay::show`, which never
-    /// waits for the main thread).
+    /// therefore holds up the main thread, so it is held only to read or change `ReviewState`.
     ///
-    /// While holding it, never `.await`, never wait for the main thread (it may be waiting for this
-    /// lock), and never make a platform call that can wait on another app, except `follow`'s reads
-    /// of the watched window. It isn't reentrant: never call anything that takes it, such as
+    /// While holding it, never `.await`, never emit, never wait for the main thread (it may be
+    /// waiting for this lock), and never make a platform call that can wait on another app, except
+    /// `follow`'s reads of the watched window. It isn't reentrant: never call anything that takes it, such as
     /// `follow::hold_for_click`, `follow::gesture_ended` or `review::dismiss`. A review that ends is
     /// handed back by `ReviewState` and dropped after the lock, as dropping it stops watching its
     /// window through the platform.

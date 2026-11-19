@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use supereditr_core::detect::Candidate;
 use supereditr_core::provider::{ProviderKind, ProviderProfile};
 use supereditr_core::{Config, Engine};
@@ -12,18 +12,18 @@ pub struct AppState {
     pub config: RwLock<Config>,
     pub config_path: PathBuf,
     pub engine: Engine,
-    pub session: Mutex<Option<Session>>,
+    /// The review or notice on screen, and the quiet period after a fix. Never held across an
+    /// `.await`, an emit or a platform call, except `follow`'s reads of the watched window.
+    pub review: Mutex<ReviewState>,
     pub next_id: AtomicU64,
     /// Results of the last account scan, keys included, until the user picks one.
     pub candidates: Mutex<Vec<Candidate>>,
     /// API keys read from the keychain, cached so a review never waits on Keychain Services.
     keys: Mutex<HashMap<String, Option<String>>>,
     pub paused: AtomicBool,
-    /// A standalone notice (no review) is on screen.
-    pub notice_visible: AtomicBool,
+    /// Counts the selection watcher's events, so a review about to start can tell that a newer
+    /// event replaced it. Lock-free: every keystroke and click in another app counts it on.
     pub watch_generation: AtomicU64,
-    /// Selection events are ignored until this moment (just after we replaced text).
-    pub quiet_until: Mutex<Instant>,
     /// The last finished review, which reopening the panel on the same selection shows again.
     pub last_review: crate::last_review::Memory,
     /// Counts saves of the settings, so Settings' save of a copy read before another save (the menu
@@ -57,6 +57,185 @@ impl Session {
     }
 }
 
+/// How long after a fix is written into an app its own selection changes are ignored.
+pub const QUIET: Duration = Duration::from_millis(800);
+
+/// What is on screen for a review, and the rules for changing it. It sits behind one lock
+/// (`AppState::review`); each method changes only this data and returns what the caller does once
+/// the lock is released, such as dropping the review that ended, which stops watching its window.
+pub struct ReviewState {
+    session: Option<Session>,
+    /// A standalone notice (no review) is on screen.
+    notice: bool,
+    /// Selection events are ignored until this moment (just after we replaced text).
+    quiet_until: Instant,
+}
+
+/// What `ReviewState::dismiss` asks of the caller. Only ever a return value, so its size is no cost.
+#[allow(clippy::large_enum_variant)]
+pub enum Dismissal {
+    /// The review asked about has ended, or another replaced it: nothing closes.
+    NotCurrent,
+    /// The panel closes. Holds the review that ended, if one was showing, to drop after the lock.
+    Close(Option<Session>),
+}
+
+/// A review the user accepted, for writing its text back into the app.
+pub struct Applying {
+    pub capture: Capture,
+    /// The latest run is a plain proofread (`Session::proofread`).
+    pub proofread: bool,
+    /// The review's watch on its window, which ends now: to drop after the lock.
+    pub following: Option<crate::follow::Following>,
+}
+
+impl ReviewState {
+    pub fn new(now: Instant) -> Self {
+        Self { session: None, notice: false, quiet_until: now }
+    }
+
+    pub fn session(&self) -> Option<&Session> {
+        self.session.as_ref()
+    }
+
+    pub fn session_mut(&mut self) -> Option<&mut Session> {
+        self.session.as_mut()
+    }
+
+    /// The review numbered `id`, if it is still the one showing.
+    pub fn current(&self, id: u64) -> Option<&Session> {
+        self.session.as_ref().filter(|s| s.id == id)
+    }
+
+    pub fn current_mut(&mut self, id: u64) -> Option<&mut Session> {
+        self.session.as_mut().filter(|s| s.id == id)
+    }
+
+    /// Opens `session`, replacing any review or notice showing. Returns the review it replaced,
+    /// cancelled.
+    pub fn begin(&mut self, session: Session) -> Option<Session> {
+        let old = self.take_cancelled();
+        self.notice = false;
+        self.session = Some(session);
+        old
+    }
+
+    /// A standalone notice replaces whatever is showing. Returns the review it replaced, cancelled.
+    pub fn show_notice(&mut self) -> Option<Session> {
+        let old = self.take_cancelled();
+        self.notice = true;
+        old
+    }
+
+    /// The panel asks for run number `run` of review `id`. Returns the review, its earlier run
+    /// cancelled, when the run is current; None when the review has ended or a later run was
+    /// asked for already.
+    pub fn start_run(&mut self, id: u64, run: u64, proofread: bool) -> Option<&mut Session> {
+        let current = self.session.as_mut().filter(|s| s.id == id && run >= s.run)?;
+        current.cancel();
+        current.run = run;
+        current.proofread = proofread;
+        Some(current)
+    }
+
+    /// The user accepted review `id`: its run stops and the panel closes for good, though the review
+    /// stays until the text is written (`end`). None when the review has ended.
+    pub fn apply(&mut self, id: u64) -> Option<Applying> {
+        let current = self.current_mut(id)?;
+        current.cancel();
+        Some(Applying {
+            capture: current.capture.clone(),
+            proofread: current.proofread,
+            following: current.following.take(),
+        })
+    }
+
+    /// The review's text has been written (or wasn't): whatever review is showing ends, as it is.
+    pub fn end(&mut self) -> Option<Session> {
+        self.session.take()
+    }
+
+    /// Review `id` comes back after a replacement that didn't write, and takes the keys. Swaps
+    /// `following` in, leaving the review's earlier one there to drop after the lock; on false the
+    /// review has ended, and `following` is left as it was.
+    pub fn reopen(&mut self, id: u64, following: &mut Option<crate::follow::Following>) -> bool {
+        let Some(current) = self.current_mut(id) else { return false };
+        std::mem::swap(&mut current.following, following);
+        current.keyboard = true;
+        true
+    }
+
+    /// Closes the panel: review `id`, or with None whatever is showing.
+    pub fn dismiss(&mut self, id: Option<u64>) -> Dismissal {
+        if id.is_some() && self.session.as_ref().map(|s| s.id) != id {
+            return Dismissal::NotCurrent;
+        }
+        let ended = self.take_cancelled();
+        self.notice = false;
+        Dismissal::Close(ended)
+    }
+
+    /// The panel takes the keys. Returns the review's number when it was an automatic one until now.
+    pub fn take_keyboard(&mut self) -> Option<u64> {
+        let current = self.session.as_mut()?;
+        let was_automatic = !current.keyboard;
+        current.keyboard = true;
+        was_automatic.then_some(current.id)
+    }
+
+    /// The panel's content is `height` tall. Returns where the review's selection is, if known.
+    pub fn resize(&mut self, height: f64) -> Option<Rect> {
+        let current = self.session.as_mut()?;
+        current.height = height;
+        current.anchor
+    }
+
+    /// A fix is being written into the app: its own selection changes are ignored for `QUIET`.
+    pub fn start_quiet(&mut self, now: Instant) {
+        self.quiet_until = now + QUIET;
+    }
+
+    pub fn is_quiet(&self, now: Instant) -> bool {
+        now < self.quiet_until
+    }
+
+    /// A review or a notice is on screen.
+    pub fn showing(&self) -> bool {
+        self.session.is_some() || self.notice
+    }
+
+    pub fn notice_visible(&self) -> bool {
+        self.notice
+    }
+
+    /// Whether typing or a click in another app closes what is showing (unless it was a click on
+    /// the reviewed window): not during the quiet period after a fix.
+    pub fn closes_on_interaction(&self, now: Instant) -> bool {
+        self.showing() && !self.is_quiet(now)
+    }
+
+    /// The process whose text the review showing is of.
+    pub fn reviewed_pid(&self) -> Option<i32> {
+        self.session.as_ref().map(|s| s.capture.pid)
+    }
+
+    /// A review that has the keys is showing, which a new selection never replaces.
+    pub fn keyboard_review_open(&self) -> bool {
+        self.session.as_ref().is_some_and(|s| s.keyboard)
+    }
+
+    /// The review showing is of exactly `text`.
+    pub fn is_showing_text(&self, text: &str) -> bool {
+        self.session.as_ref().is_some_and(|s| s.capture.text == text)
+    }
+
+    fn take_cancelled(&mut self) -> Option<Session> {
+        let mut old = self.session.take()?;
+        old.cancel();
+        Some(old)
+    }
+}
+
 // Test builds keep the diagnostic log whatever the setting says, so a build that misbehaves on a
 // tester's Mac has left a record even when it can no longer be reached to turn the log on. Only
 // official release builds (`updater::ENABLED`) follow the setting.
@@ -69,14 +248,12 @@ impl AppState {
             config: RwLock::new(config),
             config_path,
             engine,
-            session: Mutex::new(None),
+            review: Mutex::new(ReviewState::new(Instant::now())),
             next_id: AtomicU64::new(1),
             candidates: Mutex::new(Vec::new()),
             keys: Mutex::new(HashMap::new()),
             paused: AtomicBool::new(false),
-            notice_visible: AtomicBool::new(false),
             watch_generation: AtomicU64::new(0),
-            quiet_until: Mutex::new(Instant::now()),
             last_review: Default::default(),
             revision: AtomicU64::new(0),
         }
@@ -191,5 +368,162 @@ mod tests {
         state.set_cached_key(ProviderKind::Anthropic, "anthropic", Some("sk-ant-0123456789".into()));
         assert!(!shown_again(&state), "a new API key");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Review number `id` of a selection in "Try it now", as a shortcut opens it.
+    fn session(id: u64, text: &str) -> Session {
+        let bounds = Rect { x: 10.0, y: 10.0, width: 300.0, height: 20.0 };
+        Session {
+            id,
+            capture: crate::platform::playground_capture(text.into(), bounds),
+            keyboard: true,
+            anchor: Some(bounds),
+            height: 210.0,
+            task: None,
+            run: 0,
+            proofread: false,
+            following: None,
+        }
+    }
+
+    fn reviewing(id: u64) -> ReviewState {
+        let mut review = ReviewState::new(Instant::now());
+        assert!(review.begin(session(id, "Brynlee sent the KPI updaet.")).is_none());
+        review
+    }
+
+    #[test]
+    fn a_later_run_replaces_the_current_one_and_an_earlier_one_is_refused() {
+        let mut review = reviewing(1);
+        assert!(review.start_run(1, 0, true).is_some(), "the run the review starts with");
+        assert!(review.session().unwrap().proofread);
+        assert_eq!(review.start_run(1, 2, false).map(|s| s.run), Some(2));
+        assert!(review.start_run(1, 1, true).is_none(), "run 1 was asked for before run 2");
+        let current = review.session().unwrap();
+        assert_eq!(current.run, 2);
+        assert!(!current.proofread, "a refused run changes nothing");
+        assert!(review.start_run(1, 2, true).is_some(), "the same run again, as R asks");
+    }
+
+    #[test]
+    fn a_run_for_a_review_that_has_ended_starts_nothing() {
+        let mut review = reviewing(2);
+        assert!(review.start_run(1, 5, false).is_none());
+        assert!(ReviewState::new(Instant::now()).start_run(2, 0, false).is_none());
+    }
+
+    #[test]
+    fn a_second_review_replaces_the_first_and_hands_it_back() {
+        let mut review = reviewing(1);
+        let replaced = review.begin(session(2, "Kyndal wrote the OKR draft.")).unwrap();
+        assert_eq!(replaced.id, 1);
+        assert_eq!(review.session().unwrap().id, 2);
+        assert!(review.current(1).is_none());
+        assert!(review.is_showing_text("Kyndal wrote the OKR draft."));
+        assert!(!review.is_showing_text("Brynlee sent the KPI updaet."));
+    }
+
+    #[test]
+    fn a_notice_ends_the_review_and_a_new_review_hides_the_notice() {
+        let mut review = reviewing(1);
+        assert_eq!(review.show_notice().map(|s| s.id), Some(1));
+        assert!(review.session().is_none());
+        assert!(review.notice_visible() && review.showing());
+        assert!(review.begin(session(2, "Rhyan sent the KPI report.")).is_none());
+        assert!(!review.notice_visible());
+        assert!(review.showing());
+    }
+
+    #[test]
+    fn the_quiet_period_starts_with_a_fix_and_ends_after_quiet() {
+        let start = Instant::now();
+        let mut review = ReviewState::new(start);
+        assert!(!review.is_quiet(start), "nothing was applied yet");
+        review.start_quiet(start);
+        assert!(review.is_quiet(start));
+        assert!(review.is_quiet(start + QUIET - Duration::from_millis(1)));
+        assert!(!review.is_quiet(start + QUIET));
+    }
+
+    #[test]
+    fn typing_closes_the_panel_except_during_the_quiet_period() {
+        let start = Instant::now();
+        let mut review = ReviewState::new(start);
+        assert!(!review.closes_on_interaction(start), "nothing is showing");
+        review.show_notice();
+        assert!(review.closes_on_interaction(start));
+        review.start_quiet(start);
+        assert!(!review.closes_on_interaction(start + Duration::from_millis(100)));
+        assert!(review.closes_on_interaction(start + QUIET));
+    }
+
+    #[test]
+    fn dismissing_a_review_that_is_no_longer_current_leaves_the_new_one() {
+        let mut review = reviewing(1);
+        review.begin(session(2, "Kyndal wrote the OKR draft."));
+        assert!(matches!(review.dismiss(Some(1)), Dismissal::NotCurrent));
+        assert_eq!(review.session().unwrap().id, 2);
+        assert!(matches!(review.dismiss(Some(2)), Dismissal::Close(Some(ended)) if ended.id == 2));
+        assert!(!review.showing());
+    }
+
+    #[test]
+    fn dismissing_closes_a_notice_only_when_no_review_is_named() {
+        let mut review = ReviewState::new(Instant::now());
+        review.show_notice();
+        assert!(matches!(review.dismiss(Some(3)), Dismissal::NotCurrent), "a notice has no review number");
+        assert!(review.notice_visible());
+        assert!(matches!(review.dismiss(None), Dismissal::Close(None)));
+        assert!(!review.notice_visible());
+        assert!(matches!(review.dismiss(None), Dismissal::Close(None)), "closing nothing still hides the panel");
+    }
+
+    #[test]
+    fn applying_keeps_the_review_until_its_text_is_written() {
+        let mut review = reviewing(1);
+        review.start_run(1, 0, true);
+        assert!(review.apply(2).is_none(), "another review");
+        let applying = review.apply(1).unwrap();
+        assert!(applying.proofread);
+        assert_eq!(applying.capture.text, "Brynlee sent the KPI updaet.");
+        assert_eq!(review.reviewed_pid(), Some(applying.capture.pid), "still showing while it's written");
+        assert_eq!(review.end().map(|s| s.id), Some(1));
+        assert!(review.apply(1).is_none(), "the review has ended");
+    }
+
+    #[test]
+    fn a_review_that_couldnt_be_written_comes_back_with_the_keys() {
+        let mut review = ReviewState::new(Instant::now());
+        let mut automatic = session(1, "Brynlee sent the KPI updaet.");
+        automatic.keyboard = false;
+        review.begin(automatic);
+        let mut following = None;
+        assert!(!review.reopen(2, &mut following), "another review");
+        assert!(!review.keyboard_review_open());
+        assert!(review.reopen(1, &mut following));
+        assert!(review.keyboard_review_open());
+    }
+
+    #[test]
+    fn the_shortcut_takes_the_keys_only_from_an_automatic_review() {
+        let mut review = ReviewState::new(Instant::now());
+        assert_eq!(review.take_keyboard(), None, "nothing is showing");
+        let mut automatic = session(4, "Kyndal wrote the OKR draft.");
+        automatic.keyboard = false;
+        review.begin(automatic);
+        assert!(!review.keyboard_review_open());
+        assert_eq!(review.take_keyboard(), Some(4));
+        assert!(review.keyboard_review_open());
+        assert_eq!(review.take_keyboard(), None, "it has the keys already: the shortcut starts a new review");
+    }
+
+    #[test]
+    fn resizing_keeps_the_height_and_returns_where_the_selection_is() {
+        let mut review = ReviewState::new(Instant::now());
+        assert_eq!(review.resize(300.0), None);
+        review.begin(session(1, "Rhyan sent the KPI report."));
+        let anchor = review.session().unwrap().anchor;
+        assert_eq!(review.resize(320.0), anchor);
+        assert_eq!(review.session().unwrap().height, 320.0);
     }
 }

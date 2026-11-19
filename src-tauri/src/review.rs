@@ -9,7 +9,7 @@ use crate::app_toggle;
 use crate::last_review::Finished;
 use crate::overlay;
 use crate::platform::{self, Capture, PlatformError, ReplaceOutcome, SelectionGesture, WatchEvent};
-use crate::state::{AppState, Session};
+use crate::state::{AppState, Dismissal, Session};
 use serde::Serialize;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -146,15 +146,11 @@ fn warm_connection(app: &AppHandle) {
 /// Review hotkey: give the keys to an automatic overlay that's already showing, or start a new
 /// review.
 pub fn on_review_hotkey(app: &AppHandle) {
-    {
-        let state = state(app);
-        let mut session = state.session.lock().unwrap();
-        if let Some(current) = session.as_mut().filter(|s| !s.keyboard) {
-            current.keyboard = true;
-            overlay::show(app, true);
-            let _ = app.emit_to("overlay", "overlay:focus", current.id);
-            return;
-        }
+    let took = state(app).review.lock().unwrap().take_keyboard();
+    if let Some(id) = took {
+        overlay::show(app, true);
+        let _ = app.emit_to("overlay", "overlay:focus", id);
+        return;
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move { start_manual(&app, None).await });
@@ -228,10 +224,8 @@ fn show_notice(app: &AppHandle, message: String, copy: Option<String>) {
 fn show_notice_with(app: &AppHandle, message: String, copy: Option<String>, keys: bool) {
     let state = state(app);
     let id = state.next_session_id();
-    if let Some(mut old) = state.session.lock().unwrap().take() {
-        old.cancel();
-    }
-    state.notice_visible.store(true, Ordering::Relaxed);
+    let replaced = state.review.lock().unwrap().show_notice();
+    drop(replaced);
     let _ = app.emit_to("overlay", "overlay:status", StatusPayload { id, kind: "notice", message, copy });
     overlay::position(app, None, 126.0);
     #[cfg(target_os = "macos")]
@@ -296,24 +290,20 @@ fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<Strin
         always_show_tips: config.always_show_tips,
         provider: state.active_profile().map(|p| p.model),
     };
-    {
-        let mut session = state.session.lock().unwrap();
-        if let Some(mut old) = session.take() {
-            old.cancel();
-        }
-        state.notice_visible.store(false, Ordering::Relaxed);
-        *session = Some(Session {
-            id,
-            capture: captured,
-            keyboard: !auto,
-            anchor,
-            height: INITIAL_HEIGHT,
-            task: None,
-            run: 0,
-            proofread: false,
-            following,
-        });
-    }
+    let session = Session {
+        id,
+        capture: captured,
+        keyboard: !auto,
+        anchor,
+        height: INITIAL_HEIGHT,
+        task: None,
+        run: 0,
+        proofread: false,
+        following,
+    };
+    // Dropped once the lock is released: that stops watching its window, through the platform.
+    let replaced = state.review.lock().unwrap().begin(session);
+    drop(replaced);
     let _ = app.emit_to("overlay", "overlay:session", payload);
     overlay::position(app, anchor, INITIAL_HEIGHT);
     overlay::show(app, !auto);
@@ -361,14 +351,12 @@ pub fn run(app: &AppHandle, id: u64, run: u64, preset_id: String, steer: Option<
     let config = state.config();
     let Some(preset) = config.preset(&preset_id).cloned() else { return };
     let profile = state.active_profile();
-    let mut session = state.session.lock().unwrap();
-    let Some(current) = session.as_mut().filter(|s| s.id == id && run >= s.run) else { return };
-    current.cancel();
-    current.run = run;
-    current.proofread = is_proofread(&preset_id, steer.as_deref());
+    let proofread = is_proofread(&preset_id, steer.as_deref());
+    let mut review = state.review.lock().unwrap();
+    let Some(current) = review.start_run(id, run, proofread) else { return };
     let job = job_for(&config, profile, &current.capture, preset, steer);
     if !fresh && let Some(outcome) = state.last_review.recall(&current.capture, &job, Instant::now()) {
-        drop(session);
+        drop(review);
         platform::trace(format_args!("review: the same selection again, showing the last result"));
         let _ = app.emit_to(
             "overlay",
@@ -410,24 +398,25 @@ fn is_proofread(preset_id: &str, steer: Option<&str>) -> bool {
 pub async fn apply(app: &AppHandle, id: u64, text: String, anyway: bool) -> Result<String, String> {
     let state = state(app);
     let keep_formatting = state.config().keep_formatting;
-    let (captured, proofread) = {
-        let mut session = state.session.lock().unwrap();
-        let current = session.as_mut().filter(|s| s.id == id).ok_or("This review has ended.")?;
-        current.cancel();
+    let applying = {
+        let mut review = state.review.lock().unwrap();
+        // The panel closes for good; the window may change while the text is written.
+        let applying = review.apply(id).ok_or("This review has ended.")?;
         // The text is about to change; a review of it is never shown again.
         state.last_review.forget();
-        // The panel closes for good; the window may change while the text is written.
-        current.following = None;
-        (current.capture.clone(), current.proofread && keep_formatting)
+        applying
     };
+    drop(applying.following);
+    let (captured, proofread) = (applying.capture, applying.proofread && keep_formatting);
     overlay::hide(app);
     crate::hotkeys::set_overlay_shortcuts(app, false);
     if captured.playground {
-        state.session.lock().unwrap().take();
+        let ended = state.review.lock().unwrap().end();
+        drop(ended);
         let _ = app.emit_to("settings", "settings:playground-apply", text);
         return Ok("Applied.".into());
     }
-    *state.quiet_until.lock().unwrap() = Instant::now() + Duration::from_millis(800);
+    state.review.lock().unwrap().start_quiet(Instant::now());
     let suggestion = text.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         // Focus goes back to the app first, whether or not there's anything to write. Unless it's
@@ -448,7 +437,8 @@ pub async fn apply(app: &AppHandle, id: u64, text: String, anyway: bool) -> Resu
     {
         return Err(why.clone());
     }
-    state.session.lock().unwrap().take();
+    let ended = state.review.lock().unwrap().end();
+    drop(ended);
     match result {
         None => Ok("No changes needed.".into()),
         Some(outcome) => match show_outcome(app, outcome, suggestion) {
@@ -480,16 +470,15 @@ fn replace_text(
 /// anyway, and Ctrl+C and Esc work as before. False when the review ended meanwhile.
 fn offer_replace_anyway(app: &AppHandle, id: u64) -> bool {
     let state = state(app);
-    let captured = state.session.lock().unwrap().as_ref().filter(|s| s.id == id).map(|s| s.capture.clone());
+    let captured = state.review.lock().unwrap().current(id).map(|s| s.capture.clone());
     let Some(captured) = captured else { return false };
-    // Before the session lock, as in `begin`: watching the window reads it through the platform.
-    let following = crate::follow::start(app, id, &captured);
-    {
-        let mut session = state.session.lock().unwrap();
-        let Some(current) = session.as_mut().filter(|s| s.id == id) else { return false };
-        current.following = following;
-        current.keyboard = true;
+    // Before the review lock, as in `begin`: watching the window reads it through the platform.
+    let mut following = crate::follow::start(app, id, &captured);
+    // Either way, what's left in `following` is dropped after the lock.
+    if !state.review.lock().unwrap().reopen(id, &mut following) {
+        return false;
     }
+    drop(following);
     let _ = app.emit_to("overlay", "overlay:replace-anyway", id);
     overlay::show(app, true);
     crate::hotkeys::set_overlay_shortcuts(app, true);
@@ -503,16 +492,9 @@ pub fn review_playground(app: &AppHandle, text: String, bounds: platform::Rect) 
 }
 
 pub fn dismiss(app: &AppHandle, id: Option<u64>) {
-    let state = state(app);
-    let mut session = state.session.lock().unwrap();
-    if id.is_some() && session.as_ref().map(|s| s.id) != id {
-        return;
-    }
-    if let Some(mut current) = session.take() {
-        current.cancel();
-    }
-    drop(session);
-    state.notice_visible.store(false, Ordering::Relaxed);
+    let dismissal = state(app).review.lock().unwrap().dismiss(id);
+    let Dismissal::Close(ended) = dismissal else { return };
+    drop(ended);
     overlay::hide(app);
     crate::hotkeys::set_overlay_shortcuts(app, false);
 }
@@ -523,24 +505,14 @@ pub fn typing(app: &AppHandle, typing: bool) {
     if !typing {
         return overlay::stop_typing(app);
     }
-    let pid = state(app).session.lock().unwrap().as_ref().map(|s| s.capture.pid);
+    let pid = state(app).review.lock().unwrap().reviewed_pid();
     if let Some(pid) = pid {
         overlay::start_typing(app, pid);
     }
 }
 
 pub fn resize(app: &AppHandle, height: f64) {
-    let state = state(app);
-    let anchor = {
-        let mut session = state.session.lock().unwrap();
-        match session.as_mut() {
-            Some(current) => {
-                current.height = height;
-                current.anchor
-            }
-            None => None,
-        }
-    };
+    let anchor = state(app).review.lock().unwrap().resize(height);
     overlay::resize(app, anchor, height.clamp(90.0, 670.0));
 }
 
@@ -588,7 +560,7 @@ pub async fn quick_fix(app: &AppHandle) {
     if revised == captured.text {
         return;
     }
-    *state.quiet_until.lock().unwrap() = Instant::now() + Duration::from_millis(800);
+    state.review.lock().unwrap().start_quiet(Instant::now());
     let text = revised.clone();
     let proofread = config.keep_formatting && is_proofread(&config.default_preset().id, None);
     let result = tauri::async_runtime::spawn_blocking(move || platform::replace(&captured, &text, proofread)).await;
@@ -611,8 +583,10 @@ pub fn on_app_switch(app: &AppHandle, pid: i32) {
     // A review about to start, or a Shift selection under way, belongs to the previous app.
     state.watch_generation.fetch_add(1, Ordering::Relaxed);
     platform::selection_app_switched();
-    let reviewing = state.session.lock().unwrap().as_ref().map(|s| s.capture.pid);
-    let notice = state.notice_visible.load(Ordering::Relaxed);
+    let (reviewing, notice) = {
+        let review = state.review.lock().unwrap();
+        (review.reviewed_pid(), review.notice_visible())
+    };
     // On Linux the panel has keyboard focus during a review, so any other window coming to the
     // front, the reviewed app's included, means the user has moved on. So on Windows while the panel
     // has focus: the user clicked back into the app.
@@ -648,8 +622,8 @@ pub fn on_space_change(app: &AppHandle) {
     let state = state(app);
     state.watch_generation.fetch_add(1, Ordering::Relaxed);
     platform::selection_app_switched();
-    let reviewing = state.session.lock().unwrap().is_some();
-    if reviewing || state.notice_visible.load(Ordering::Relaxed) {
+    let showing = state.review.lock().unwrap().showing();
+    if showing {
         overlay::forget_focus_return();
         dismiss(app, None);
     }
@@ -675,9 +649,10 @@ pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
             state.watch_generation.fetch_add(1, Ordering::Relaxed);
             // Keys the panel takes never reach other apps, so any typing or clicking seen here
             // means the user has moved on.
-            let showing = state.session.lock().unwrap().is_some() || state.notice_visible.load(Ordering::Relaxed);
+            // In its own statement: `hold_for_click` takes the review lock.
+            let closes = state.review.lock().unwrap().closes_on_interaction(Instant::now());
             // A click on the reviewed window may be the start of dragging it by its title bar.
-            if showing && Instant::now() >= *state.quiet_until.lock().unwrap() && !crate::follow::hold_for_click(app) {
+            if closes && !crate::follow::hold_for_click(app) {
                 dismiss(app, None);
             }
         }
@@ -690,8 +665,10 @@ pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
             let window_dragged = crate::follow::gesture_ended(app);
             let turned_on = state.config().auto_popup;
             let paused = state.paused.load(Ordering::Relaxed);
-            let just_applied = Instant::now() < *state.quiet_until.lock().unwrap();
-            let review_open = state.session.lock().unwrap().as_ref().is_some_and(|s| s.keyboard);
+            let (just_applied, review_open) = {
+                let review = state.review.lock().unwrap();
+                (review.is_quiet(Instant::now()), review.keyboard_review_open())
+            };
             let gate = AutoGate { window_dragged, turned_on, paused, just_applied, review_open };
             if let Some(outcome) = auto_gate(&gate) {
                 return trace_auto(gesture, None, &outcome);
@@ -736,7 +713,7 @@ pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
                 if let Some(outcome) = check_selection(&captured.text, captured.editable, min_chars, max_chars) {
                     return trace_auto(gesture, app_id, &outcome);
                 }
-                if state.session.lock().unwrap().as_ref().is_some_and(|s| s.capture.text == captured.text) {
+                if state.review.lock().unwrap().is_showing_text(&captured.text) {
                     return trace_auto(gesture, app_id, &AutoOutcome::AlreadyShowing);
                 }
                 if state.watch_generation.load(Ordering::Relaxed) != generation {

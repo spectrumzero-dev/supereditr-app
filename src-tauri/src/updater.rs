@@ -408,7 +408,7 @@ fn install_when_idle(app: &AppHandle) {
 fn hold_now(app: &AppHandle, awake: Duration) -> Option<Hold> {
     use crate::state::AppState;
     let state = app.state::<AppState>();
-    let panel = state.session.lock().unwrap().is_some() || state.notice_visible.load(Ordering::Relaxed);
+    let panel = state.review.lock().unwrap().showing();
     let window = app.webview_windows().values().any(|window| window.is_visible().unwrap_or(false));
     let idle = crate::platform::input_idle().min(awake);
     hold(BUSY.load(Ordering::SeqCst) > 0, panel, window, idle)

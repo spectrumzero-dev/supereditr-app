@@ -64,8 +64,10 @@ pub struct Capture {
 }
 
 impl Capture {
+    /// Ranges of `text` a review leaves as written: code. No Windows read finds code or list
+    /// markers yet.
     pub fn protected(&self) -> Vec<(usize, usize)> {
-        self.code.clone()
+        supereditr_core::policy::protected_ranges(&self.code, &[])
     }
 
     /// Whether `other` was read from the same place as this capture, as far as UI Automation can

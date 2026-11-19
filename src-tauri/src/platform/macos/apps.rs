@@ -8,6 +8,7 @@ use core_foundation::boolean::CFBoolean;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use supereditr_core::policy::{Os, is_chromium_browser};
 
 /// How long reads wait for an app's accessibility tree after asking for it. Chrome 156 takes about
 /// 2 s to build one, even for a short page.
@@ -50,26 +51,13 @@ pub(super) fn enable_web_accessibility(app: &Element, pid: i32, bundle_id: &str)
     now + WEB_TREE_WAIT
 }
 
-fn is_chromium_browser(bundle_id: &str) -> bool {
-    const PREFIXES: &[&str] = &[
-        "com.google.Chrome",
-        "com.brave.Browser",
-        "com.microsoft.edgemac",
-        "company.thebrowser",
-        "com.vivaldi.Vivaldi",
-        "com.operasoftware.Opera",
-        "org.chromium.Chromium",
-    ];
-    PREFIXES.iter().any(|p| bundle_id.starts_with(p))
-}
-
 pub(super) fn is_browser_or_electron(bundle_id: &str, pid: i32) -> bool {
     bundle_id == "com.apple.Safari" || bundle_id.starts_with("org.mozilla.") || is_chromium_based(bundle_id, pid)
 }
 
 /// Chrome-family browsers and apps built on Chromium, which share its clipboard code.
 pub(super) fn is_chromium_based(bundle_id: &str, pid: i32) -> bool {
-    is_chromium_browser(bundle_id)
+    is_chromium_browser(Os::MacOs, bundle_id)
         || app_bundle_path(pid).is_some_and(|path| has_chromium_runtime(std::path::Path::new(&path)))
 }
 

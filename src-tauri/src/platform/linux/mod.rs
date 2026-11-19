@@ -59,8 +59,9 @@ pub struct Capture {
 }
 
 impl Capture {
+    /// Ranges of `text` a review leaves as written: code. AT-SPI reports no list markers.
     pub fn protected(&self) -> Vec<(usize, usize)> {
-        self.code.clone()
+        supereditr_core::policy::protected_ranges(&self.code, &[])
     }
 
     /// Whether `other` was read from the same place as this capture, as far as the desktop and

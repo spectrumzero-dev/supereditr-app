@@ -74,10 +74,7 @@ pub struct Capture {
 impl Capture {
     /// Ranges of `text` a review leaves as written: code, and list markers.
     pub fn protected(&self) -> Vec<(usize, usize)> {
-        let mut ranges = self.code.clone();
-        ranges.extend(&self.markers);
-        ranges.sort_unstable();
-        ranges
+        supereditr_core::policy::protected_ranges(&self.code, &self.markers)
     }
 
     /// Whether `other` was read from the same place as this capture, as far as Accessibility can

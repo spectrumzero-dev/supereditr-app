@@ -18,7 +18,7 @@ pub struct Capture {
 
 impl Capture {
     pub fn protected(&self) -> Vec<(usize, usize)> {
-        self.code.clone()
+        supereditr_core::policy::protected_ranges(&self.code, &[])
     }
 
     /// This platform reads no fields, so the app alone says where text came from.

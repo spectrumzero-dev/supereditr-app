@@ -31,6 +31,7 @@ use super::window::WindowRef;
 use super::{Capture, Source, trace};
 use crate::platform::{PlatformError, ReplaceOutcome};
 use std::time::{Duration, Instant};
+use supereditr_core::policy::{self, Selection};
 
 /// How long the window and its field get to come back after the panel had focus. The focused
 /// element arrived 17–61 ms after the window in measurements.
@@ -112,12 +113,11 @@ fn same_selection<R: Raw>(services: &Services<'_, R>, field: &Field) -> Result<(
     }
     match read {
         Ok(now)
-            if now.same_element
-                && now.ranges == 1
-                && now.same_endpoints
-                && now.text == field.text
-                && now.before == field.before
-                && now.after == field.after =>
+            if policy::selection_unchanged(
+                now.same_element && now.ranges == 1 && now.same_endpoints,
+                Selection::with_context(&field.text[..], &field.before[..], &field.after[..]),
+                Selection::with_context(&now.text[..], &now.before[..], &now.after[..]),
+            ) =>
         {
             Ok(())
         }

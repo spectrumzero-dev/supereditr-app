@@ -642,17 +642,22 @@ fn a_review_that_begins_while_text_is_written_stays_open() {
 }
 
 #[test]
-fn a_failed_write_never_takes_the_panel_from_a_review_that_began_meanwhile() {
+fn a_failed_write_still_says_so_over_a_review_that_began_meanwhile() {
+    // The user must learn that the write failed, so its notice takes the panel, as any notice does.
     let state = test_state();
     let mut fake = Fake::new(&state);
     let message = PlatformError::FocusNotReturned.to_string();
     *fake.written.lock().unwrap() = Some(Ok(Some(ReplaceOutcome::CopyOnly(PlatformError::FocusNotReturned))));
     fake.while_writing = Some(Box::new(|state| open(state, 8, true)));
     open(&state, 7, true);
+    let id = state.next_id.load(Ordering::Relaxed);
     assert_eq!(block_on(fake.controller().apply(7, FIXED.into(), false)).unwrap_err(), message);
-    assert_eq!(fake.take(), [closes(), vec![written(), Copy(FIXED.into())]].concat(), "no notice over the new review");
-    assert_eq!(showing(&state), Some(8));
-    assert!(!state.review.lock().unwrap().notice_visible());
+    assert_eq!(
+        fake.take(),
+        [closes(), vec![written(), Copy(FIXED.into())], notice_shown(id, &message, None, true)].concat()
+    );
+    assert_eq!(showing(&state), None);
+    assert!(state.review.lock().unwrap().notice_visible());
 }
 
 #[test]

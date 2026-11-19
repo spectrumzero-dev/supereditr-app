@@ -550,7 +550,9 @@ function Browser-Case($name, $exe, $process, $image, $port) {
   Begin-Case $name "the composers page in $name, read through UI Automation and pasted; a password field refused"
   $w = Browser-Open $name $exe $process $port
   Shot "$name-page"
-  foreach ($id in 'plain', 'rich', 'code', 'markdown', 'tiptap', 'lexical') {
+  # Edge reviews every field; Chrome, on the same engine, the text box and the editable div with code.
+  $fields = if ($name -eq 'Chrome') { @('plain', 'code') } else { @('plain', 'rich', 'code', 'markdown', 'tiptap', 'lexical') }
+  foreach ($id in $fields) {
     $clip = "Kyndal's own copy before $id."
     Clip-Set $clip
     [Desk]::Front($w) | Out-Null

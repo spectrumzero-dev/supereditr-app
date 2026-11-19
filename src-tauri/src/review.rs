@@ -411,6 +411,8 @@ pub async fn apply(app: &AppHandle, id: u64, text: String, anyway: bool) -> Resu
         state.last_review.forget();
         applying
     };
+    // Stops watching the window. On Linux there is no watch, so nothing to drop.
+    #[allow(clippy::drop_non_drop)]
     drop(applying.following);
     let (captured, proofread) = (applying.capture, applying.proofread && keep_formatting);
     overlay::hide(app);
@@ -483,6 +485,7 @@ fn offer_replace_anyway(app: &AppHandle, id: u64) -> bool {
     if !state.review.lock().unwrap().reopen(id, &mut following) {
         return false;
     }
+    #[allow(clippy::drop_non_drop)]
     drop(following);
     let _ = app.emit_to("overlay", "overlay:replace-anyway", id);
     overlay::show(app, true);

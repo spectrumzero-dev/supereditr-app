@@ -53,6 +53,17 @@ pub enum Copies {
     Yes,
     /// Puts it there after this long, as a busy Electron app does.
     After(Duration),
+    /// Empties the clipboard at once and puts the text there after this long. An app writes a copy
+    /// in those two steps, and the clipboard's change count moves only at the first.
+    EmptiesThenAfter(Duration),
+    /// Empties the clipboard and puts no plain text there, and after this long something else
+    /// copies "Brynlee's later copy".
+    NoTextThenAnother(Duration),
+    /// Puts the selected text on the clipboard at once, and something else copies "Brynlee's later
+    /// copy" as soon as the change has been seen once.
+    ThenAnotherAtOnce,
+    /// Empties the clipboard and puts no plain text there, as copying a picture does.
+    NoText,
 }
 
 /// A menu item of the app's, such as Edit ▸ Copy.
@@ -114,6 +125,12 @@ pub struct World {
     copies: Cell<Copies>,
     /// A copy on its way to the clipboard: when it lands, by the pretend clock, and its text.
     pending_copy: RefCell<Option<(Duration, String)>>,
+    /// Text on its way to a clipboard the app has already emptied.
+    pending_text: RefCell<Option<(Duration, String)>>,
+    /// Something else copies right after the change count is next read.
+    another_after_count: Cell<bool>,
+    /// The clipboard was emptied and holds no plain text yet.
+    no_text: Cell<bool>,
     write: Cell<Write>,
     moves_selection: Cell<bool>,
     pastes: Cell<Pastes>,
@@ -163,6 +180,9 @@ impl World {
             cut_item: Cell::new(Item::Enabled),
             copies: Cell::new(Copies::Yes),
             pending_copy: RefCell::default(),
+            pending_text: RefCell::default(),
+            another_after_count: Cell::new(false),
+            no_text: Cell::new(false),
             write: Cell::new(Write::Applies),
             moves_selection: Cell::new(true),
             pastes: Cell::new(Pastes::Yes),
@@ -419,6 +439,7 @@ impl World {
     /// The user copies `text` in another app.
     pub fn user_copies(&self, text: &str) {
         *self.clipboard.borrow_mut() = (text.into(), None);
+        self.no_text.set(false);
         self.change_count.set(self.change_count.get() + 1);
     }
 
@@ -487,7 +508,26 @@ impl World {
         match self.copies.get() {
             Copies::Yes => self.user_copies(&text),
             Copies::After(wait) => *self.pending_copy.borrow_mut() = Some((self.elapsed.get() + wait, text)),
+            Copies::EmptiesThenAfter(wait) => {
+                self.empty_clipboard();
+                *self.pending_text.borrow_mut() = Some((self.elapsed.get() + wait, text));
+            }
+            Copies::ThenAnotherAtOnce => {
+                self.user_copies(&text);
+                self.another_after_count.set(true);
+            }
+            Copies::NoTextThenAnother(wait) => {
+                self.empty_clipboard();
+                *self.pending_copy.borrow_mut() = Some((self.elapsed.get() + wait, "Brynlee's later copy".into()));
+            }
+            Copies::NoText => self.empty_clipboard(),
         }
+    }
+
+    fn empty_clipboard(&self) {
+        *self.clipboard.borrow_mut() = (String::new(), None);
+        self.no_text.set(true);
+        self.change_count.set(self.change_count.get() + 1);
     }
 
     /// A copy on its way lands once its time has come.
@@ -495,6 +535,12 @@ impl World {
         let due = self.pending_copy.borrow().as_ref().is_some_and(|(at, _)| self.elapsed.get() >= *at);
         if due && let Some((_, text)) = self.pending_copy.borrow_mut().take() {
             self.user_copies(&text);
+        }
+        // The second step of a copy: the text, under the change count the first step left.
+        let due = self.pending_text.borrow().as_ref().is_some_and(|(at, _)| self.elapsed.get() >= *at);
+        if due && let Some((_, text)) = self.pending_text.borrow_mut().take() {
+            *self.clipboard.borrow_mut() = (text, None);
+            self.no_text.set(false);
         }
     }
 
@@ -758,17 +804,22 @@ impl Pasteboard for World {
 
     fn change_count(&self) -> isize {
         self.land_copy();
-        self.change_count.get()
+        let count = self.change_count.get();
+        if self.another_after_count.replace(false) {
+            self.user_copies("Brynlee's later copy");
+        }
+        count
     }
 
     fn read_string(&self) -> Option<String> {
         self.land_copy();
-        Some(self.clipboard_text())
+        (!self.no_text.get()).then(|| self.clipboard_text())
     }
 
     fn restore(&self, snapshot: Clip, ours: isize) {
         if self.change_count.get() == ours {
             *self.clipboard.borrow_mut() = snapshot;
+            self.no_text.set(false);
             self.change_count.set(ours + 1);
         }
     }

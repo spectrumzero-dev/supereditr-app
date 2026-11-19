@@ -39,6 +39,8 @@ pub fn trace(message: std::fmt::Arguments) {
     }
     if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        let _ = writeln!(file, "{seconds} {message}");
+        // In one write, so lines from different threads can't mix: `writeln!` on a file writes each
+        // piece of the format separately.
+        let _ = file.write_all(format!("{seconds} {message}\n").as_bytes());
     }
 }

@@ -14,13 +14,16 @@
     config: Config;
     keys: Record<string, boolean>;
     onchange: () => void;
+    /** Saves the config now, based on the settings the app last gave Settings. False when it
+     * couldn't be saved. */
+    saveNow: () => Promise<boolean>;
     reload: () => Promise<void>;
     /** Scan as soon as the page opens (Get Started's "Find my AI accounts"); cleared once it starts. */
     scanOnOpen?: boolean;
     /** Shown until setup is finished: returns to Get Started. */
     backToSetup?: (() => void) | null;
   }
-  let { config = $bindable(), keys, onchange, reload, scanOnOpen = $bindable(false), backToSetup = null }: Props = $props();
+  let { config = $bindable(), keys, onchange, saveNow, reload, scanOnOpen = $bindable(false), backToSetup = null }: Props = $props();
   /** The AI that became the one in use on this visit, for the way back to Get Started. */
   let setUp = $state("");
   /** Draws the eye to the scan row when Get Started sent the user here. */
@@ -223,7 +226,11 @@
 
   /** After a setup field changes: try again to make it the AI in use. */
   async function retry(p: ProviderProfile) {
-    await api.save(config);
+    // Unsaved, the check would run against the address or model the app still has.
+    if (!(await saveNow())) {
+      checks[p.id] = { ready: false, problem: "Couldn’t save this change. Change it again to retry", code: null, models: [] };
+      return;
+    }
     await tryActivate(p);
   }
 

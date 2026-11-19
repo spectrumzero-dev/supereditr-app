@@ -41,7 +41,7 @@
   let edits = 0;
   let savedEdits = 0;
   /** Saves run one at a time, each based on the revision the one before it made. */
-  let saving: Promise<void> = Promise.resolve();
+  let saving: Promise<unknown> = Promise.resolve();
   /** Set by Get Started's "Find my AI accounts": Models scans as soon as it opens. */
   let scanOnOpen = $state(false);
 
@@ -72,11 +72,22 @@
     timer = setTimeout(() => (saving = saving.then(() => save()).catch(console.error)), 250);
   }
 
+  /** Saves now, in turn with any other save, for a step that needs the change saved first (checking
+   * an AI's new address). Settled once that save is: false when the app kept refusing it, so the
+   * change is still unsaved. */
+  function saveNow(): Promise<boolean> {
+    edits++;
+    clearTimeout(timer);
+    const done = saving.then(() => save());
+    saving = done.catch(console.error);
+    return done;
+  }
+
   /** Saves the whole config. When the app has saved it since Settings loaded or saved it, the app
    * refuses, and Settings reloads, keeping its unsaved changes, and tries again. If the app keeps
-   * refusing, the changes stay unsaved until the next one. */
-  async function save(): Promise<void> {
-    await saveUntilCurrent(async () => {
+   * refusing, the changes stay unsaved until the next one, and this returns false. */
+  async function save(): Promise<boolean> {
+    return saveUntilCurrent(async () => {
       if (!config || edits === savedEdits) return true;
       const reached = edits;
       const snapshot = $state.snapshot(config) as Config;
@@ -155,12 +166,13 @@
     <div class="drag" data-tauri-drag-region></div>
     {#if config && payload}
       {#if section === "welcome"}
-        <Welcome {config} accessibility={payload.accessibility} {reload} {finish} openModels={() => (section = "models")} {findAccounts} />
+        <Welcome bind:config accessibility={payload.accessibility} {saveNow} {finish} openModels={() => (section = "models")} {findAccounts} />
       {:else if section === "models"}
         <Models
           bind:config
           keys={payload.keys}
           {onchange}
+          {saveNow}
           {reload}
           bind:scanOnOpen
           backToSetup={config.onboarded ? null : () => (section = "welcome")}

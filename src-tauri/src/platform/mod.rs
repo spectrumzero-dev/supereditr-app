@@ -2,7 +2,8 @@
 //! selections. Everything above this module is platform-independent.
 //!
 //! macOS is implemented with the Accessibility API, Core Graphics events and NSPasteboard, Linux
-//! in `linux/`, and Windows in `windows/`, so far a skeleton that reads and writes nothing.
+//! with AT-SPI in `linux/`, and Windows with UI Automation in `windows/`. Other systems get
+//! `unsupported.rs`, which reads and writes nothing.
 
 use serde::Serialize;
 use std::time::Duration;
@@ -29,7 +30,8 @@ mod unsupported;
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 pub use unsupported::*;
 
-/// Screen rectangle in points, origin at the top-left of the primary display.
+/// Screen rectangle, origin at the top-left of the primary display: in points on macOS, in
+/// physical pixels on Windows.
 #[derive(Debug, Clone, Copy, Serialize, serde::Deserialize, PartialEq)]
 pub struct Rect {
     pub x: f64,
@@ -45,16 +47,16 @@ pub enum PlatformError {
     NotTrusted,
     #[error("Select some text first.")]
     NoSelection,
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "macos", target_os = "linux", windows)), allow(dead_code))]
     #[error("SuperEditr doesn’t read password fields.")]
     SecureField,
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "macos", target_os = "linux", windows)), allow(dead_code))]
     #[error("The text changed since it was checked. Select it again.")]
     Stale,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     #[error("Couldn’t replace the text in this app. The suggestion is on your clipboard.")]
     ReplaceFailed,
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "macos", target_os = "linux", windows)), allow(dead_code))]
     #[cfg_attr(
         target_os = "macos",
         error(
@@ -68,7 +70,7 @@ pub enum PlatformError {
         )
     )]
     CopyOnly,
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "macos", target_os = "linux", windows)), allow(dead_code))]
     #[error("SuperEditr couldn’t confirm the change. Check the text before copying the suggestion.")]
     Unverified,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -159,7 +161,8 @@ pub enum WatchEvent {
     Wait,
 }
 
-/// How the user made a selection, for capture.log.
+/// How the user made a selection, for capture.log. After Select All, a capture that finds no
+/// selection is tried again briefly.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectionGesture {
@@ -186,7 +189,7 @@ impl std::fmt::Display for SelectionGesture {
 pub enum ReplaceMethod {
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Accessibility,
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "macos", target_os = "linux", windows)), allow(dead_code))]
     Paste,
     /// Typed as key events, for a proofread applied in place in a web field.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]

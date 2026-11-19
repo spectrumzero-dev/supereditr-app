@@ -14,14 +14,16 @@
   interface Props {
     config: Config;
     accessibility: boolean;
-    reload: () => Promise<void>;
+    /** Saves the config now, based on the settings the app last gave Settings. False when it
+     * couldn't be saved. */
+    saveNow: () => Promise<boolean>;
     finish: () => void;
     /** Opens the Models page, to fix an AI that isn't working. */
     openModels: () => void;
     /** Opens the Models page and scans this Mac for AI accounts there. */
     findAccounts: () => void;
   }
-  let { config, accessibility, reload, finish, openModels, findAccounts }: Props = $props();
+  let { config = $bindable(), accessibility, saveNow, finish, openModels, findAccounts }: Props = $props();
   let polled = $state(false);
   let builtin = $state<BuiltinAi | null>(null);
   const trusted = $derived(accessibility || polled);
@@ -38,10 +40,13 @@
   /** The same answer the Styles page gives. */
   const ai = $derived(aiState(!!chosen, chosenCheck, builtin));
 
+  /** The choice below shows but the app kept refusing the save. */
+  let unsaved = $state(false);
+
   /** Whether suggestions appear on their own after a selection, or only on the shortcut. */
   async function setAuto(on: boolean) {
-    await api.save({ ...config, auto_popup: on });
-    await reload();
+    config.auto_popup = on;
+    unsaved = !(await saveNow());
   }
 
   function granted() {
@@ -151,6 +156,9 @@
             <input type="radio" name="when" checked={!config.auto_popup} onchange={() => setAuto(false)} />
             <span><span class="label">Only when I press {keySymbols(config.hotkeys.review)}</span><span class="hint">Nothing appears until you ask.</span></span>
           </label>
+          {#if unsaved}
+            <p class="hint" role="alert">That choice wasn’t saved. <button class="linklike" onclick={() => setAuto(config.auto_popup)}>Save it</button></p>
+          {/if}
           <p class="hint">Change this anytime in Settings → General.</p>
         </fieldset>
         {/if}

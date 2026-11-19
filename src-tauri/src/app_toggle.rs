@@ -44,6 +44,12 @@ fn label(config: &Config, app: &TargetApp) -> Option<String> {
     Some(if config.is_excluded(&app.bundle_id) { format!("Turn on in {name}") } else { format!("Turn off in {name}") })
 }
 
+/// `label` for an app given by its ID and name, for tests outside this module.
+#[cfg(test)]
+pub(crate) fn label_for(config: &Config, bundle_id: &str, name: &str) -> Option<String> {
+    label(config, &TargetApp { bundle_id: bundle_id.into(), name: name.into() })
+}
+
 struct AppToggle {
     /// The menu, the item, and where the item goes back in when it has been hidden. Linux's tray
     /// (`tray_linux`) builds its menu each time it opens, from `current_label`.

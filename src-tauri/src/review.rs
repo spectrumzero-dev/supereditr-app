@@ -258,8 +258,8 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
     fn show_notice_with(&self, message: String, copy: Option<String>, keys: bool) {
         let id = self.state.next_session_id();
         let replaced = self.state.review.lock().unwrap().show_notice();
-        drop(replaced);
         self.shell.emit("overlay", "overlay:status", StatusPayload { id, kind: "notice", message, copy });
+        drop(replaced);
         self.shell.position(None, 126.0);
         // Does nothing outside macOS.
         self.host.set_review_app(0);
@@ -339,8 +339,8 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
         };
         // Dropped once the lock is released: that stops watching its window, through the platform.
         let replaced = state.review.lock().unwrap().begin(session);
-        drop(replaced);
         self.shell.emit("overlay", "overlay:session", payload);
+        drop(replaced);
         self.shell.position(anchor, INITIAL_HEIGHT);
         self.shell.show(!auto);
         self.shell.set_shortcuts(true);
@@ -426,12 +426,20 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
         current.task = Some(self.host.start_run(job, asked));
     }
 
-    /// The engine sent `event` for run `asked`: a finished result is kept, to show again, and each
-    /// event goes to the panel, which drops those of a run or review it has replaced.
+    /// The engine sent `event` for run `asked`: a finished result is kept, to show again, and the
+    /// event goes to the panel while its run is still the review's latest. Cancelling a run doesn't
+    /// stop an event its task is already handing on, and a review dismissed from here leaves the
+    /// panel holding it, hidden, so the panel can't be relied on to drop it.
     fn engine_event(&self, asked: &Asked, event: Event) {
         if let Event::Done(outcome) = &event {
             let review = Finished::new(asked.capture.clone(), asked.job.clone(), outcome.clone(), self.host.now());
             self.state.last_review.remember(asked.generation, review);
+        }
+        // An event checked just before a dismissal is emitted after it, as if it had come a moment
+        // earlier: the panel is hidden either way.
+        let current = self.state.review.lock().unwrap().current(asked.id).is_some_and(|s| s.run == asked.run);
+        if !current {
+            return;
         }
         self.shell.emit(
             "overlay",

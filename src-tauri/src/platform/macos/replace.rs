@@ -455,9 +455,11 @@ fn replace_in_place<D: Desktop, P: Pasteboard>(
     let select = |place: &Place, wait: Duration| {
         select_text(place.check, &place.text, wait) && (place.start != place.end || field.select(place.start, 0))
     };
+    // A field that refused to move its selection still has it as captured: nothing to put back.
     let restore = || {
-        field.select(location, length)
-            && wait_until(clock, Duration::from_millis(200), || selection_unchanged(capture, field))
+        (field.selected_range() == Some(range) && selection_unchanged(capture, field))
+            || field.select(location, length)
+                && wait_until(clock, Duration::from_millis(200), || selection_unchanged(capture, field))
     };
     if !select(&places[0], Duration::from_millis(200)) {
         if !restore() {
@@ -652,6 +654,15 @@ mod tests {
         assert_eq!(world.writes(), ["they’re going to"], "one write of the whole selection");
         assert_eq!(world.field_text(), "Rhyan said they’re going to the store.");
         assert!(world.waited() < Duration::from_millis(500), "{:?}", world.waited());
+    }
+
+    #[test]
+    fn an_app_that_refuses_to_move_its_selection_gets_the_whole_selection() {
+        let world = notes().refusing_selection_changes();
+        let capture = world.capture();
+        assert!(matches!(world.proofread(&capture, "they’re going to"), Ok(ReplaceMethod::Accessibility)));
+        assert_eq!(world.writes(), ["they’re going to"], "one write of the whole selection");
+        assert_eq!(world.field_text(), "Rhyan said they’re going to the store.");
     }
 
     #[test]

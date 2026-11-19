@@ -504,21 +504,21 @@ pub(crate) async fn activate(state: &AppState, servers: &impl Servers, profile_i
     if !result.ready {
         return Err(result.problem.unwrap_or_else(|| "This AI isn’t working yet.".into()));
     }
-    // The keys aren't in the settings file, so they are left out of the comparison.
-    let settings = |p: &ProviderProfile| ProviderProfile { api_key: None, ..p.clone() };
+    let checked = checked.ok_or("This AI was removed.")?;
     loop {
         let (mut config, revision) = state.config_at_revision();
-        let saved = config.providers.iter_mut().find(|p| p.id == profile_id).ok_or("This AI was removed.")?;
-        // Edited during the check: what passed isn't what is saved, and the edit is the newer choice.
-        if checked.as_ref().map(settings) != Some(settings(saved)) {
+        // Edited during the check, or given another key: what passed isn't what is saved, and the
+        // edit is the newer choice.
+        if state.profile(&profile_id).as_ref() != Some(&checked) {
             return Err("This AI’s settings changed while it was being checked. Try again.".into());
         }
+        let saved = config.providers.iter_mut().find(|p| p.id == profile_id).ok_or("This AI was removed.")?;
         if let Some(model) = &switched {
             saved.model = model.clone();
         }
         config.active_provider = Some(profile_id.clone());
-        // Refused when anything was saved since the comparison: compare again.
-        if state.save_config_based_on(config, Some(revision)).map_err(|e| e.to_string())?.is_some() {
+        // Refused when the settings or the key were saved since the comparison: compare again.
+        if state.save_config_for_checked(config, revision, &checked).map_err(|e| e.to_string())?.is_some() {
             return Ok(result);
         }
     }

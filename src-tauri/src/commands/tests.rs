@@ -333,6 +333,19 @@ fn a_model_chosen_while_the_switched_one_is_checked_is_kept_and_nothing_is_activ
 }
 
 #[test]
+fn a_key_replaced_while_the_ai_is_checked_means_nothing_is_activated() {
+    let state = test_state();
+    let id = add(&state, ProviderKind::Anthropic, "retired-model");
+    state.set_cached_key(ProviderKind::Anthropic, &id, Some(fake_key("brynlee")));
+    let servers = FakeServers::offering(&["claude-sonnet-5-5"])
+        .during_second_check(|| state.set_cached_key(ProviderKind::Anthropic, &id, Some(fake_key("kyndal"))));
+    let error = block_on(activate(&state, &servers, id.clone())).unwrap_err();
+    assert_eq!(error, "This AI’s settings changed while it was being checked. Try again.");
+    assert_eq!(state.profile(&id).unwrap().model, "retired-model");
+    assert_eq!(state.config().active_provider, None);
+}
+
+#[test]
 fn a_provider_that_fails_its_check_with_the_switched_model_keeps_the_model_it_had() {
     let state = test_state();
     let id = add(&state, ProviderKind::Ollama, "retired-model");

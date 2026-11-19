@@ -306,6 +306,23 @@ impl AppState {
         self.last_review.forget();
     }
 
+    /// Saves `config` as `save_config_based_on` does, and only while `profile`'s API key is still
+    /// the one it carries. The keys are held for the save, so a key saved meanwhile either comes
+    /// first and refuses this, or comes after it.
+    pub fn save_config_for_checked(
+        &self,
+        config: Config,
+        revision: u64,
+        profile: &ProviderProfile,
+    ) -> std::io::Result<Option<u64>> {
+        let account = crate::secrets::account(profile.kind, &profile.id);
+        let mut keys = self.keys.lock().unwrap();
+        if *keys.entry(account.clone()).or_insert_with(|| crate::secrets::get(&account)) != profile.api_key {
+            return Ok(None);
+        }
+        self.save_config_based_on(config, Some(revision))
+    }
+
     /// The active provider with its API key attached, ready for a request.
     pub fn active_profile(&self) -> Option<ProviderProfile> {
         let mut profile = self.config.read().unwrap().active_profile()?.clone();

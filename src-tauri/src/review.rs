@@ -7,7 +7,6 @@
 
 use crate::app_toggle;
 use crate::last_review::Finished;
-use crate::overlay;
 use crate::platform::{self, Capture, PlatformError, ReplaceOutcome, SelectionGesture, WatchEvent};
 use crate::state::{AppState, Dismissal, Session};
 use serde::Serialize;
@@ -18,7 +17,27 @@ use supereditr_core::provider::{ProviderKind, ProviderProfile};
 use supereditr_core::{Config, Event, Job, sensitive};
 use tauri::{AppHandle, Emitter, Manager};
 
+mod shell;
+#[cfg(test)]
+mod tests_handlers;
+
+use shell::{Host, Live, Shell};
+
 const INITIAL_HEIGHT: f64 = 210.0;
+
+/// The review's event handlers, over its state, its UI (`Shell`) and the platform (`Host`). The app
+/// runs them on [`Live`] (see [`controller`]); tests on fakes that record each call.
+pub(crate) struct Controller<'a, S, H> {
+    state: &'a AppState,
+    shell: &'a S,
+    host: &'a H,
+}
+
+/// Runs `f` with the app's controller.
+fn controller<R>(app: &AppHandle, f: impl FnOnce(&Controller<'_, Live<'_>, Live<'_>>) -> R) -> R {
+    let live = Live(app);
+    f(&Controller { state: app.state::<AppState>().inner(), shell: &live, host: &live })
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -146,16 +165,8 @@ fn warm_connection(app: &AppHandle) {
 /// Review hotkey: give the keys to an automatic overlay that's already showing, or start a new
 /// review.
 pub fn on_review_hotkey(app: &AppHandle) {
-    {
-        let state = state(app);
-        let mut review = state.review.lock().unwrap();
-        if let Some(id) = review.take_keyboard() {
-            // Under the lock, so a dismissal can't put its hide ahead of this show and leave an
-            // empty panel up.
-            overlay::show(app, true);
-            let _ = app.emit_to("overlay", "overlay:focus", id);
-            return;
-        }
+    if controller(app, |c| c.keys_to_automatic_review()) {
+        return;
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move { start_manual(&app, None).await });
@@ -187,32 +198,16 @@ pub async fn start_manual(app: &AppHandle, preset_id: Option<String>) {
 /// focus: that would commit the composition into the user's text.
 fn show_capture_error(app: &AppHandle, error: PlatformError) {
     let keys = !matches!(error, PlatformError::Composing);
-    show_notice_with(app, error.to_string(), None, keys);
+    controller(app, |c| c.show_notice_with(error.to_string(), None, keys));
 }
 
 /// Shows a standalone message (no selection to work on) near the pointer.
 pub fn show_error(app: &AppHandle, message: String) {
-    show_notice(app, message, None);
+    controller(app, |c| c.show_error(message));
 }
 
-/// Says what became of a replacement that didn't apply: a copy-only one puts the suggestion on the
-/// clipboard; an uncertain one, or one that couldn't put the clipboard aside, leaves the clipboard
-/// alone and offers the suggestion to copy.
 fn show_outcome(app: &AppHandle, outcome: ReplaceOutcome, suggestion: String) -> Option<String> {
-    if copies_suggestion(&outcome) {
-        platform::copy_to_clipboard(&suggestion);
-    }
-    match outcome {
-        ReplaceOutcome::Applied => None,
-        ReplaceOutcome::CopyOnly(error) => {
-            show_error(app, error.to_string());
-            Some(error.to_string())
-        }
-        ReplaceOutcome::Uncertain(error) | ReplaceOutcome::ClipboardKept(error) => {
-            show_notice(app, error.to_string(), Some(suggestion));
-            Some(error.to_string())
-        }
-    }
+    controller(app, |c| c.show_outcome(outcome, suggestion))
 }
 
 /// Whether a replacement's outcome puts the suggestion on the clipboard: only when nothing was
@@ -222,99 +217,146 @@ fn copies_suggestion(outcome: &ReplaceOutcome) -> bool {
     matches!(outcome, ReplaceOutcome::CopyOnly(_))
 }
 
-fn show_notice(app: &AppHandle, message: String, copy: Option<String>) {
-    show_notice_with(app, message, copy, true);
-}
-
-fn show_notice_with(app: &AppHandle, message: String, copy: Option<String>, keys: bool) {
-    let state = state(app);
-    let id = state.next_session_id();
-    let replaced = state.review.lock().unwrap().show_notice();
-    drop(replaced);
-    let _ = app.emit_to("overlay", "overlay:status", StatusPayload { id, kind: "notice", message, copy });
-    overlay::position(app, None, 126.0);
-    #[cfg(target_os = "macos")]
-    platform::set_review_app(0);
-    overlay::show(app, keys);
-    // The notice closes with the panel's close key too, where that's a registered shortcut.
-    #[cfg(windows)]
-    crate::hotkeys::set_overlay_shortcuts(app, true);
-}
-
 /// Opens the panel for a selection. Returns why it didn't, for an automatic suggestion's log line.
 fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<String>) -> Result<(), AutoOutcome> {
-    let state = state(app);
-    let config = state.config();
-    if captured.pid == platform::own_pid() && !captured.playground {
-        return Err(AutoOutcome::OwnWindow);
-    }
-    // Never open an empty review: say what to do instead (only when asked, by shortcut).
-    if captured.text.trim().is_empty() {
-        if !auto {
-            show_error(app, PlatformError::NoSelection.to_string());
-        }
-        return Err(AutoOutcome::ReadFailed(PlatformError::NoSelection));
-    }
-    if config.is_excluded(&captured.bundle_id) {
-        if !auto {
-            show_error(app, excluded_message(&config, &captured.bundle_id, &captured.app_name));
-        }
-        return Err(AutoOutcome::Excluded);
-    }
-    // A selection holding a secret never opens a review. The engine refuses it too; stopping here
-    // keeps the panel from showing the secret, and keeps automatic suggestions silent.
-    if let Some(found) = sensitive::find(&captured.text) {
-        if !auto {
-            show_error(app, found.message());
-        }
-        return Err(AutoOutcome::Secret);
-    }
-    // Reopened on a selection reviewed a moment ago, the panel opens on the style shown last, and
-    // `run` shows that result again.
-    let preset_id = preset_id
-        .or_else(|| state.last_review.last_style(&captured, Instant::now()).filter(|id| config.preset(id).is_some()))
-        .unwrap_or_else(|| config.default_preset().id.clone());
-    let id = state.next_session_id();
-    let anchor = captured.bounds;
-    // The panel's keys are taken from this app only, not from a launcher opened over it.
-    #[cfg(target_os = "macos")]
-    platform::set_review_app(captured.pid);
-    // Before the session lock: watching the window reads it through the platform, which may wait on
-    // the app.
-    let following = crate::follow::start(app, id, &captured);
-    let payload = SessionPayload {
-        id,
-        text: captured.text.clone(),
-        app_name: captured.app_name.clone(),
-        can_apply: captured.editable,
-        copy_only_hint: captured.copy_only_hint(),
-        auto,
-        preset_id: preset_id.clone(),
-        presets: config.presets.iter().map(|p| PresetInfo { id: p.id.clone(), name: p.name.clone() }).collect(),
-        show_timing: config.show_timing,
-        always_show_tips: config.always_show_tips,
-        provider: state.active_profile().map(|p| p.model),
-    };
-    let session = Session {
-        id,
-        capture: captured,
-        keyboard: !auto,
-        anchor,
-        height: INITIAL_HEIGHT,
-        task: None,
-        run: 0,
-        proofread: false,
-        following,
-    };
-    // Dropped once the lock is released: that stops watching its window, through the platform.
-    let replaced = state.review.lock().unwrap().begin(session);
-    drop(replaced);
-    let _ = app.emit_to("overlay", "overlay:session", payload);
-    overlay::position(app, anchor, INITIAL_HEIGHT);
-    overlay::show(app, !auto);
-    crate::hotkeys::set_overlay_shortcuts(app, true);
+    let (id, preset_id) = controller(app, |c| c.begin(captured, auto, preset_id))?;
     run(app, id, 0, preset_id, None, false);
     Ok(())
+}
+
+impl<S: Shell, H: Host> Controller<'_, S, H> {
+    /// The review shortcut, with an automatic review showing: the panel takes the keys, and the
+    /// shortcut starts no new review. False when there's no automatic review to give them to.
+    fn keys_to_automatic_review(&self) -> bool {
+        let mut review = self.state.review.lock().unwrap();
+        let Some(id) = review.take_keyboard() else { return false };
+        // Under the lock, so a dismissal can't put its hide ahead of this show and leave an empty
+        // panel up.
+        self.shell.show(true);
+        self.shell.emit("overlay", "overlay:focus", id);
+        true
+    }
+
+    /// Shows a standalone message (no selection to work on) near the pointer.
+    fn show_error(&self, message: String) {
+        self.show_notice(message, None);
+    }
+
+    /// Says what became of a replacement that didn't apply: a copy-only one puts the suggestion on
+    /// the clipboard; an uncertain one, or one that couldn't put the clipboard aside, leaves the
+    /// clipboard alone and offers the suggestion to copy.
+    fn show_outcome(&self, outcome: ReplaceOutcome, suggestion: String) -> Option<String> {
+        if copies_suggestion(&outcome) {
+            self.host.copy_to_clipboard(&suggestion);
+        }
+        match outcome {
+            ReplaceOutcome::Applied => None,
+            ReplaceOutcome::CopyOnly(error) => {
+                self.show_error(error.to_string());
+                Some(error.to_string())
+            }
+            ReplaceOutcome::Uncertain(error) | ReplaceOutcome::ClipboardKept(error) => {
+                self.show_notice(error.to_string(), Some(suggestion));
+                Some(error.to_string())
+            }
+        }
+    }
+
+    fn show_notice(&self, message: String, copy: Option<String>) {
+        self.show_notice_with(message, copy, true);
+    }
+
+    fn show_notice_with(&self, message: String, copy: Option<String>, keys: bool) {
+        let id = self.state.next_session_id();
+        let replaced = self.state.review.lock().unwrap().show_notice();
+        drop(replaced);
+        self.shell.emit("overlay", "overlay:status", StatusPayload { id, kind: "notice", message, copy });
+        self.shell.position(None, 126.0);
+        // Does nothing outside macOS.
+        self.host.set_review_app(0);
+        self.shell.show(keys);
+        // The notice closes with the panel's close key too, where that's a registered shortcut.
+        #[cfg(windows)]
+        self.shell.set_shortcuts(true);
+    }
+
+    /// Opens the panel for a selection. Returns the review's number and style, for its first run,
+    /// or why it didn't open, for an automatic suggestion's log line.
+    fn begin(&self, captured: Capture, auto: bool, preset_id: Option<String>) -> Result<(u64, String), AutoOutcome> {
+        let state = self.state;
+        let config = state.config();
+        if captured.pid == self.host.own_pid() && !captured.playground {
+            return Err(AutoOutcome::OwnWindow);
+        }
+        // Never open an empty review: say what to do instead (only when asked, by shortcut).
+        if captured.text.trim().is_empty() {
+            if !auto {
+                self.show_error(PlatformError::NoSelection.to_string());
+            }
+            return Err(AutoOutcome::ReadFailed(PlatformError::NoSelection));
+        }
+        if config.is_excluded(&captured.bundle_id) {
+            if !auto {
+                self.show_error(excluded_message(&config, &captured.bundle_id, &captured.app_name));
+            }
+            return Err(AutoOutcome::Excluded);
+        }
+        // A selection holding a secret never opens a review. The engine refuses it too; stopping
+        // here keeps the panel from showing the secret, and keeps automatic suggestions silent.
+        if let Some(found) = sensitive::find(&captured.text) {
+            if !auto {
+                self.show_error(found.message());
+            }
+            return Err(AutoOutcome::Secret);
+        }
+        // Reopened on a selection reviewed a moment ago, the panel opens on the style shown last,
+        // and `run` shows that result again.
+        let preset_id = preset_id
+            .or_else(|| {
+                state.last_review.last_style(&captured, Instant::now()).filter(|id| config.preset(id).is_some())
+            })
+            .unwrap_or_else(|| config.default_preset().id.clone());
+        let id = state.next_session_id();
+        let anchor = captured.bounds;
+        // The panel's keys are taken from this app only, not from a launcher opened over it. Does
+        // nothing outside macOS.
+        self.host.set_review_app(captured.pid);
+        // Before the session lock: watching the window reads it through the platform, which may
+        // wait on the app.
+        let following = self.host.follow(id, &captured);
+        let payload = SessionPayload {
+            id,
+            text: captured.text.clone(),
+            app_name: captured.app_name.clone(),
+            can_apply: captured.editable,
+            copy_only_hint: captured.copy_only_hint(),
+            auto,
+            preset_id: preset_id.clone(),
+            presets: config.presets.iter().map(|p| PresetInfo { id: p.id.clone(), name: p.name.clone() }).collect(),
+            show_timing: config.show_timing,
+            always_show_tips: config.always_show_tips,
+            provider: state.active_profile().map(|p| p.model),
+        };
+        let session = Session {
+            id,
+            capture: captured,
+            keyboard: !auto,
+            anchor,
+            height: INITIAL_HEIGHT,
+            task: None,
+            run: 0,
+            proofread: false,
+            following,
+        };
+        // Dropped once the lock is released: that stops watching its window, through the platform.
+        let replaced = state.review.lock().unwrap().begin(session);
+        drop(replaced);
+        self.shell.emit("overlay", "overlay:session", payload);
+        self.shell.position(anchor, INITIAL_HEIGHT);
+        self.shell.show(!auto);
+        self.shell.set_shortcuts(true);
+        Ok((id, preset_id))
+    }
 }
 
 /// What a review of `captured` with `preset` and `steer` asks the engine: the panel's runs and
@@ -401,96 +443,9 @@ fn is_proofread(preset_id: &str, steer: Option<&str>) -> bool {
 /// Writes the accepted text back into the source app. With `anyway`, the user chose to replace
 /// without their clipboard put aside, after a replacement that couldn't (Windows).
 pub async fn apply(app: &AppHandle, id: u64, text: String, anyway: bool) -> Result<String, String> {
-    let state = state(app);
-    let keep_formatting = state.config().keep_formatting;
-    let applying = {
-        let mut review = state.review.lock().unwrap();
-        // The panel closes for good; the window may change while the text is written.
-        let applying = review.apply(id).ok_or("This review has ended.")?;
-        // The text is about to change; a review of it is never shown again.
-        state.last_review.forget();
-        applying
-    };
-    // Stops watching the window. On Linux there is no watch, so nothing to drop.
-    #[allow(clippy::drop_non_drop)]
-    drop(applying.following);
-    let (captured, proofread) = (applying.capture, applying.proofread && keep_formatting);
-    overlay::hide(app);
-    crate::hotkeys::set_overlay_shortcuts(app, false);
-    if captured.playground {
-        let ended = state.review.lock().unwrap().end();
-        drop(ended);
-        let _ = app.emit_to("settings", "settings:playground-apply", text);
-        return Ok("Applied.".into());
-    }
-    state.review.lock().unwrap().start_quiet(Instant::now());
-    let suggestion = text.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        // Focus goes back to the app first, whether or not there's anything to write. Unless it's
-        // confirmed there, nothing is written: a paste could land somewhere else.
-        let returned = platform::return_to_field(&captured);
-        (captured.text != text).then(|| {
-            if returned {
-                ReplaceOutcome::from(replace_text(&captured, &text, proofread, anyway))
-            } else {
-                ReplaceOutcome::CopyOnly(PlatformError::FocusNotReturned)
-            }
-        })
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-    if let Some(ReplaceOutcome::ClipboardKept(PlatformError::ClipboardUnrestorable(why))) = &result
-        && offer_replace_anyway(app, id)
-    {
-        return Err(why.clone());
-    }
-    let ended = state.review.lock().unwrap().end();
-    drop(ended);
-    match result {
-        None => Ok("No changes needed.".into()),
-        Some(outcome) => match show_outcome(app, outcome, suggestion) {
-            None => Ok("Replaced.".into()),
-            Some(error) => Err(error),
-        },
-    }
-}
-
-/// The platform's replacement. `anyway` is asked for only where the panel offered it (Windows): the
-/// clipboard isn't put aside, and the fix stays on it.
-fn replace_text(
-    captured: &Capture,
-    text: &str,
-    proofread: bool,
-    anyway: bool,
-) -> Result<platform::ReplaceMethod, PlatformError> {
-    #[cfg(windows)]
-    if anyway {
-        return platform::replace_anyway(captured, text);
-    }
-    #[cfg(not(windows))]
-    let _ = anyway;
-    platform::replace(captured, text, proofread)
-}
-
-/// Nothing was pasted because the user's clipboard couldn't be put aside to give back afterwards.
-/// The panel comes back with the review and says so in one line; the apply key again replaces
-/// anyway, and Ctrl+C and Esc work as before. False when the review ended meanwhile.
-fn offer_replace_anyway(app: &AppHandle, id: u64) -> bool {
-    let state = state(app);
-    let captured = state.review.lock().unwrap().current(id).map(|s| s.capture.clone());
-    let Some(captured) = captured else { return false };
-    // Before the review lock, as in `begin`: watching the window reads it through the platform.
-    let mut following = crate::follow::start(app, id, &captured);
-    // Either way, what's left in `following` is dropped after the lock.
-    if !state.review.lock().unwrap().reopen(id, &mut following) {
-        return false;
-    }
-    #[allow(clippy::drop_non_drop)]
-    drop(following);
-    let _ = app.emit_to("overlay", "overlay:replace-anyway", id);
-    overlay::show(app, true);
-    crate::hotkeys::set_overlay_shortcuts(app, true);
-    true
+    let live = Live(app);
+    let controller = Controller { state: app.state::<AppState>().inner(), shell: &live, host: &live };
+    controller.apply(id, text, anyway).await
 }
 
 /// Settings' "Try it now" box asked for a review (⌘E E, or its Review button), as if its text were
@@ -500,28 +455,111 @@ pub fn review_playground(app: &AppHandle, text: String, bounds: platform::Rect) 
 }
 
 pub fn dismiss(app: &AppHandle, id: Option<u64>) {
-    let dismissal = state(app).review.lock().unwrap().dismiss(id);
-    let Dismissal::Close(ended) = dismissal else { return };
-    drop(ended);
-    overlay::hide(app);
-    crate::hotkeys::set_overlay_shortcuts(app, false);
+    controller(app, |c| c.dismiss(id));
 }
 
 /// The user starts (`true`) or stops typing an instruction in the panel, which takes keyboard focus
 /// meanwhile.
 pub fn typing(app: &AppHandle, typing: bool) {
-    if !typing {
-        return overlay::stop_typing(app);
-    }
-    let pid = state(app).review.lock().unwrap().reviewed_pid();
-    if let Some(pid) = pid {
-        overlay::start_typing(app, pid);
-    }
+    controller(app, |c| c.typing(typing));
 }
 
 pub fn resize(app: &AppHandle, height: f64) {
-    let anchor = state(app).review.lock().unwrap().resize(height);
-    overlay::resize(app, anchor, height.clamp(90.0, 670.0));
+    controller(app, |c| c.resize(height));
+}
+
+impl<S: Shell, H: Host> Controller<'_, S, H> {
+    /// Writes the accepted text back into the source app (see [`apply`]).
+    async fn apply(&self, id: u64, text: String, anyway: bool) -> Result<String, String> {
+        let state = self.state;
+        let keep_formatting = state.config().keep_formatting;
+        let applying = {
+            let mut review = state.review.lock().unwrap();
+            // The panel closes for good; the window may change while the text is written.
+            let applying = review.apply(id).ok_or("This review has ended.")?;
+            // The text is about to change; a review of it is never shown again.
+            state.last_review.forget();
+            applying
+        };
+        // Stops watching the window. On Linux there is no watch, so nothing to drop.
+        #[allow(clippy::drop_non_drop)]
+        drop(applying.following);
+        let (captured, proofread) = (applying.capture, applying.proofread && keep_formatting);
+        self.shell.hide();
+        self.shell.set_shortcuts(false);
+        if captured.playground {
+            // Only this review: another may have begun since.
+            let ended = state.review.lock().unwrap().end(id);
+            drop(ended);
+            self.shell.emit("settings", "settings:playground-apply", text);
+            return Ok("Applied.".into());
+        }
+        state.review.lock().unwrap().start_quiet(Instant::now());
+        let suggestion = text.clone();
+        let result = self.host.write(captured, text, proofread, anyway).await?;
+        if let Some(ReplaceOutcome::ClipboardKept(PlatformError::ClipboardUnrestorable(why))) = &result
+            && self.offer_replace_anyway(id)
+        {
+            return Err(why.clone());
+        }
+        // Only this review: one that began while the text was written stays, with its panel.
+        let ended = state.review.lock().unwrap().end(id);
+        drop(ended);
+        match result {
+            None => Ok("No changes needed.".into()),
+            Some(outcome) => match self.show_outcome(outcome, suggestion) {
+                None => Ok("Replaced.".into()),
+                Some(error) => Err(error),
+            },
+        }
+    }
+
+    /// Nothing was pasted because the user's clipboard couldn't be put aside to give back
+    /// afterwards. The panel comes back with the review and says so in one line; the apply key
+    /// again replaces anyway, and Ctrl+C and Esc work as before. False when the review ended
+    /// meanwhile.
+    fn offer_replace_anyway(&self, id: u64) -> bool {
+        let state = self.state;
+        let captured = state.review.lock().unwrap().current(id).map(|s| s.capture.clone());
+        let Some(captured) = captured else { return false };
+        // Before the review lock, as in `begin`: watching the window reads it through the platform.
+        let mut following = self.host.follow(id, &captured);
+        // Either way, what's left in `following` is dropped after the lock.
+        if !state.review.lock().unwrap().reopen(id, &mut following) {
+            return false;
+        }
+        #[allow(clippy::drop_non_drop)]
+        drop(following);
+        self.shell.emit("overlay", "overlay:replace-anyway", id);
+        self.shell.show(true);
+        self.shell.set_shortcuts(true);
+        true
+    }
+
+    /// Closes the panel: review `id`, or with None whatever is showing. Nothing happens when `id`
+    /// is no longer the review showing.
+    fn dismiss(&self, id: Option<u64>) {
+        let dismissal = self.state.review.lock().unwrap().dismiss(id);
+        let Dismissal::Close(ended) = dismissal else { return };
+        drop(ended);
+        self.shell.hide();
+        self.shell.set_shortcuts(false);
+    }
+
+    fn typing(&self, typing: bool) {
+        if !typing {
+            return self.shell.stop_typing();
+        }
+        let pid = self.state.review.lock().unwrap().reviewed_pid();
+        if let Some(pid) = pid {
+            self.shell.start_typing(pid);
+        }
+    }
+
+    fn resize(&self, height: f64) {
+        let anchor = self.state.review.lock().unwrap().resize(height);
+        self.shell.resize(anchor, height.clamp(90.0, 670.0));
+    }
 }
 
 /// Quick fix: proofread the selection and replace it directly, with no overlay.
@@ -584,40 +622,11 @@ pub async fn quick_fix(app: &AppHandle) {
 /// reviews, so it closes. ⌘Tab never reaches the selection watcher, which only sees the user's
 /// typing and clicks.
 pub fn on_app_switch(app: &AppHandle, pid: i32) {
-    let state = state(app);
-    if pid == platform::own_pid() {
-        return;
-    }
-    // A review about to start, or a Shift selection under way, belongs to the previous app.
-    state.watch_generation.fetch_add(1, Ordering::Relaxed);
-    platform::selection_app_switched();
-    let (reviewing, notice) = {
-        let review = state.review.lock().unwrap();
-        (review.reviewed_pid(), review.notice_visible())
-    };
-    // On Linux the panel has keyboard focus during a review, so any other window coming to the
-    // front, the reviewed app's included, means the user has moved on. So on Windows while the panel
-    // has focus: the user clicked back into the app.
-    let focused = cfg!(target_os = "linux") || platform_panel_focused();
-    let moved_on = reviewing.is_some_and(|source| focused || source != pid);
-    if moved_on || (reviewing.is_none() && notice) {
-        // A click on the reviewed window may be the start of dragging it by its title bar.
-        if reviewing == Some(pid) && crate::follow::hold_for_click(app) {
-            return;
-        }
-        // Focus stays with the window the user chose. On Hyprland this is also how a move to
-        // another workspace often arrives, before the workspace event itself.
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        if left_for_another_window(reviewing, pid) {
-            overlay::forget_focus_return();
-        }
-        dismiss(app, None);
-    }
+    controller(app, |c| c.on_app_switch(pid));
 }
 
 /// Whether the window that came to the front belongs to another app than the reviewed one, so
 /// closing the panel mustn't take focus back from it.
-#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 fn left_for_another_window(reviewing: Option<i32>, front: i32) -> bool {
     reviewing != Some(front)
 }
@@ -627,13 +636,69 @@ fn left_for_another_window(reviewing: Option<i32>, front: i32) -> bool {
 /// it, and forget a review about to start or a selection under way.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn on_space_change(app: &AppHandle) {
-    let state = state(app);
-    state.watch_generation.fetch_add(1, Ordering::Relaxed);
-    platform::selection_app_switched();
-    let showing = state.review.lock().unwrap().showing();
-    if showing {
-        overlay::forget_focus_return();
-        dismiss(app, None);
+    controller(app, |c| c.on_space_change());
+}
+
+impl<S: Shell, H: Host> Controller<'_, S, H> {
+    /// App `pid` came to the front (see [`on_app_switch`]).
+    fn on_app_switch(&self, pid: i32) {
+        let state = self.state;
+        if pid == self.host.own_pid() {
+            return;
+        }
+        // A review about to start, or a Shift selection under way, belongs to the previous app.
+        state.watch_generation.fetch_add(1, Ordering::Relaxed);
+        self.host.selection_app_switched();
+        let (reviewing, notice) = {
+            let review = state.review.lock().unwrap();
+            (review.reviewed_pid(), review.notice_visible())
+        };
+        // On Linux the panel has keyboard focus during a review, so any other window coming to the
+        // front, the reviewed app's included, means the user has moved on. So on Windows while the
+        // panel has focus: the user clicked back into the app.
+        let focused = cfg!(target_os = "linux") || self.host.panel_focused();
+        let moved_on = reviewing.is_some_and(|source| focused || source != pid);
+        if moved_on || (reviewing.is_none() && notice) {
+            // A click on the reviewed window may be the start of dragging it by its title bar.
+            if reviewing == Some(pid) && self.host.hold_for_click() {
+                return;
+            }
+            // Focus stays with the window the user chose. On Hyprland this is also how a move to
+            // another workspace often arrives, before the workspace event itself. (Windows keeps no
+            // focus to forget.)
+            if left_for_another_window(reviewing, pid) {
+                self.shell.forget_focus_return();
+            }
+            self.dismiss(None);
+        }
+    }
+
+    /// The user moved to another Space (see [`on_space_change`]).
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn on_space_change(&self) {
+        let state = self.state;
+        state.watch_generation.fetch_add(1, Ordering::Relaxed);
+        self.host.selection_app_switched();
+        let showing = state.review.lock().unwrap().showing();
+        if showing {
+            self.shell.forget_focus_return();
+            self.dismiss(None);
+        }
+    }
+
+    /// The selection watcher saw typing or a click in another app.
+    fn on_interaction(&self) {
+        let state = self.state;
+        // A review about to start is for a selection the user is changing.
+        state.watch_generation.fetch_add(1, Ordering::Relaxed);
+        // Keys the panel takes never reach other apps, so any typing or clicking seen here means the
+        // user has moved on.
+        // In its own statement: `hold_for_click` takes the review lock.
+        let closes = state.review.lock().unwrap().closes_on_interaction(Instant::now());
+        // A click on the reviewed window may be the start of dragging it by its title bar.
+        if closes && !self.host.hold_for_click() {
+            self.dismiss(None);
+        }
     }
 }
 
@@ -652,18 +717,7 @@ fn platform_panel_focused() -> bool {
 pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
     let state = state(app);
     match event {
-        WatchEvent::Interaction => {
-            // A review about to start is for a selection the user is changing.
-            state.watch_generation.fetch_add(1, Ordering::Relaxed);
-            // Keys the panel takes never reach other apps, so any typing or clicking seen here
-            // means the user has moved on.
-            // In its own statement: `hold_for_click` takes the review lock.
-            let closes = state.review.lock().unwrap().closes_on_interaction(Instant::now());
-            // A click on the reviewed window may be the start of dragging it by its title bar.
-            if closes && !crate::follow::hold_for_click(app) {
-                dismiss(app, None);
-            }
-        }
+        WatchEvent::Interaction => controller(app, |c| c.on_interaction()),
         WatchEvent::Wait => {
             state.watch_generation.fetch_add(1, Ordering::Relaxed);
         }

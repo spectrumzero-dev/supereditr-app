@@ -150,9 +150,10 @@ impl ReviewState {
         })
     }
 
-    /// The review's text has been written (or wasn't): whatever review is showing ends, as it is.
-    pub fn end(&mut self) -> Option<Session> {
-        self.session.take()
+    /// Review `id`'s text has been written (or wasn't): it ends, as it is. A review that began
+    /// meanwhile stays. Returns the review that ended, if `id` was still the one showing.
+    pub fn end(&mut self, id: u64) -> Option<Session> {
+        self.session.take_if(|s| s.id == id)
     }
 
     /// Review `id` comes back after a replacement that didn't write, and takes the keys. Swaps
@@ -487,8 +488,20 @@ mod tests {
         assert!(applying.proofread);
         assert_eq!(applying.capture.text, "Brynlee sent the KPI updaet.");
         assert_eq!(review.reviewed_pid(), Some(applying.capture.pid), "still showing while it's written");
-        assert_eq!(review.end().map(|s| s.id), Some(1));
+        assert_eq!(review.end(1).map(|s| s.id), Some(1));
         assert!(review.apply(1).is_none(), "the review has ended");
+    }
+
+    #[test]
+    fn a_review_that_begins_while_text_is_written_outlasts_the_earlier_one() {
+        let mut review = reviewing(1);
+        assert!(review.apply(1).is_some());
+        // The user opens a new review while the first one's text is written into the app.
+        assert_eq!(review.begin(session(2, "Kyndal wrote the OKR draft.")).map(|s| s.id), Some(1));
+        assert!(review.end(1).is_none(), "the first review had already ended");
+        assert_eq!(review.session().map(|s| s.id), Some(2), "the new review stays");
+        assert_eq!(review.end(2).map(|s| s.id), Some(2));
+        assert!(!review.showing());
     }
 
     #[test]

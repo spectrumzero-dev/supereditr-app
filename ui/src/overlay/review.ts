@@ -40,6 +40,20 @@ export function runRequest(presetId: string, instruction: string | undefined, fr
   return { presetId, steer: instruction?.trim() || null, fresh };
 }
 
+/** Which run of which review an engine event is from, or which one the panel is showing. A session
+ *  starts with run 0; the panel numbers each later run before asking for it. */
+export interface RunKey {
+  id: number;
+  presetId: string;
+  run: number;
+}
+
+/** Whether an engine event belongs to the run the panel is showing. Any other run's events, such as
+ *  a replaced run's that arrive late, are dropped. */
+export function isCurrentRun(current: RunKey | null, event: RunKey): boolean {
+  return current !== null && event.id === current.id && event.presetId === current.presetId && event.run === current.run;
+}
+
 export function emptyReview(): Review {
   return { view: null, localView: null, complete: false, phase: "idle", source: "", timing: "", error: "", changedTokens: [], keptTerms: [], backupFor: "", learnable: [], remembered: false };
 }

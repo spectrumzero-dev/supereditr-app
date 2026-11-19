@@ -12,8 +12,9 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 
 interface Handlers {
   session: (payload: SessionPayload) => void;
-  /** `remembered`: an earlier review's result for the same selection, shown again. */
-  engine: (id: number, presetId: string, event: EngineEvent, remembered: boolean) => void;
+  /** `run`: which run of the session the event is from. `remembered`: an earlier review's result
+   *  for the same selection, shown again. */
+  engine: (id: number, presetId: string, run: number, event: EngineEvent, remembered: boolean) => void;
   status: (payload: StatusPayload) => void;
   focus: () => void;
   command: (command: string) => void;
@@ -32,8 +33,8 @@ export interface PanelKeyPayload {
 }
 
 export const ipc = {
-  /** Runs a style; see `runRequest` for what `steer` and `fresh` mean. */
-  runPreset: (id: number, request: RunRequest) => invoke("run_preset", { id, ...request }),
+  /** Runs a style as run number `run` of review `id`; see `runRequest` for what `steer` and `fresh` mean. */
+  runPreset: (id: number, run: number, request: RunRequest) => invoke("run_preset", { id, run, ...request }),
   /** With `anyway`, the clipboard isn't put aside first and the fix stays on it (Windows). */
   apply: (id: number, text: string, anyway = false) => invoke<string>("apply_text", { id, text, anyway }),
   dismiss: (id: number | null) => invoke("dismiss", { id }),
@@ -52,8 +53,8 @@ export const ipc = {
     const stops: Array<() => void> = [];
     import("@tauri-apps/api/event").then(({ listen }) => {
       listen<SessionPayload>("overlay:session", (e) => handlers.session(e.payload)).then((u) => stops.push(u));
-      listen<{ id: number; presetId: string; event: EngineEvent; remembered: boolean }>("overlay:engine", (e) =>
-        handlers.engine(e.payload.id, e.payload.presetId, e.payload.event, e.payload.remembered),
+      listen<{ id: number; presetId: string; run: number; event: EngineEvent; remembered: boolean }>("overlay:engine", (e) =>
+        handlers.engine(e.payload.id, e.payload.presetId, e.payload.run, e.payload.event, e.payload.remembered),
       ).then((u) => stops.push(u));
       listen<StatusPayload>("overlay:status", (e) => handlers.status(e.payload)).then((u) => stops.push(u));
       listen("overlay:focus", () => handlers.focus()).then((u) => stops.push(u));

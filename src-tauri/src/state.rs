@@ -39,6 +39,9 @@ pub struct Session {
     pub anchor: Option<Rect>,
     pub height: f64,
     pub task: Option<tauri::async_runtime::JoinHandle<()>>,
+    /// The number of the latest run the panel asked for: 0 for the one the session starts with,
+    /// then one more for each run the panel asks for. Its engine events carry it.
+    pub run: u64,
     /// The latest run is a plain proofread (no other style, no instruction), which is applied in
     /// place where the app allows it.
     pub proofread: bool,

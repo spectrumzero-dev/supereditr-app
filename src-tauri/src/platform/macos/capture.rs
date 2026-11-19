@@ -489,19 +489,26 @@ fn capture_clipboard<D: Desktop, P: Pasteboard, A: App>(
         // so it is left alone rather than risk erasing theirs.
         return Err(PlatformError::NoSelection);
     }
-    // An app empties the clipboard and then writes to it, and the change count moves at the first
-    // step, so the text can be a moment behind the change.
+    // An app empties the clipboard and then writes to it. The change count moves once, at the first
+    // step, so the text can be a moment behind the change and arrives under the same count.
+    let changed = pasteboard.change_count();
     let mut copied = pasteboard.read_string();
     let text_deadline = clock.now() + Duration::from_millis(200);
-    while copied.is_none() && clock.now() < text_deadline {
+    while copied.is_none() && pasteboard.change_count() == changed && clock.now() < text_deadline {
         clock.sleep(Duration::from_millis(5));
         copied = pasteboard.read_string();
+    }
+    if pasteboard.change_count() != changed {
+        // Something else wrote to the clipboard meanwhile. What is there now isn't the selection,
+        // and it is newer than the snapshot, so it is neither read nor replaced.
+        trace(format_args!("{bundle_id}: the clipboard changed again after {request:?}"));
+        return Err(PlatformError::NoSelection);
     }
     if copied.is_none() {
         trace(format_args!("{bundle_id}: the clipboard changed but holds no plain text"));
     }
     trace(format_args!("{bundle_id}: copied via {request:?}"));
-    pasteboard.restore(snapshot, pasteboard.change_count());
+    pasteboard.restore(snapshot, changed);
     let text = copied.filter(|t| !t.trim().is_empty()).ok_or(PlatformError::NoSelection)?;
     let focused = app.focused();
     let bounds = focused.as_ref().and_then(|focused| focused.frame());
@@ -884,6 +891,14 @@ mod tests {
         let waited = world.waited();
         assert!(waited >= Duration::from_millis(200) && waited < Duration::from_millis(300), "{waited:?}");
         assert_eq!(world.clipboard_text(), "Rhyan's own copy");
+    }
+
+    #[test]
+    fn another_copy_during_the_wait_for_text_is_neither_read_nor_erased() {
+        let world = notes().hiding_its_selection().copies(Copies::NoTextThenAnother(Duration::from_millis(30)));
+        assert!(matches!(world.read_by_shortcut(), Err(PlatformError::NoSelection)));
+        assert!(world.waited() < Duration::from_millis(100), "{:?}", world.waited());
+        assert_eq!(world.clipboard_text(), "Brynlee's later copy");
     }
 
     #[test]

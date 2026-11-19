@@ -54,8 +54,11 @@ pub enum Copies {
     /// Puts it there after this long, as a busy Electron app does.
     After(Duration),
     /// Empties the clipboard at once and puts the text there after this long. An app writes a copy
-    /// in those two steps, and the clipboard's change count moves at the first.
+    /// in those two steps, and the clipboard's change count moves only at the first.
     EmptiesThenAfter(Duration),
+    /// Empties the clipboard and puts no plain text there, and after this long something else
+    /// copies "Brynlee's later copy".
+    NoTextThenAnother(Duration),
     /// Empties the clipboard and puts no plain text there, as copying a picture does.
     NoText,
 }
@@ -119,6 +122,8 @@ pub struct World {
     copies: Cell<Copies>,
     /// A copy on its way to the clipboard: when it lands, by the pretend clock, and its text.
     pending_copy: RefCell<Option<(Duration, String)>>,
+    /// Text on its way to a clipboard the app has already emptied.
+    pending_text: RefCell<Option<(Duration, String)>>,
     /// The clipboard was emptied and holds no plain text yet.
     no_text: Cell<bool>,
     write: Cell<Write>,
@@ -170,6 +175,7 @@ impl World {
             cut_item: Cell::new(Item::Enabled),
             copies: Cell::new(Copies::Yes),
             pending_copy: RefCell::default(),
+            pending_text: RefCell::default(),
             no_text: Cell::new(false),
             write: Cell::new(Write::Applies),
             moves_selection: Cell::new(true),
@@ -498,7 +504,11 @@ impl World {
             Copies::After(wait) => *self.pending_copy.borrow_mut() = Some((self.elapsed.get() + wait, text)),
             Copies::EmptiesThenAfter(wait) => {
                 self.empty_clipboard();
-                *self.pending_copy.borrow_mut() = Some((self.elapsed.get() + wait, text));
+                *self.pending_text.borrow_mut() = Some((self.elapsed.get() + wait, text));
+            }
+            Copies::NoTextThenAnother(wait) => {
+                self.empty_clipboard();
+                *self.pending_copy.borrow_mut() = Some((self.elapsed.get() + wait, "Brynlee's later copy".into()));
             }
             Copies::NoText => self.empty_clipboard(),
         }
@@ -515,6 +525,12 @@ impl World {
         let due = self.pending_copy.borrow().as_ref().is_some_and(|(at, _)| self.elapsed.get() >= *at);
         if due && let Some((_, text)) = self.pending_copy.borrow_mut().take() {
             self.user_copies(&text);
+        }
+        // The second step of a copy: the text, under the change count the first step left.
+        let due = self.pending_text.borrow().as_ref().is_some_and(|(at, _)| self.elapsed.get() >= *at);
+        if due && let Some((_, text)) = self.pending_text.borrow_mut().take() {
+            *self.clipboard.borrow_mut() = (text, None);
+            self.no_text.set(false);
         }
     }
 

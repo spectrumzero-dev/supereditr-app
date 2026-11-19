@@ -14,8 +14,8 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use ts_rs::TS;
 
-/// The windows that receive events, which name each event `<window>:<event>`.
-const WINDOWS: [&str; 4] = ["overlay", "settings", "update", "guide"];
+/// String literals shaped like an event name that aren't one: credential account names in tests.
+const NOT_EVENTS: [&str; 2] = ["anthropic:anthropic", "gemini:gemini"];
 
 fn fixture(list: &str) -> BTreeSet<String> {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/contracts/ipc-names.json");
@@ -50,28 +50,41 @@ fn registered_commands() -> BTreeSet<String> {
         .collect()
 }
 
-/// Every string literal in the app's source that names an event: a window, a colon and a name in
-/// lowercase words joined by hyphens, such as `"overlay:replace-anyway"`. Log lines such as
-/// `"update: idle"` aren't names.
+/// Every string literal in the app's source shaped like an event name: lowercase letters, a colon,
+/// then lowercase words joined by hyphens, such as `"overlay:replace-anyway"`. The window isn't
+/// matched against a list, so a misspelt one (`"overaly:engine"`) is found too, and fails the
+/// comparison with the fixture. Log lines such as `"update: idle"` aren't shaped like this.
 fn emitted_events() -> BTreeSet<String> {
     let mut files = Vec::new();
     rust_files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
     let mut events = BTreeSet::new();
     for file in files.iter().filter(|f| !f.ends_with("ipc_contract.rs")) {
         let text = source(file);
-        for window in WINDOWS {
-            let opening = format!("\"{window}:");
-            let mut rest = text.as_str();
-            while let Some(at) = rest.find(&opening) {
-                rest = &rest[at + opening.len()..];
-                let length = rest.find(|c: char| !(c.is_ascii_lowercase() || c == '-')).unwrap_or(rest.len());
-                if length > 0 && rest[length..].starts_with('"') {
-                    events.insert(format!("{window}:{}", &rest[..length]));
-                }
+        // Every other piece between quotes is the inside of a literal, or near enough: a piece
+        // that isn't one only ever adds a name the fixture lacks, which fails loudly.
+        for literal in text.split('"') {
+            if is_event_name(literal) && !NOT_EVENTS.contains(&literal) {
+                events.insert(literal.to_string());
             }
         }
     }
     events
+}
+
+fn is_event_name(literal: &str) -> bool {
+    let Some((window, name)) = literal.split_once(':') else { return false };
+    !window.is_empty()
+        && window.chars().all(|c| c.is_ascii_lowercase())
+        && !name.is_empty()
+        && name.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+}
+
+#[test]
+fn a_misspelt_window_is_still_an_event_name() {
+    assert!(is_event_name("overaly:engine"));
+    assert!(is_event_name("overlay:replace-anyway"));
+    assert!(!is_event_name("update: idle"));
+    assert!(!is_event_name("{kind}:{profile_id}"));
 }
 
 #[test]

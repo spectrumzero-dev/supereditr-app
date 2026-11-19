@@ -105,7 +105,8 @@ pub(crate) trait Engine: Sync {
     /// Starts run `asked` of a review on a task of its own: the engine works through `job` and
     /// hands each event to `Controller::engine_event`, with `asked`. Returns the task.
     fn start_run(&self, job: Job, asked: Asked) -> Task;
-    /// Runs `job` to the end, for quick fix, and returns every event it sent.
+    /// Runs `job` to the end, for quick fix, and returns the events that end it: its result or its
+    /// failure. Previews are dropped as they arrive; each holds a copy of the text.
     fn run_to_end(&self, job: Job) -> impl Future<Output = Vec<Event>> + Send;
 }
 
@@ -273,7 +274,13 @@ impl Engine for Live<'_> {
         let engine = self.0.state::<AppState>().engine.clone();
         async move {
             let mut events = Vec::new();
-            engine.run(job, &mut |event| events.push(event)).await;
+            engine
+                .run(job, &mut |event| {
+                    if matches!(event, Event::Done(_) | Event::Failed { .. }) {
+                        events.push(event);
+                    }
+                })
+                .await;
             events
         }
     }

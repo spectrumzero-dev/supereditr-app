@@ -11,7 +11,7 @@ use super::keys::post_key;
 use super::seam::{Clock, Desktop, Field, Pasteboard, Services, System};
 use super::text::{html_with_code, is_invisible, is_line_break, markdown_with_code};
 use super::{Capture, accessibility_trusted, pasteboard, trace};
-use crate::platform::{PlatformError, ReplaceMethod};
+use crate::platform::{PlatformError, ReplaceMethod, log_lines};
 use core_foundation::base::{CFType, TCFType};
 use core_graphics::event::{CGEvent, CGEventFlags};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
@@ -63,8 +63,8 @@ pub(super) fn replace_with<D: Desktop, P: Pasteboard>(
         // which is quicker; an Accessibility write in a native field takes milliseconds.
         let plan = if capture.web && proofread && !capture.formatted {
             trace(format_args!(
-                "{}: applying the whole selection: the field has no formatting to keep",
-                capture.bundle_id
+                "{}",
+                log_lines::ApplyingWhole { app: &capture.bundle_id, reason: &"the field has no formatting to keep" }
             ));
             None
         } else {
@@ -78,7 +78,9 @@ pub(super) fn replace_with<D: Desktop, P: Pasteboard>(
                 }
             }
             Some(Ok(_)) => {}
-            Some(Err(reason)) => trace(format_args!("{}: applying the whole selection: {reason}", capture.bundle_id)),
+            Some(Err(reason)) => {
+                trace(format_args!("{}", log_lines::ApplyingWhole { app: &capture.bundle_id, reason: &reason }))
+            }
         }
         if !capture.web && field.can_set_selected_text() {
             let before = field.value();
@@ -402,14 +404,13 @@ fn replace_in_place<D: Desktop, P: Pasteboard>(
     let clock = services.clock;
     let started = clock.now();
     let fallback = |reason: &str| {
-        trace(format_args!("{}: applying the whole selection: {reason}", capture.bundle_id));
+        trace(format_args!("{}", log_lines::ApplyingWhole { app: &capture.bundle_id, reason: &reason }));
         Ok(None)
     };
     let stopped = |applied: usize, reason: &str| {
         trace(format_args!(
-            "{}: applied in place partly: {applied} of {} edits, then {reason}",
-            capture.bundle_id,
-            edits.len()
+            "{}",
+            log_lines::AppliedPartly { app: &capture.bundle_id, applied, total: edits.len(), reason }
         ));
         // With nothing applied, the first edit may still have landed unseen.
         Err(if applied == 0 {
@@ -512,12 +513,15 @@ fn replace_in_place<D: Desktop, P: Pasteboard>(
         format!("; {kept} of {} code spans still code", capture.code.len())
     };
     trace(format_args!(
-        "{}: applied in place: {} edits in {} ms by {}; {}{code}",
-        capture.bundle_id,
-        edits.len(),
-        clock.now().duration_since(started).as_millis(),
-        if native { "Accessibility writes" } else { "typing" },
-        if verified { "verified" } else { "not verified" },
+        "{}",
+        log_lines::AppliedInPlace {
+            app: &capture.bundle_id,
+            edits: edits.len(),
+            ms: clock.now().duration_since(started).as_millis(),
+            native,
+            verified,
+            code: &code,
+        }
     ));
     if !verified {
         return Err(PlatformError::Unverified);

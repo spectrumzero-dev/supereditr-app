@@ -102,12 +102,16 @@ pub(super) fn code_in(field: &Element) -> Formatting {
         formatted: false,
     };
     walk(field, 0, &mut state);
+    let took = started.elapsed();
+    let subroles = state.subroles.into_iter().collect::<Vec<_>>().join(", ");
     trace(format_args!(
-        "code in the field: {} pieces in {:?}{}; subroles {}",
-        state.code.len(),
-        started.elapsed(),
-        if state.budget == 0 { " (stopped early)" } else { "" },
-        state.subroles.into_iter().collect::<Vec<_>>().join(", ")
+        "{}",
+        crate::platform::log_lines::CodeInField {
+            pieces: state.code.len(),
+            took,
+            stopped_early: state.budget == 0,
+            subroles: &subroles,
+        }
     ));
     Formatting { code: state.code, markers: state.markers, any: state.formatted }
 }

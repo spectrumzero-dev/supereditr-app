@@ -832,10 +832,7 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
     }
 
     fn trace_auto(&self, gesture: SelectionGesture, app_id: Option<&str>, outcome: &AutoOutcome) {
-        match app_id {
-            Some(app_id) => self.host.trace(format_args!("automatic {app_id}: after {gesture}, {outcome}")),
-            None => self.host.trace(format_args!("automatic: after {gesture}, {outcome}")),
-        }
+        self.host.trace(format_args!("{}", platform::log_lines::Automatic { app: app_id, gesture: &gesture, outcome }));
     }
 }
 
@@ -898,7 +895,9 @@ impl std::fmt::Display for AutoOutcome {
             Self::Retrying { attempt, of } => write!(f, "no selection yet, reading again ({attempt} of {of})"),
             Self::NotEditable => write!(f, "skipped: the field isn't editable"),
             Self::TooShort { chars, min } => write!(f, "skipped: {chars} characters, under the minimum of {min}"),
-            Self::TooLong { chars, max } => write!(f, "skipped: {chars} characters, over the maximum of {max}"),
+            Self::TooLong { chars, max } => {
+                write!(f, "{}", platform::log_lines::OverMaximum { chars: *chars, max: *max })
+            }
             Self::NoLetter => write!(f, "skipped: the selection has no letter"),
             Self::Address => write!(f, "skipped: the selection is a single link or address"),
             Self::AlreadyShowing => write!(f, "skipped: the same text is already showing"),

@@ -20,7 +20,7 @@ use super::clipboard::{Clipboard, Limits, Raw, Restore};
 use super::uia::{Field, Fields, PxRect, ReadError};
 use super::window::WindowRef;
 use super::{Capture, Source, trace};
-use crate::platform::{PlatformError, Rect};
+use crate::platform::{PlatformError, Rect, log_lines};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -132,7 +132,7 @@ pub fn classify(profile: &Profile, field: &Field) -> Class {
 }
 
 pub fn capture<R: Raw>(services: &Services<'_, R>, allow_copy: bool) -> Result<Capture, PlatformError> {
-    let how = if allow_copy { "shortcut" } else { "automatic" };
+    let how = log_lines::how(allow_copy);
     let started = Instant::now();
     let window = services.desktop.foreground().ok_or_else(|| {
         trace(format_args!("{how}: no window in front"));
@@ -141,22 +141,33 @@ pub fn capture<R: Raw>(services: &Services<'_, R>, allow_copy: bool) -> Result<C
     let image = services.desktop.image_name(window.pid).unwrap_or_default();
     let result = read(services, window, &image, allow_copy);
     match &result {
-        Ok(capture) => trace(format_args!(
-            "{how} {image}: read {} characters via {}{} in {:?}; {}",
-            capture.text.chars().count(),
-            match capture.source {
-                Source::Uia => "UI Automation",
-                Source::Copy => "a guarded copy",
-                Source::Playground => "Settings",
-            },
-            capture.field.as_ref().map_or_else(String::new, |f| format!(
-                " ({} {} element of process {}, type {})",
-                f.framework, f.class, f.pid, f.control_type
-            )),
-            started.elapsed(),
-            capture.class.map_or_else(|| "copy-only".to_string(), |class| format!("{class:?}")),
-        )),
-        Err(error) => trace(format_args!("{how} {image}: {error} ({:?})", started.elapsed())),
+        Ok(capture) => {
+            let element = capture.field.as_ref().map_or_else(String::new, |f| {
+                format!(" ({} {} element of process {}, type {})", f.framework, f.class, f.pid, f.control_type)
+            });
+            let took = started.elapsed();
+            let access = capture.class.map_or_else(|| "copy-only".to_string(), |class| format!("{class:?}"));
+            trace(format_args!(
+                "{}",
+                log_lines::Read {
+                    how,
+                    app: &image,
+                    chars: capture.text.chars().count(),
+                    of_field: None,
+                    via: match capture.source {
+                        Source::Uia => "UI Automation",
+                        Source::Copy => "a guarded copy",
+                        Source::Playground => "Settings",
+                    },
+                    element: &element,
+                    took,
+                    access: &access,
+                }
+            ))
+        }
+        Err(error) => {
+            trace(format_args!("{}", log_lines::ReadFailed { how, app: &image, error, took: started.elapsed() }))
+        }
     }
     result
 }
@@ -259,9 +270,7 @@ fn read<R: Raw>(
         return Err(PlatformError::NoSelection);
     }
     match guarded_copy(services, window, image, terminal) {
-        Err(PlatformError::NoSelection) if not_answering => {
-            Err(PlatformError::Other(format!("{name} isn’t responding, so SuperEditr couldn’t read the selection.")))
-        }
+        Err(PlatformError::NoSelection) if not_answering => Err(log_lines::not_responding(&name)),
         result => result,
     }
 }

@@ -50,7 +50,7 @@ pub fn accessibility_trusted(_prompt: bool) -> bool {
 
 pub fn open_accessibility_settings() {}
 
-pub fn run_helper_command(_args: &[String]) -> Option<i32> {
+pub fn run_helper_command() -> Option<i32> {
     None
 }
 

@@ -482,11 +482,8 @@ pub fn run() {
         });
     }
     // A mode of the program that runs instead of the app (`platform::run_helper_command`).
-    {
-        let args: Vec<String> = std::env::args().collect();
-        if let Some(code) = platform::run_helper_command(&args) {
-            std::process::exit(code);
-        }
+    if let Some(code) = platform::run_helper_command() {
+        std::process::exit(code);
     }
     let mut builder = tauri::Builder::default();
     if updater::available() {

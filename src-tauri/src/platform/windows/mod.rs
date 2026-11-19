@@ -391,7 +391,8 @@ pub use clipboard::SNAPSHOT_COMMAND as CLIPBOARD_SNAPSHOT_COMMAND;
 /// snapshot a replacement reads the clipboard through ([`serve_clipboard_snapshot`]), a short-lived
 /// copy of the program that can be stopped if the app that owns the clipboard stalls. Returns its
 /// exit code.
-pub fn run_helper_command(args: &[String]) -> Option<i32> {
+pub fn run_helper_command() -> Option<i32> {
+    let args: Vec<String> = std::env::args().collect();
     (args.get(1).map(String::as_str) == Some(CLIPBOARD_SNAPSHOT_COMMAND)).then(|| serve_clipboard_snapshot(&args[2..]))
 }
 

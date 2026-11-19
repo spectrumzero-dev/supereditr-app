@@ -138,7 +138,7 @@ pub fn open_accessibility_settings() {
 }
 
 /// A mode of the program that runs instead of the app, named by its first argument. macOS has none.
-pub fn run_helper_command(_args: &[String]) -> Option<i32> {
+pub fn run_helper_command() -> Option<i32> {
     None
 }
 

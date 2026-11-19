@@ -440,7 +440,8 @@ pub fn selection_app_switched() {}
 
 /// A mode of the program that runs instead of the app, named by its first argument:
 /// `uninstall-omarchy` (`setup::uninstall_command`). Returns its exit code.
-pub fn run_helper_command(args: &[String]) -> Option<i32> {
+pub fn run_helper_command() -> Option<i32> {
+    let args: Vec<String> = std::env::args().collect();
     (args.get(1).map(String::as_str) == Some("uninstall-omarchy")).then(|| setup::uninstall_command(&args[2..]))
 }
 

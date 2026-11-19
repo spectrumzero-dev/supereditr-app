@@ -1139,16 +1139,16 @@ pump(1.5)
 let terminalMark = logMark()
 check(selectAll(), "Terminal's text is selected")
 if focusedValueSettable() == true { log("NOTE Terminal's text reports an editable value; check 4 proves less") }
-// The automatic suggestion's line says what it decided: one naming Terminal once the selection was
-// read, or one saying the app is excluded or the selection couldn't be read, which name no app.
-// The panel is looked for after that.
-let terminalDecided = waitForDecision(atLeast: 3, within: 8) {
-    ["automatic com.apple.Terminal: ", "skipped: the app is excluded", "skipped: the selection couldn't be read"]
-        .lazy.compactMap { lastLogLine(since: terminalMark, containing: $0) }.first
+// The automatic suggestion's line naming Terminal says what it decided once it read the selection.
+// Only a decision to skip counts: one to show a suggestion fails the check even before the panel
+// is on screen. The panel is looked for after that.
+let terminalDecided = waitForDecision(atLeast: 3, within: 8) { () -> String? in
+    guard let line = lastLogLine(since: terminalMark, containing: "automatic com.apple.Terminal: ") else { return nil }
+    return line.contains("skipped: ") ? line : nil
 }
 if let terminalDecided { log("NOTE Terminal's selection: \(terminalDecided)") }
 check(terminalDecided != nil && overlay() == nil, "no automatic suggestion for terminal output",
-      terminalDecided == nil ? "capture.log has no automatic line deciding on Terminal's selection within 8 s; latest automatic line: \(lastLogLine(since: terminalMark, containing: "automatic") ?? "none")" : "overlay appeared")
+      terminalDecided == nil ? "capture.log has no line skipping Terminal's selection within 8 s; latest automatic line: \(lastLogLine(since: terminalMark, containing: "automatic") ?? "none")" : "overlay appeared")
 quitOpened("com.apple.Terminal")
 
 section("4a")

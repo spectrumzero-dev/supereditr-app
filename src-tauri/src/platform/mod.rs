@@ -75,7 +75,7 @@ const _: fn(&tauri::AppHandle, bool) = set_in_dock;
 const _: fn(&str) -> bool = lasting_app_path;
 const _: fn() = reload_autostart;
 const _: fn() -> bool = desktop_set_up;
-const _: fn(&[String]) -> Option<i32> = run_helper_command;
+const _: fn() -> Option<i32> = run_helper_command;
 
 /// Screen rectangle, origin at the top-left of the primary display: in points on macOS, in
 /// physical pixels on Windows.

@@ -146,11 +146,16 @@ fn warm_connection(app: &AppHandle) {
 /// Review hotkey: give the keys to an automatic overlay that's already showing, or start a new
 /// review.
 pub fn on_review_hotkey(app: &AppHandle) {
-    let took = state(app).review.lock().unwrap().take_keyboard();
-    if let Some(id) = took {
-        overlay::show(app, true);
-        let _ = app.emit_to("overlay", "overlay:focus", id);
-        return;
+    {
+        let state = state(app);
+        let mut review = state.review.lock().unwrap();
+        if let Some(id) = review.take_keyboard() {
+            // Under the lock, so a dismissal can't put its hide ahead of this show and leave an
+            // empty panel up.
+            overlay::show(app, true);
+            let _ = app.emit_to("overlay", "overlay:focus", id);
+            return;
+        }
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move { start_manual(&app, None).await });

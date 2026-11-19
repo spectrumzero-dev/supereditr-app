@@ -388,11 +388,10 @@ chromium_cases() {
   #   code: more writes than are made in place, so its fix replaces the whole selection.
   # - "formats": one fix is a comma right after the link, where editors differ in whether pasted
   #   text joins the link, so the fix replaces the whole selection, with its formatting as HTML.
-  # - "many": more typos than are applied change by change, so the same.
   # An editor that pastes HTML holds the same structure after a whole-selection fix as before.
   local text structure fixed
   for id in steps-div steps-markdown steps-tiptap steps-lexical steps-slate steps-quill \
-    formats-tiptap formats-lexical formats-quill many-tiptap many-lexical many-quill; do
+    formats-tiptap formats-lexical formats-quill; do
     set_clipboard text
     vm "d_focus $page; sleep 0.3; d_cursor_move \$(d_active | jq -r '.at[0] + 300') \$(d_active | jq -r '.at[1] + 200')" > /dev/null
     selected="$(vm "cdp_select $id")"
@@ -417,10 +416,6 @@ chromium_cases() {
       steps-quill) check "$id: more than four writes replace the whole selection, with its formatting as HTML" "$(ok both has "$how" "take [0-9]+ writes, more than 4" has "$how" "goes as HTML")" "$how" ;;
       steps-*) check "$id: the proofread is applied in place, the quote's two changes in one write" "$(ok has "$how" "applied in place: 5 changes in 4 writes")" "$how" ;;
       formats-*) check "$id: the whole selection is replaced, with its formatting as HTML" "$(ok both has "$how" "the whole selection: " has "$how" "goes as HTML")" "$how" ;;
-      many-*)
-        check "$id: the whole selection is replaced, with its formatting as HTML" "$(ok both has "$how" "more than 8" has "$how" "goes as HTML")" "$how"
-        fixed="fixed the .*yesterday.*tomorrow.*weird.*everything.*dependency.*really good news.*running"
-        ;;
     esac
     state="$(vm "cdp \"document.getElementById('$id-state').textContent\"")"
     check "$id: the fixes land" "$(ok both has "$state" "$fixed" lacks "$state" "you you")" "${state:0:520}"

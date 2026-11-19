@@ -386,7 +386,7 @@ pub fn on_windows_hotkey(app: &AppHandle, id: i32) {
         return;
     }
     let action = registry.actions.lock().unwrap().get(&(id as u32)).cloned();
-    platform::trace(format_args!("shortcut {id:#x}: {action:?}"));
+    platform::trace(format_args!("{}", platform::log_lines::HotkeyPressed { id, action: &action }));
     if let Some(action) = action {
         let handle = app.clone();
         let _ = app.run_on_main_thread(move || run(&handle, action));

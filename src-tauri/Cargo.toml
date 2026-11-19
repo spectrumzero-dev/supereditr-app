@@ -33,6 +33,8 @@ semver = "1"
 [dev-dependencies]
 ts-rs = "12"
 supereditr-core = { workspace = true, features = ["ts"] }
+# tests/contracts/log-lines.json: the end-to-end drivers' patterns, checked against the log lines.
+regex = "1.11"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [

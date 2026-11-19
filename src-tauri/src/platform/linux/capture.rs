@@ -16,7 +16,7 @@ use super::clipboard::{ClipboardError, DataControl, Limits, Transaction};
 use super::desktop::{Desktop, Shortcut, WindowRef};
 use super::replace::words;
 use super::{Capture, Source, trace};
-use crate::platform::{PlatformError, Rect};
+use crate::platform::{PlatformError, Rect, log_lines};
 use std::time::{Duration, Instant};
 
 /// How long a guarded copy waits for the app to copy. Chromium copies in about 15 ms and Obsidian
@@ -48,7 +48,7 @@ pub async fn capture(
     allow_copy: bool,
     select_sentence: bool,
 ) -> Result<Capture, PlatformError> {
-    let how = if allow_copy { "shortcut" } else { "automatic" };
+    let how = log_lines::how(allow_copy);
     let started = Instant::now();
     let window = services.desktop.front_window().map_err(|error| {
         trace(format_args!("{how}: no window in front ({error})"));
@@ -58,18 +58,26 @@ pub async fn capture(
     let result = read(services, &window, profile, allow_copy, select_sentence).await;
     match &result {
         Ok(capture) => trace(format_args!(
-            "{how} {}: read {} characters via {} in {:?}; {}",
-            window.app_id,
-            capture.text.chars().count(),
-            match capture.source {
-                Source::Atspi => "AT-SPI",
-                Source::Copy => "a guarded copy",
-                Source::Playground => "Settings",
-            },
-            started.elapsed(),
-            if capture.editable { "pasting allowed" } else { "copy-only" },
+            "{}",
+            log_lines::Read {
+                how,
+                app: &window.app_id,
+                chars: capture.text.chars().count(),
+                of_field: None,
+                via: match capture.source {
+                    Source::Atspi => "AT-SPI",
+                    Source::Copy => "a guarded copy",
+                    Source::Playground => "Settings",
+                },
+                element: "",
+                took: started.elapsed(),
+                access: if capture.editable { "pasting allowed" } else { "copy-only" },
+            }
         )),
-        Err(error) => trace(format_args!("{how} {}: {error} ({:?})", window.app_id, started.elapsed())),
+        Err(error) => trace(format_args!(
+            "{}",
+            log_lines::ReadFailed { how, app: &window.app_id, error, took: started.elapsed() }
+        )),
     }
     result
 }
@@ -135,10 +143,9 @@ async fn read(
     }
     match guarded_copy(services, window, profile).await {
         // A frozen app neither answers AT-SPI nor copies: that's no sign nothing is selected.
-        Err(PlatformError::NoSelection) if not_answering => Err(PlatformError::Other(format!(
-            "{} isn’t responding, so SuperEditr couldn’t read the selection.",
-            apps::display_name(&window.app_id)
-        ))),
+        Err(PlatformError::NoSelection) if not_answering => {
+            Err(log_lines::not_responding(&apps::display_name(&window.app_id)))
+        }
         result => result,
     }
 }

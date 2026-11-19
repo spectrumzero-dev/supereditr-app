@@ -19,7 +19,7 @@ use super::capture::Services;
 use super::clipboard::{ClipboardError, Limits, Restore, Transaction};
 use super::desktop::{Desktop, Shortcut, WindowRef};
 use super::{Capture, Source, trace};
-use crate::platform::{PlatformError, ReplaceOutcome};
+use crate::platform::{PlatformError, ReplaceOutcome, log_lines};
 use std::time::{Duration, Instant};
 use supereditr_core::rich::Step;
 
@@ -51,13 +51,10 @@ pub async fn replace(services: &Services<'_>, capture: &Capture, text: &str, pro
     if reported {
         services.fields.report_changes(false).await;
     }
-    let said = match &outcome {
-        ReplaceOutcome::Applied => "applied".to_string(),
-        ReplaceOutcome::CopyOnly(why) => format!("copy-only ({why})"),
-        ReplaceOutcome::Uncertain(why) => format!("uncertain ({why})"),
-        ReplaceOutcome::ClipboardKept(why) => format!("clipboard kept ({why})"),
-    };
-    trace(format_args!("replace {}: {said} in {:?}", capture.bundle_id, started.elapsed()));
+    trace(format_args!(
+        "{}",
+        log_lines::Replaced { app: &capture.bundle_id, anyway: false, outcome: &outcome, took: started.elapsed() }
+    ));
     outcome
 }
 
@@ -126,11 +123,7 @@ async fn attempt(services: &Services<'_>, capture: &Capture, text: &str, proofre
         }
     }
     if formatting.is_some() {
-        trace(format_args!(
-            "paste {}: the formatting goes as {}",
-            capture.bundle_id,
-            if html.is_some() { "HTML" } else { "plain text: HTML can’t hold its spaces" }
-        ));
+        trace(format_args!("{}", log_lines::PastedFormatting { app: &capture.bundle_id, html: html.is_some() }));
     }
     if transaction.put_text(text, html.as_deref()).is_err() {
         transaction.restore();
@@ -162,7 +155,7 @@ async fn attempt(services: &Services<'_>, capture: &Capture, text: &str, proofre
 /// None says to replace the whole selection.
 fn steps(capture: &Capture, field: &super::atspi::Field, text: &str, proofread: bool) -> Option<(Vec<Step>, usize)> {
     let whole = |why: &dyn std::fmt::Display| {
-        trace(format_args!("paste {}: the whole selection: {why}", capture.bundle_id));
+        trace(format_args!("{}", log_lines::PastedWhole { app: &capture.bundle_id, why }));
         None
     };
     let edits = match supereditr_core::edits::plan(&capture.text, text, proofread, &capture.code) {
@@ -176,7 +169,7 @@ fn steps(capture: &Capture, field: &super::atspi::Field, text: &str, proofread: 
             whole(&"a change isn’t inside one element’s text")
         }
         Some(steps) if steps.len() > MAX_WRITES => {
-            whole(&format_args!("{} changes take {} writes, more than {MAX_WRITES}", edits.len(), steps.len()))
+            whole(&log_lines::TooManyWrites { changes: edits.len(), writes: steps.len(), max: MAX_WRITES })
         }
         Some(steps) => Some((steps, edits.len())),
         None => whole(&"a change isn’t inside one element’s text"),
@@ -208,7 +201,7 @@ async fn in_place(
 ) -> InPlace {
     let started = Instant::now();
     let untouched = |why: &str| {
-        trace(format_args!("paste {}: the whole selection: {why}", capture.bundle_id));
+        trace(format_args!("{}", log_lines::PastedWhole { app: &capture.bundle_id, why: &why }));
         InPlace::Untouched
     };
     let range = |step: &Step| (step.start as i32, step.end as i32);
@@ -302,10 +295,13 @@ async fn in_place(
         let _ = services.fields.select(id, end as i32, end as i32).await;
     }
     trace(format_args!(
-        "paste {}: applied in place: {changes} changes in {} writes in {} ms",
-        capture.bundle_id,
-        steps.len(),
-        started.elapsed().as_millis()
+        "{}",
+        log_lines::PastedInPlace {
+            app: &capture.bundle_id,
+            changes,
+            writes: steps.len(),
+            ms: started.elapsed().as_millis(),
+        }
     ));
     InPlace::Done
 }

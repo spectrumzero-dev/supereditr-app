@@ -9,6 +9,7 @@ use serde::Serialize;
 use std::time::Duration;
 
 pub mod gesture;
+pub mod log_lines;
 
 #[cfg(target_os = "macos")]
 mod macos;

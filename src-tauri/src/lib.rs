@@ -444,7 +444,11 @@ fn prepare_settings(app: &AppHandle, settings: &tauri::WebviewWindow) {
 fn watch_webview(app: &AppHandle, window: &tauri::WebviewWindow) {
     let (app, label) = (app.clone(), window.label().to_string());
     platform::webview::on_stopped(window, move |stopped| {
-        platform::trace(format_args!("webview: the {label} window's {stopped:?} process stopped"));
+        let process = match stopped {
+            platform::webview::Stopped::Browser => platform::log_lines::BROWSER,
+            platform::webview::Stopped::Renderer => platform::log_lines::RENDERER,
+        };
+        platform::trace(format_args!("{}", platform::log_lines::WebviewStopped { window: &label, process }));
         if label == "overlay" {
             review::dismiss(&app, None);
         }
@@ -507,7 +511,10 @@ fn remake_window(app: &AppHandle, label: &str) {
             }
             _ => {}
         }
-        platform::trace(format_args!("webview: made the {label} window again in {:?}", started.elapsed()));
+        platform::trace(format_args!(
+            "{}",
+            platform::log_lines::WebviewMadeAgain { window: &label, took: started.elapsed() }
+        ));
     });
 }
 

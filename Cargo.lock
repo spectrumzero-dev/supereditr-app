@@ -6930,6 +6930,7 @@ dependencies = [
  "objc2-foundation",
  "objc2-uniform-type-identifiers",
  "plist",
+ "regex",
  "semver",
  "serde",
  "serde_json",

@@ -1,5 +1,7 @@
 //! SuperEditr desktop shell: menu-bar app, global shortcuts, overlay, and settings.
 
+#[cfg(test)]
+mod accelerator_contract;
 mod app_toggle;
 mod apps;
 mod commands;

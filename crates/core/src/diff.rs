@@ -337,6 +337,36 @@ mod tests {
         assert_eq!(c[3], ("ok".into(), "OK".into(), ChangeKind::Capitalization));
     }
 
+    /// The views and results in tests/contracts/diff-apply.json, which ui/src/lib/contracts.test.ts
+    /// also checks `applyView` against: the view each original and revision make, serialized as the
+    /// UI receives it, and the text `apply` rebuilds for each set of rejected changes.
+    #[test]
+    fn shared_fixture_views_and_rejections() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/contracts/diff-apply.json");
+        let fixture: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let cases = fixture["cases"].as_array().unwrap();
+        assert!(!cases.is_empty());
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let (original, revised) = (case["original"].as_str().unwrap(), case["revised"].as_str().unwrap());
+            let view = if case["streaming"].as_bool().unwrap() {
+                stream_view(original, revised)
+            } else {
+                diff(original, revised)
+            };
+            assert_eq!(serde_json::to_value(&view).unwrap(), case["view"], "{name}: the serialized view");
+            for applied in case["applied"].as_array().unwrap() {
+                let rejected: HashSet<usize> =
+                    applied["rejected"].as_array().unwrap().iter().map(|id| id.as_u64().unwrap() as usize).collect();
+                assert_eq!(
+                    apply(&view, &rejected),
+                    applied["text"].as_str().unwrap(),
+                    "{name}: rejecting {rejected:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn identical_text_has_no_changes() {
         let view = diff("Nothing to fix here.", "Nothing to fix here.");

@@ -54,25 +54,46 @@ func check(_ ok: Bool, _ name: String, _ detail: @autoclosure () -> String = "")
     if !ok { failures.append(name) }
 }
 var captureLogPath = ""
-/// capture.log's lines after the first `mark` (a `logMark()`), so a check reads only what a step
-/// added, never an earlier step's line. SuperEditr moves the log to capture.old.log past 256 KB:
-/// when it has done so since the mark, the lines after the mark there come first.
-func logSince(_ mark: Int) -> [Substring] {
-    let read = { (path: String) in ((try? String(contentsOfFile: path, encoding: .utf8)) ?? "").split(separator: "\n") }
-    let lines = read(captureLogPath)
-    if lines.count >= mark { return Array(lines.dropFirst(mark)) }
-    let old = read((captureLogPath as NSString).deletingLastPathComponent + "/capture.old.log")
-    return Array(old.dropFirst(mark)) + lines
+/// A place in capture.log: the file it was, and how many lines it had.
+struct LogMark {
+    var file: UInt64?
+    var lines: Int
 }
-/// How many lines capture.log has now, for `logSince`.
-func logMark() -> Int { logSince(0).count }
+func logFileID(_ path: String) -> UInt64? {
+    (try? FileManager.default.attributesOfItem(atPath: path))?[.systemFileNumber] as? UInt64
+}
+/// capture.log's lines after `mark` (a `logMark()`), or all of them without one, so a check reads
+/// only what a step added, never an earlier step's line. SuperEditr renames the log to
+/// capture.old.log past 256 KB and starts a new one. The mark's count applies only to the file it
+/// was taken in, wherever that file is now: once renamed, its lines after the mark come first and
+/// the whole new file follows.
+func logSince(_ mark: LogMark? = nil) -> [Substring] {
+    let read = { (path: String) in ((try? String(contentsOfFile: path, encoding: .utf8)) ?? "").split(separator: "\n") }
+    let oldPath = (captureLogPath as NSString).deletingLastPathComponent + "/capture.old.log"
+    return logLines(since: mark, current: (logFileID(captureLogPath), read(captureLogPath)), old: (logFileID(oldPath), read(oldPath)))
+}
+/// `logSince` over the two files' identities and lines.
+func logLines(since mark: LogMark?, current: (file: UInt64?, lines: [Substring]), old: (file: UInt64?, lines: [Substring])) -> [Substring] {
+    guard let mark, mark.file != nil else { return current.lines }
+    if current.file == mark.file { return Array(current.lines.dropFirst(mark.lines)) }
+    if old.file == mark.file { return Array(old.lines.dropFirst(mark.lines)) + current.lines }
+    return current.lines  // renamed twice since the mark: what is left of it is the new file
+}
+// A renamed log whose replacement already has as many lines as the mark: the mark still counts in
+// the renamed file only. Checked at every start, as this script has no tests of its own.
+precondition(
+    logLines(since: LogMark(file: 1, lines: 2), current: (2, ["c", "d", "e"]), old: (1, ["a", "b", "x"])) == ["x", "c", "d", "e"]
+        && logLines(since: LogMark(file: 1, lines: 2), current: (1, ["a", "b", "x"]), old: (nil, [])) == ["x"],
+    "logLines reads the wrong lines after a mark")
+/// Where capture.log ends now, for `logSince`.
+func logMark() -> LogMark { LogMark(file: logFileID(captureLogPath), lines: logSince().count) }
 /// The last line since `mark` that contains `text`, with its timestamp; nil when there is none.
-func lastLogLine(since mark: Int, containing text: String) -> String? {
+func lastLogLine(since mark: LogMark, containing text: String) -> String? {
     logSince(mark).last { $0.contains(text) }.map(String.init)
 }
 /// SuperEditr's last line about how it applied a fix in the app: in place, partly in place, or the
 /// whole selection and why. "none" before the first, or with `since`, before the first after it.
-func appliedPath(_ bundleID: String, since mark: Int = 0) -> String {
+func appliedPath(_ bundleID: String, since mark: LogMark? = nil) -> String {
     let path = logSince(mark).last { $0.contains("\(bundleID): appl") }.map(String.init) ?? "none"
     return path.split(separator: " ", maxSplits: 1).last.map(String.init) ?? path  // without the timestamp
 }
@@ -1564,7 +1585,7 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
     /// The last read of Chrome's text since `mark`, taken before the review, so an earlier review's
     /// read never stands in for it. The read is logged before the panel shows; it gets two seconds.
     /// Without one, the latest line about Chrome, which says why.
-    func lastChromeRead(since mark: Int) -> String {
+    func lastChromeRead(since mark: LogMark) -> String {
         waitFor(2) { lastLogLine(since: mark, containing: "com.google.Chrome: read") }
             ?? "none since the review began; latest line about Chrome: \(lastLogLine(since: mark, containing: chrome) ?? "none")"
     }

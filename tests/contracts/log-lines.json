@@ -118,6 +118,20 @@
       ]
     },
     {
+      "id": "replace-applied-anyway-windows",
+      "writer": "Replaced",
+      "text": "replace notepad.exe anyway, without putting the clipboard aside: applied in 250ms",
+      "matched_by": [
+        {
+          "driver": "windows",
+          "file": "tests/ui/windows/driver.ps1",
+          "kind": "regex-ignore-case",
+          "pattern": " replace ${img}( anyway[^:]*)?: |^\\d+\\.\\d+ focus not back",
+          "vars": { "${img}": "notepad\\.exe" }
+        }
+      ]
+    },
+    {
       "id": "replace-applied-windows",
       "writer": "Replaced",
       "text": "replace notepad.exe: applied in 250ms",

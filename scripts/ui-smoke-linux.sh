@@ -440,8 +440,7 @@ chromium_cases() {
     mark="$(vm log_mark)"
     key meta_l-alt-e
     sleep 1.5
-    # A panel still empty then gets three seconds more to say something.
-    text="$(vm "wait_panel_text . 3")"
+    text="$(vm panel_text)"
     vm "shot 12-chromium-$id"
     if [[ "$id" == password ]]; then
       check "password: the review is refused" "$(ok both lacks "$text" "[0-9] changes?" has "$text" "[Pp]assword")" "panel: ${text:0:120}; log: $(vm "log_since $mark | grep 'shortcut chromium' | cut -d' ' -f2- | head -1")"

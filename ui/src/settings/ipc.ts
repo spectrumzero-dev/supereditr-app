@@ -56,7 +56,6 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
       { index: 2, kind: "ollama", label: "Ollama (local)", source: "installed at /opt/homebrew/bin/ollama", keyHint: null, baseUrl: "", models: [], note: "Installed but not running. Start Ollama, then scan again.", ready: false, profileId: null },
     ],
     test_provider: () => ({ firstTokenMs: 284, totalMs: 412, output: "This is a quick test." }),
-    list_models: () => ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"],
     accessibility_status: () => false,
     launch_at_login: () => demoLaunchAtLogin,
     set_launch_at_login: () => (demoLaunchAtLogin = Boolean(args?.enabled)),

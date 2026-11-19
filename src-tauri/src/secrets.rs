@@ -22,8 +22,32 @@ pub fn account(kind: ProviderKind, profile_id: &str) -> String {
     format!("{kind}:{profile_id}")
 }
 
-/// Reads the key saved under an `account` name.
+/// Where API keys are saved: the OS credential store in the app ([`CredentialStore`]), and a map in
+/// unit tests. Reading a key goes through `AppState::key_for`, which caches it.
+pub trait Secrets: Sync {
+    fn set(&self, kind: ProviderKind, profile_id: &str, key: &str) -> Result<(), String>;
+    fn delete(&self, kind: ProviderKind, profile_id: &str);
+}
+
+/// The OS credential store.
+pub struct CredentialStore;
+
+impl Secrets for CredentialStore {
+    fn set(&self, kind: ProviderKind, profile_id: &str, key: &str) -> Result<(), String> {
+        self::set(kind, profile_id, key)
+    }
+
+    fn delete(&self, kind: ProviderKind, profile_id: &str) {
+        self::delete(kind, profile_id)
+    }
+}
+
+/// Reads the key saved under an `account` name. Unit tests find none, so a key a test hasn't
+/// cached in `AppState` never reaches the real credential store.
 pub fn get(account: &str) -> Option<String> {
+    if cfg!(test) {
+        return None;
+    }
     keyring::Entry::new(SERVICE, account).ok()?.get_password().ok().filter(|k| !k.is_empty())
 }
 
@@ -92,6 +116,38 @@ pub fn delete_all() -> Result<usize, String> {
         }
     }
     Ok(deleted)
+}
+
+/// Keys saved in memory, for tests.
+#[cfg(test)]
+#[derive(Default)]
+pub struct FakeSecrets {
+    /// Saved keys by account name (see [`account`]).
+    pub saved: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    /// Refuse every save, as a locked or missing credential store does.
+    pub refuse: bool,
+}
+
+#[cfg(test)]
+impl FakeSecrets {
+    pub fn key(&self, kind: ProviderKind, profile_id: &str) -> Option<String> {
+        self.saved.lock().unwrap().get(&account(kind, profile_id)).cloned()
+    }
+}
+
+#[cfg(test)]
+impl Secrets for FakeSecrets {
+    fn set(&self, kind: ProviderKind, profile_id: &str, key: &str) -> Result<(), String> {
+        if self.refuse {
+            return Err(format!("Couldn’t save the key to the {STORE}: it is locked"));
+        }
+        self.saved.lock().unwrap().insert(account(kind, profile_id), key.to_string());
+        Ok(())
+    }
+
+    fn delete(&self, kind: ProviderKind, profile_id: &str) {
+        self.saved.lock().unwrap().remove(&account(kind, profile_id));
+    }
 }
 
 #[cfg(test)]

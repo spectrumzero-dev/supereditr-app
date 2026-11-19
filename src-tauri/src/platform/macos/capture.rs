@@ -480,10 +480,16 @@ fn capture_clipboard<D: Desktop, P: Pasteboard, A: App>(
     // Electron copies from the page's process, which can take several hundred milliseconds for a
     // long selection in a busy app.
     let deadline = clock.now() + Duration::from_millis(1000);
-    while pasteboard.change_count() == before && clock.now() < deadline {
+    // The count as first seen changed is the copy's. Every later step is checked against it, so
+    // anything else that writes to the clipboard from here on is noticed.
+    let changed = loop {
+        let count = pasteboard.change_count();
+        if count != before || clock.now() >= deadline {
+            break count;
+        }
         clock.sleep(Duration::from_millis(5));
-    }
-    if pasteboard.change_count() == before {
+    };
+    if changed == before {
         trace(format_args!("{bundle_id}: no copy after {request:?}"));
         // Nothing to restore. A copy that lands later can't be told apart from one the user makes,
         // so it is left alone rather than risk erasing theirs.
@@ -491,7 +497,6 @@ fn capture_clipboard<D: Desktop, P: Pasteboard, A: App>(
     }
     // An app empties the clipboard and then writes to it. The change count moves once, at the first
     // step, so the text can be a moment behind the change and arrives under the same count.
-    let changed = pasteboard.change_count();
     let mut copied = pasteboard.read_string();
     let text_deadline = clock.now() + Duration::from_millis(200);
     while copied.is_none() && pasteboard.change_count() == changed && clock.now() < text_deadline {
@@ -898,6 +903,13 @@ mod tests {
         let world = notes().hiding_its_selection().copies(Copies::NoTextThenAnother(Duration::from_millis(30)));
         assert!(matches!(world.read_by_shortcut(), Err(PlatformError::NoSelection)));
         assert!(world.waited() < Duration::from_millis(100), "{:?}", world.waited());
+        assert_eq!(world.clipboard_text(), "Brynlee's later copy");
+    }
+
+    #[test]
+    fn another_copy_right_after_the_change_is_seen_is_neither_read_nor_erased() {
+        let world = notes().hiding_its_selection().copies(Copies::ThenAnotherAtOnce);
+        assert!(matches!(world.read_by_shortcut(), Err(PlatformError::NoSelection)));
         assert_eq!(world.clipboard_text(), "Brynlee's later copy");
     }
 

@@ -53,6 +53,11 @@ pub enum Copies {
     Yes,
     /// Puts it there after this long, as a busy Electron app does.
     After(Duration),
+    /// Empties the clipboard at once and puts the text there after this long. An app writes a copy
+    /// in those two steps, and the clipboard's change count moves at the first.
+    EmptiesThenAfter(Duration),
+    /// Empties the clipboard and puts no plain text there, as copying a picture does.
+    NoText,
 }
 
 /// A menu item of the app's, such as Edit ▸ Copy.
@@ -114,6 +119,8 @@ pub struct World {
     copies: Cell<Copies>,
     /// A copy on its way to the clipboard: when it lands, by the pretend clock, and its text.
     pending_copy: RefCell<Option<(Duration, String)>>,
+    /// The clipboard was emptied and holds no plain text yet.
+    no_text: Cell<bool>,
     write: Cell<Write>,
     moves_selection: Cell<bool>,
     pastes: Cell<Pastes>,
@@ -163,6 +170,7 @@ impl World {
             cut_item: Cell::new(Item::Enabled),
             copies: Cell::new(Copies::Yes),
             pending_copy: RefCell::default(),
+            no_text: Cell::new(false),
             write: Cell::new(Write::Applies),
             moves_selection: Cell::new(true),
             pastes: Cell::new(Pastes::Yes),
@@ -419,6 +427,7 @@ impl World {
     /// The user copies `text` in another app.
     pub fn user_copies(&self, text: &str) {
         *self.clipboard.borrow_mut() = (text.into(), None);
+        self.no_text.set(false);
         self.change_count.set(self.change_count.get() + 1);
     }
 
@@ -487,7 +496,18 @@ impl World {
         match self.copies.get() {
             Copies::Yes => self.user_copies(&text),
             Copies::After(wait) => *self.pending_copy.borrow_mut() = Some((self.elapsed.get() + wait, text)),
+            Copies::EmptiesThenAfter(wait) => {
+                self.empty_clipboard();
+                *self.pending_copy.borrow_mut() = Some((self.elapsed.get() + wait, text));
+            }
+            Copies::NoText => self.empty_clipboard(),
         }
+    }
+
+    fn empty_clipboard(&self) {
+        *self.clipboard.borrow_mut() = (String::new(), None);
+        self.no_text.set(true);
+        self.change_count.set(self.change_count.get() + 1);
     }
 
     /// A copy on its way lands once its time has come.
@@ -763,12 +783,13 @@ impl Pasteboard for World {
 
     fn read_string(&self) -> Option<String> {
         self.land_copy();
-        Some(self.clipboard_text())
+        (!self.no_text.get()).then(|| self.clipboard_text())
     }
 
     fn restore(&self, snapshot: Clip, ours: isize) {
         if self.change_count.get() == ours {
             *self.clipboard.borrow_mut() = snapshot;
+            self.no_text.set(false);
             self.change_count.set(ours + 1);
         }
     }

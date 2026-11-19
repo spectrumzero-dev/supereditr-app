@@ -489,7 +489,14 @@ fn capture_clipboard<D: Desktop, P: Pasteboard, A: App>(
         // so it is left alone rather than risk erasing theirs.
         return Err(PlatformError::NoSelection);
     }
-    let copied = pasteboard.read_string();
+    // An app empties the clipboard and then writes to it, and the change count moves at the first
+    // step, so the text can be a moment behind the change.
+    let mut copied = pasteboard.read_string();
+    let text_deadline = clock.now() + Duration::from_millis(200);
+    while copied.is_none() && clock.now() < text_deadline {
+        clock.sleep(Duration::from_millis(5));
+        copied = pasteboard.read_string();
+    }
     if copied.is_none() {
         trace(format_args!("{bundle_id}: the clipboard changed but holds no plain text"));
     }
@@ -858,6 +865,24 @@ mod tests {
         let world = notes().hiding_its_selection().copies(Copies::After(Duration::from_millis(600)));
         assert_eq!(world.read_by_shortcut().unwrap().capture.text, "realy late");
         assert!(world.waited() >= Duration::from_millis(600) && world.waited() < Duration::from_secs(1));
+        assert_eq!(world.clipboard_text(), "Rhyan's own copy");
+    }
+
+    #[test]
+    fn text_that_reaches_the_clipboard_a_moment_after_it_changes_is_still_read() {
+        let world = notes().hiding_its_selection().copies(Copies::EmptiesThenAfter(Duration::from_millis(30)));
+        assert_eq!(world.read_by_shortcut().unwrap().capture.text, "realy late");
+        assert!(world.waited() >= Duration::from_millis(30) && world.waited() < Duration::from_millis(200));
+        assert_eq!(world.keys_sent(), ["Copy menu item"], "exactly one copy request");
+        assert_eq!(world.clipboard_text(), "Rhyan's own copy");
+    }
+
+    #[test]
+    fn a_copy_with_no_plain_text_is_nothing_selected_after_a_short_wait() {
+        let world = notes().hiding_its_selection().copies(Copies::NoText);
+        assert!(matches!(world.read_by_shortcut(), Err(PlatformError::NoSelection)));
+        let waited = world.waited();
+        assert!(waited >= Duration::from_millis(200) && waited < Duration::from_millis(300), "{waited:?}");
         assert_eq!(world.clipboard_text(), "Rhyan's own copy");
     }
 

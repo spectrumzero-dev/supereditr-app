@@ -7,7 +7,9 @@ use std::collections::HashMap;
 use std::time::Instant;
 use supereditr_core::Config;
 use supereditr_core::detect::{self, Candidate};
-use supereditr_core::provider::{ChatRequest, CheckProblem, ProviderKind, ProviderProfile, Providers, preferred_model};
+use supereditr_core::provider::{
+    ChatRequest, CheckCode, CheckProblem, ProviderKind, ProviderProfile, Providers, preferred_model,
+};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 type CmdResult<T> = Result<T, String>;
@@ -98,6 +100,7 @@ pub fn open_settings(app: AppHandle, section: Option<String>) {
 // --- Settings ------------------------------------------------------------------------------
 
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsPayload {
     config: Config,
@@ -117,6 +120,7 @@ pub struct SettingsPayload {
 
 /// What became of a save from Settings.
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct Saved {
     /// The settings' revision after this save, or None when the save was refused because they were
     /// saved elsewhere after the revision Settings sent. Settings then reloads and tries again.
@@ -267,6 +271,7 @@ pub(crate) fn store_api_key(
 }
 
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, rename = "Candidate"))]
 #[serde(rename_all = "camelCase")]
 pub struct CandidateView {
     index: usize,
@@ -379,14 +384,15 @@ impl Servers for Providers {
 /// Whether an AI is ready to review: its key is saved and its server answers (a model-list
 /// request), or for the Claude subscription, the `claude` program runs.
 #[derive(Serialize, Clone, Debug)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderCheck {
     ready: bool,
     /// What's wrong, in words the user can act on.
     problem: Option<String>,
-    /// For a problem the settings UI words itself and may offer to fix, its code:
-    /// `claude_sign_in` when Claude Code isn't signed in.
-    code: Option<String>,
+    /// For a problem the settings UI labels or words itself, and may offer to fix, its code.
+    #[cfg_attr(test, ts(optional = nullable))]
+    code: Option<CheckCode>,
     models: Vec<String>,
 }
 
@@ -418,14 +424,14 @@ async fn check_with(state: &AppState, servers: &impl Servers, profile_id: &str) 
             } else {
                 format!("Choose a model: {} isn’t available", profile.model)
             }),
-            code: None,
+            code: Some(CheckCode::ChooseModel),
             models,
         },
         Ok(models) => ProviderCheck { ready: true, problem: None, code: None, models },
         Err(problem) => ProviderCheck {
             ready: false,
             problem: Some(problem.to_string()),
-            code: problem.code().map(Into::into),
+            code: problem.check_code(),
             models: Vec::new(),
         },
     }
@@ -536,6 +542,7 @@ pub fn remove_provider(app: AppHandle, state: State<'_, AppState>, profile_id: S
 }
 
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct TestResult {
     first_token_ms: Option<u64>,
@@ -588,6 +595,7 @@ pub async fn pull_ollama_model(
 }
 
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct BuiltinAi {
     /// False on Macs that can never run Apple Intelligence; the setup screens then hide it.
     supported: bool,

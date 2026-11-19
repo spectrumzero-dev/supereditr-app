@@ -18,6 +18,14 @@ whatlang = "0.18"
 harper-core = { version = "2.13", default-features = false, features = ["concurrent"] }
 unicode-segmentation = "1"
 regex = "1.11"
+# TypeScript definitions of the types the app sends to its UI, written by the app's tests (see the
+# `ts` feature). Release builds leave it out.
+ts-rs = { version = "12", optional = true }
+
+[features]
+# Derives `ts_rs::TS` on the types the UI receives or sends back. The app turns it on for its tests
+# only, which write ui/src/lib/generated.
+ts = ["dep:ts-rs"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"

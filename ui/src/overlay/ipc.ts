@@ -1,10 +1,11 @@
-import type { EngineEvent, SessionPayload, StatusPayload } from "../lib/types";
+import type { Command, EventName, EventPayloads } from "../lib/ipc-names";
+import type { EngineEvent, PanelKeyPayload, SessionPayload, StatusPayload } from "../lib/types";
 import type { RunRequest } from "./review";
 import { demo } from "./demo";
 
 export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
-async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T | undefined> {
+async function invoke<T>(cmd: Command, args?: Record<string, unknown>): Promise<T | undefined> {
   if (!inTauri) return demo.invoke(cmd, args) as T;
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<T>(cmd, args);
@@ -22,14 +23,6 @@ interface Handlers {
   key: (key: PanelKeyPayload) => void;
   /** Review `id` couldn't be applied with the clipboard put aside: offer to replace anyway. */
   anyway: (id: number) => void;
-}
-
-export interface PanelKeyPayload {
-  key: string;
-  metaKey: boolean;
-  ctrlKey: boolean;
-  altKey: boolean;
-  shiftKey: boolean;
 }
 
 export const ipc = {
@@ -51,16 +44,16 @@ export const ipc = {
   listen(handlers: Handlers): () => void {
     if (!inTauri) return demo.listen(handlers);
     const stops: Array<() => void> = [];
-    import("@tauri-apps/api/event").then(({ listen }) => {
-      listen<SessionPayload>("overlay:session", (e) => handlers.session(e.payload)).then((u) => stops.push(u));
-      listen<{ id: number; presetId: string; run: number; event: EngineEvent; remembered: boolean }>("overlay:engine", (e) =>
-        handlers.engine(e.payload.id, e.payload.presetId, e.payload.run, e.payload.event, e.payload.remembered),
-      ).then((u) => stops.push(u));
-      listen<StatusPayload>("overlay:status", (e) => handlers.status(e.payload)).then((u) => stops.push(u));
-      listen("overlay:focus", () => handlers.focus()).then((u) => stops.push(u));
-      listen<string>("overlay:command", (e) => handlers.command(e.payload)).then((u) => stops.push(u));
-      listen<PanelKeyPayload>("overlay:key", (e) => handlers.key(e.payload)).then((u) => stops.push(u));
-      listen<number>("overlay:replace-anyway", (e) => handlers.anyway(e.payload)).then((u) => stops.push(u));
+    import("@tauri-apps/api/event").then(({ listen: tauriListen }) => {
+      const listen = <E extends EventName>(event: E, handler: (payload: EventPayloads[E]) => void) =>
+        tauriListen<EventPayloads[E]>(event, (e) => handler(e.payload)).then((u) => stops.push(u));
+      listen("overlay:session", (payload) => handlers.session(payload));
+      listen("overlay:engine", (p) => handlers.engine(p.id, p.presetId, p.run, p.event, p.remembered));
+      listen("overlay:status", (payload) => handlers.status(payload));
+      listen("overlay:focus", () => handlers.focus());
+      listen("overlay:command", (command) => handlers.command(command));
+      listen("overlay:key", (key) => handlers.key(key));
+      listen("overlay:replace-anyway", (id) => handlers.anyway(id));
     });
     return () => stops.forEach((stop) => stop());
   },

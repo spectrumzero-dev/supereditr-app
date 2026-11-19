@@ -7,6 +7,7 @@ use crate::provider::ChatRequest;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Preset {
     pub id: String,
     pub name: String,
@@ -16,6 +17,7 @@ pub struct Preset {
     pub builtin: bool,
     /// Optional global shortcut that applies this preset to the selection directly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub shortcut: Option<String>,
 }
 

@@ -2,7 +2,7 @@
   // One choice of AI. Choosing one opens its setup; it becomes the one in use only once it
   // passes a check (key saved, server answers), so a misconfigured AI never takes over reviews.
   import { onMount } from "svelte";
-  import type { BuiltinAi, Candidate, Config, ProviderCheck, ProviderKind, ProviderProfile } from "../lib/types";
+  import type { BuiltinAi, Candidate, CheckCode, Config, ProviderCheck, ProviderKind, ProviderProfile } from "../lib/types";
   import { watchBuiltinAi } from "./builtin";
   import { api } from "./ipc";
   import { earlyAccess, profileFor as pickProfile, setupAction } from "./profiles";
@@ -107,18 +107,20 @@
       // It was added either way: its own check says what's missing, in Settings' words.
       const added = profilesOf(c.kind).find((q) => q.base_url === c.baseUrl);
       const check = added ? await api.checkProvider(added.id).catch(() => null) : null;
-      if (added && check?.code) adoptChecks[c.index] = { profileId: added.id, check };
+      if (added && check?.code === "claude_sign_in") adoptChecks[c.index] = { profileId: added.id, check };
     }
     adopting = null;
   }
 
+  const problemLabels: Record<CheckCode, string> = {
+    claude_sign_in: "Sign in needed",
+    needs_key: "Needs key",
+    choose_model: "Choose a model",
+    no_models: "No models",
+  };
+
   function problemLabel(check: ProviderCheck): string {
-    if (check.code === "claude_sign_in") return "Sign in needed";
-    const problem = check.problem ?? "";
-    if (problem.startsWith("Add an API key")) return "Needs key";
-    if (problem.startsWith("Choose a model")) return "Choose a model";
-    if (problem.startsWith("No models")) return "No models";
-    return "Can’t connect";
+    return check.code ? problemLabels[check.code] : "Can’t connect";
   }
 
   function status(p: ProviderProfile | null): { label: string; tone: string } | null {
@@ -273,7 +275,7 @@
   onMount(() => {
     let stop: (() => void) | undefined;
     api
-      .on<{ status: string; completed: number; total: number }>("settings:pull", (p) => {
+      .on("settings:pull", (p) => {
         pulling = { status: p.status, pct: p.total ? Math.round((p.completed / p.total) * 100) : pulling?.pct ?? 0 };
       })
       .then((s) => (stop = s));

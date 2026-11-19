@@ -2,8 +2,9 @@
   // Opens as soon as someone chooses Check for Updates…, and stays until they close it, so the result
   // never sits unseen in a menu that has already closed. The window changes in place and never takes
   // focus back, so a result can't catch someone typing elsewhere with Return on Restart Now.
-  import { invoke } from "@tauri-apps/api/core";
-  import { listen } from "@tauri-apps/api/event";
+  import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+  import { listen as tauriListen } from "@tauri-apps/api/event";
+  import type { Command, EventName, EventPayloads } from "../lib/ipc-names";
   import { onMount } from "svelte";
   import type { UpdateStatus } from "../lib/types";
   import { isWindows } from "../lib/platform";
@@ -17,6 +18,10 @@
     action?: string;
     dismiss: string;
   }
+
+  const invoke = <T,>(cmd: Command) => tauriInvoke<T>(cmd);
+  const listen = <E extends EventName>(event: E, handler: (payload: EventPayloads[E]) => void) =>
+    tauriListen<EventPayloads[E]>(event, (e) => handler(e.payload));
 
   function viewOf(status: UpdateStatus): View {
     switch (status.state) {
@@ -82,9 +87,9 @@
     // Listening first, so nothing that happens during the read is missed. Anything heard is newer
     // than the read, whichever arrives first.
     let heard = false;
-    const stop = listen<UpdateStatus>("update:status", (e) => {
+    const stop = listen("update:status", (payload) => {
       heard = true;
-      status = e.payload;
+      status = payload;
     });
     stop
       .then(() => invoke<UpdateStatus>("update_status"))

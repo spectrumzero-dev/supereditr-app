@@ -35,7 +35,7 @@
     const stops: (() => void)[] = [];
     api.on("settings:review-shortcut", () => document.activeElement === box && review()).then((s) => stops.push(s));
     api
-      .on<string>("settings:playground-apply", (revised) => {
+      .on("settings:playground-apply", (revised) => {
         if (text !== reviewed) {
           notice = "The text changed while it was being reviewed. Review it again.";
           return;

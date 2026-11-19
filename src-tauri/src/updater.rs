@@ -56,8 +56,9 @@ const USER_IDLE: Duration = Duration::from_secs(60);
 const WINDOW: &str = "update";
 const STATUS_EVENT: &str = "update:status";
 
-/// Where updating has got to. Serialized for the update window (`UpdateStatus` in types.ts).
+/// Where updating has got to. Serialized for the update window (`UpdateStatus` in the UI).
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, rename = "UpdateStatus"))]
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum Status {
     Idle,

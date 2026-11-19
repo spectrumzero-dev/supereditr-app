@@ -10,6 +10,7 @@ use std::collections::HashSet;
 use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum ChangeKind {
     Spelling,
@@ -21,6 +22,7 @@ pub enum ChangeKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Segment {
     Equal {
@@ -35,15 +37,18 @@ pub enum Segment {
         #[serde(rename = "oldStart")]
         old_start: usize,
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
         note: Option<String>,
         /// Made by the offline checker's final pass over an AI's revision, not by the AI.
         #[serde(rename = "ruleBased", skip_serializing_if = "std::ops::Not::not")]
+        #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
         rule_based: bool,
     },
 }
 
 /// A renderable comparison. `pending` holds original text the model has not reached yet.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct DiffView {
     pub segments: Vec<Segment>,
     pub pending: String,

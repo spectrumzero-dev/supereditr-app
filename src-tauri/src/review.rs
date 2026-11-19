@@ -21,6 +21,7 @@ use tauri::{AppHandle, Emitter, Manager};
 const INITIAL_HEIGHT: f64 = 210.0;
 
 #[derive(Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 struct PresetInfo {
     id: String,
@@ -28,6 +29,7 @@ struct PresetInfo {
 }
 
 #[derive(Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 struct SessionPayload {
     id: u64,
@@ -35,6 +37,7 @@ struct SessionPayload {
     app_name: String,
     can_apply: bool,
     /// For a copy-only capture, how to make the app replaceable, when SuperEditr knows.
+    #[cfg_attr(test, ts(optional = nullable))]
     copy_only_hint: Option<String>,
     auto: bool,
     preset_id: String,
@@ -45,6 +48,7 @@ struct SessionPayload {
 }
 
 #[derive(Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 struct EnginePayload {
     id: u64,
@@ -58,12 +62,15 @@ struct EnginePayload {
 }
 
 #[derive(Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct StatusPayload {
     pub id: u64,
+    #[cfg_attr(test, ts(type = r#""notice" | "applied" | "error""#))]
     pub kind: &'static str,
     pub message: String,
     /// A suggestion the notice offers to copy, when it couldn't be confirmed in the app.
+    #[cfg_attr(test, ts(optional = nullable))]
     pub copy: Option<String>,
 }
 

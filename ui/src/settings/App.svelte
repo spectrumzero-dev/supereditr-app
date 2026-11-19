@@ -115,7 +115,7 @@
       if (payload?.config.onboarded) section = "models";
     });
     let stop: (() => void) | undefined;
-    api.on<string>("settings:section", (s) => {
+    api.on("settings:section", (s) => {
       if (s === "privacy") section = payload?.config.onboarded ? "privacy" : "welcome";
       else if (nav.some((n) => n.id === s)) section = s as Section;
       reload();

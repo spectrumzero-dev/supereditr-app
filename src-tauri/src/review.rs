@@ -49,6 +49,9 @@ struct SessionPayload {
 struct EnginePayload {
     id: u64,
     preset_id: String,
+    /// Which run of the session the event is from (see `Session::run`), so the panel can drop
+    /// events from a run it has replaced.
+    run: u64,
     event: Event,
     /// The result of an earlier review of the same selection, shown again: no AI ran just now.
     remembered: bool,
@@ -305,6 +308,7 @@ fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<Strin
             anchor,
             height: INITIAL_HEIGHT,
             task: None,
+            run: 0,
             proofread: false,
             following,
         });
@@ -313,7 +317,7 @@ fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<Strin
     overlay::position(app, anchor, INITIAL_HEIGHT);
     overlay::show(app, !auto);
     crate::hotkeys::set_overlay_shortcuts(app, true);
-    run(app, id, preset_id, None, false);
+    run(app, id, 0, preset_id, None, false);
     Ok(())
 }
 
@@ -342,7 +346,12 @@ fn job_for(
 /// Starts (or restarts) the model run for a session with a preset and optional steering. When the
 /// same selection already has a result for the style, asked the same way, it is shown again as if
 /// it had just finished, unless `fresh` asks the AI again (R).
-pub fn run(app: &AppHandle, id: u64, preset_id: String, steer: Option<String>, fresh: bool) {
+///
+/// `run` numbers the run within the session: 0 for the first, which `begin` starts, and the panel
+/// numbers each later one before asking for it, so it drops a replaced run's late events however
+/// they interleave with the request. A request numbered below the session's latest run is stale and
+/// starts nothing.
+pub fn run(app: &AppHandle, id: u64, run: u64, preset_id: String, steer: Option<String>, fresh: bool) {
     let state = state(app);
     // Read before the settings and key: a save from here on forgets, so this run's result isn't
     // kept when it may have been asked with settings from before the save.
@@ -351,8 +360,9 @@ pub fn run(app: &AppHandle, id: u64, preset_id: String, steer: Option<String>, f
     let Some(preset) = config.preset(&preset_id).cloned() else { return };
     let profile = state.active_profile();
     let mut session = state.session.lock().unwrap();
-    let Some(current) = session.as_mut().filter(|s| s.id == id) else { return };
+    let Some(current) = session.as_mut().filter(|s| s.id == id && run >= s.run) else { return };
     current.cancel();
+    current.run = run;
     current.proofread = is_proofread(&preset_id, steer.as_deref());
     let job = job_for(&config, profile, &current.capture, preset, steer);
     if !fresh && let Some(outcome) = state.last_review.recall(&current.capture, &job, Instant::now()) {
@@ -361,7 +371,7 @@ pub fn run(app: &AppHandle, id: u64, preset_id: String, steer: Option<String>, f
         let _ = app.emit_to(
             "overlay",
             "overlay:engine",
-            EnginePayload { id, preset_id, event: Event::Done(outcome), remembered: true },
+            EnginePayload { id, preset_id, run, event: Event::Done(outcome), remembered: true },
         );
         return;
     }
@@ -380,7 +390,7 @@ pub fn run(app: &AppHandle, id: u64, preset_id: String, steer: Option<String>, f
                 let _ = handle.emit_to(
                     "overlay",
                     "overlay:engine",
-                    EnginePayload { id, preset_id: preset_id.clone(), event, remembered: false },
+                    EnginePayload { id, preset_id: preset_id.clone(), run, event, remembered: false },
                 );
             })
             .await;

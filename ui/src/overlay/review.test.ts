@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DiffView, EngineEvent } from "../lib/types";
-import { canUse, emptyReview, footerAction, keptWording, notReplacing, offerAnyway, offerToKeep, reduce, runRequest, startReplacing } from "./review";
+import { canUse, emptyReview, footerAction, isCurrentRun, keptWording, notReplacing, offerAnyway, offerToKeep, reduce, runRequest, startReplacing } from "./review";
 
 const view = (text: string): DiffView => ({ segments: [{ type: "equal", text }], pending: "", changeCount: 0 });
 const local: EngineEvent = { type: "local", view: view("local"), ms: 3 };
@@ -114,6 +114,18 @@ describe("running a style", () => {
   it("sends an instruction trimmed, and a blank one as none", () => {
     expect(runRequest("proofread", "  make it warmer ", false).steer).toBe("make it warmer");
     expect(runRequest("proofread", "   ", false).steer).toBeNull();
+  });
+
+  it("takes events only from the run the panel is showing", () => {
+    // R asked for run 2 of session 7's Proofread: run 2's events show.
+    const current = { id: 7, presetId: "proofread", run: 2 };
+    expect(isCurrentRun(current, { id: 7, presetId: "proofread", run: 2 })).toBe(true);
+    // A late `done` from run 1, the same session and style, is dropped.
+    expect(isCurrentRun(current, { id: 7, presetId: "proofread", run: 1 })).toBe(false);
+    // So is another session's, even with the same style and run number.
+    expect(isCurrentRun(current, { id: 6, presetId: "proofread", run: 2 })).toBe(false);
+    // And everything while no review shows.
+    expect(isCurrentRun(null, { id: 7, presetId: "proofread", run: 2 })).toBe(false);
   });
 });
 

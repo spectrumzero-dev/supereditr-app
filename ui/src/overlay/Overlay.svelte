@@ -5,12 +5,15 @@
   import { applyView, changeLabel, changes, sourceLabel, summarize } from "../lib/diff";
   import type { EngineEvent, SessionPayload, StatusPayload } from "../lib/types";
   import { ipc } from "./ipc";
-  import { canUse, emptyReview, footerAction, keptWording, notReplacing, offerAnyway, offerToKeep, reduce, runRequest, startReplacing, type Replacing, type Review } from "./review";
+  import { canUse, emptyReview, footerAction, isCurrentRun, keptWording, notReplacing, offerAnyway, offerToKeep, reduce, runRequest, startReplacing, type Replacing, type Review } from "./review";
   import { closeTips, countTip } from "./tips";
   import { words } from "../lib/platform";
 
   let session = $state<SessionPayload | null>(null);
   let presetId = $state("proofread");
+  /** The run of this session the panel shows: 0 for the one the session starts with, then one more
+   *  for each style run the panel asks for. Other runs' engine events are dropped. */
+  let run = 0;
   let review = $state<Review>(emptyReview());
   let notice = $state("");
   /** A suggestion the notice offers to copy: one that may or may not have gone into the app. */
@@ -63,6 +66,7 @@
   function reset(next: SessionPayload) {
     session = next;
     presetId = next.presetId;
+    run = 0;
     review = emptyReview();
     notice = "";
     noticeCopy = null;
@@ -78,8 +82,9 @@
     replacing = notReplacing();
   }
 
-  function onEngine(id: number, eventPreset: string, event: EngineEvent, fromEarlier = false) {
-    if (!session || id !== session.id || eventPreset !== presetId) return;
+  function onEngine(id: number, eventPreset: string, eventRun: number, event: EngineEvent, fromEarlier = false) {
+    const current = session ? { id: session.id, presetId, run } : null;
+    if (!isCurrentRun(current, { id, presetId: eventPreset, run: eventRun })) return;
     const wasStreaming = review.phase === "streaming";
     review = reduce(review, event, fromEarlier);
     // Changes that would drop the author's own terms start out rejected (␣ accepts one).
@@ -91,10 +96,12 @@
   function runPreset(id: string, instruction?: string, fresh = false) {
     if (!session) return;
     presetId = id;
+    // Numbered before asking, so the replaced run's late events are dropped from here on.
+    run += 1;
     review = emptyReview();
     rejected = new Set();
     focusedId = null;
-    ipc.runPreset(session.id, runRequest(id, instruction, fresh));
+    ipc.runPreset(session.id, run, runRequest(id, instruction, fresh));
   }
 
   function cycle(step: number) {
@@ -302,7 +309,7 @@
         reset(payload);
         reportHeight();
       },
-      engine: (id, preset, event, fromEarlier) => onEngine(id, preset, event, fromEarlier),
+      engine: (id, preset, eventRun, event, fromEarlier) => onEngine(id, preset, eventRun, event, fromEarlier),
       status: (payload: StatusPayload) => {
         session = null;
         notice = payload.message;

@@ -31,7 +31,7 @@ const done: DiffView = {
 
 type Handlers = {
   session: (payload: SessionPayload) => void;
-  engine: (id: number, presetId: string, event: EngineEvent, remembered: boolean) => void;
+  engine: (id: number, presetId: string, run: number, event: EngineEvent, remembered: boolean) => void;
   status: (payload: StatusPayload) => void;
   anyway?: (id: number) => void;
 };
@@ -42,13 +42,13 @@ const finished: EngineEvent = { type: "done", view: done, text: "", source: "cla
 /** Styles already answered, shown again on switching back, as the app does. */
 const answered = new Set<string>();
 
-function play(presetId: string, keep = true) {
+function play(presetId: string, run: number, keep = true) {
   const h = handlers;
   if (!h) return;
-  setTimeout(() => h.engine(1, presetId, { type: "local", view: local, ms: 4 }, false), 30);
-  setTimeout(() => h.engine(1, presetId, { type: "partial", view: { ...done, segments: done.segments.slice(0, 4), pending: " really fast. Lets ship it tommorow." }, firstTokenMs: 290, source: "claude-haiku-5-5" }, false), 350);
+  setTimeout(() => h.engine(1, presetId, run, { type: "local", view: local, ms: 4 }, false), 30);
+  setTimeout(() => h.engine(1, presetId, run, { type: "partial", view: { ...done, segments: done.segments.slice(0, 4), pending: " really fast. Lets ship it tommorow." }, firstTokenMs: 290, source: "claude-haiku-5-5" }, false), 350);
   setTimeout(() => {
-    h.engine(1, presetId, finished, false);
+    h.engine(1, presetId, run, finished, false);
     if (keep) answered.add(presetId);
   }, 650);
 }
@@ -57,8 +57,9 @@ export const demo = {
   invoke(cmd: string, args?: Record<string, unknown>) {
     if (cmd === "run_preset") {
       const presetId = String(args?.presetId);
-      if (!args?.fresh && !args?.steer && answered.has(presetId)) setTimeout(() => handlers?.engine(1, presetId, finished, true), 0);
-      else play(presetId, !args?.steer);
+      const run = Number(args?.run);
+      if (!args?.fresh && !args?.steer && answered.has(presetId)) setTimeout(() => handlers?.engine(1, presetId, run, finished, true), 0);
+      else play(presetId, run, !args?.steer);
     }
     if (cmd === "add_word") return true;
     // ?anyway previews the panel after a replacement that couldn't put the clipboard aside.
@@ -90,7 +91,7 @@ export const demo = {
         alwaysShowTips: new URLSearchParams(location.search).has("tips"),
         provider: "claude-haiku-5-5",
       });
-      play("proofread");
+      play("proofread", 0);
     }, 50);
     return () => (handlers = null);
   },

@@ -2,7 +2,7 @@
 //! implemented with UI Automation (TextPattern2 for selection and bounds, ValuePattern or
 //! SendInput Ctrl+V for replacement, and a WinEvent hook for selection changes).
 
-use super::{PlatformError, Rect, ReplaceMethod};
+use super::{PlatformError, Rect, ReplaceOutcome};
 
 #[derive(Debug, Clone)]
 pub struct Capture {
@@ -49,6 +49,29 @@ pub fn accessibility_trusted(_prompt: bool) -> bool {
 }
 
 pub fn open_accessibility_settings() {}
+
+pub fn run_helper_command() -> Option<i32> {
+    None
+}
+
+pub fn set_in_dock(_app: &tauri::AppHandle, _in_dock: bool) {}
+
+/// Whether an autostart entry pointing at this executable keeps working after a restart, as on
+/// Linux: it's installed, not in a temporary folder or a build folder, and needs no quoting.
+pub fn lasting_app_path(exe: &str) -> bool {
+    let plain = exe.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+".contains(c));
+    let temporary = ["/tmp/", "/var/tmp/", "/run/", "/dev/shm/"].iter().any(|dir| exe.starts_with(dir));
+    let build = exe.contains("/target/debug/") || exe.contains("/target/release/");
+    exe.starts_with('/') && plain && !temporary && !build
+}
+
+pub fn reload_autostart() {}
+
+pub fn desktop_set_up() -> bool {
+    false
+}
+
+pub fn init_overlay(_window: &tauri::WebviewWindow) {}
 
 /// System Settings is macOS's; this platform only ever reports it closed.
 pub enum SettingsWindow {
@@ -109,8 +132,8 @@ pub fn focused_app_identity() -> Option<(i32, String, String)> {
     None
 }
 
-pub fn replace(_capture: &Capture, _text: &str, _proofread: bool) -> Result<ReplaceMethod, PlatformError> {
-    Err(PlatformError::ReplaceFailed)
+pub fn replace(_capture: &Capture, _text: &str, _proofread: bool) -> ReplaceOutcome {
+    ReplaceOutcome::CopyOnly(PlatformError::ReplaceFailed)
 }
 
 pub fn copy_to_clipboard(_text: &str) {}

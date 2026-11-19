@@ -27,7 +27,7 @@ mod window;
 pub use log::{log_path, set_trace, trace};
 pub use watch::{WindowWatch, mouse_button_down, pressed_on_window, watch_window};
 
-use super::{PlatformError, Rect, ReplaceMethod, ReplaceOutcome};
+use super::{PlatformError, Rect, ReplaceOutcome};
 use capture::{Class, Desktop, Key, Services};
 use clipboard::Clipboard;
 use std::sync::{LazyLock, Mutex};
@@ -332,25 +332,20 @@ pub fn focused_app_identity() -> Option<(i32, String, String)> {
 
 /// Pastes `text` over the captured selection. `_proofread` asks macOS to change only the words a
 /// proofread fixes; Windows replaces the whole selection. Runs on a worker thread.
-pub fn replace(capture: &Capture, text: &str, _proofread: bool) -> Result<ReplaceMethod, PlatformError> {
+pub fn replace(capture: &Capture, text: &str, _proofread: bool) -> ReplaceOutcome {
     replace_with(capture, text, replace::Clip::Restore)
 }
 
 /// Pastes `text` over the captured selection without putting the clipboard aside, after a
 /// replacement that couldn't (`PlatformError::ClipboardUnrestorable`): the fix stays on the
 /// clipboard. Every other check runs as for [`replace`]. Runs on a worker thread.
-pub fn replace_anyway(capture: &Capture, text: &str) -> Result<ReplaceMethod, PlatformError> {
+pub fn replace_anyway(capture: &Capture, text: &str) -> ReplaceOutcome {
     replace_with(capture, text, replace::Clip::Leave)
 }
 
-fn replace_with(capture: &Capture, text: &str, clip: replace::Clip) -> Result<ReplaceMethod, PlatformError> {
+fn replace_with(capture: &Capture, text: &str, clip: replace::Clip) -> ReplaceOutcome {
     let _one_at_a_time = CHAIN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    match replace::replace(&services(), capture, text, clip) {
-        ReplaceOutcome::Applied => Ok(ReplaceMethod::Paste),
-        ReplaceOutcome::CopyOnly(error) => Err(error),
-        ReplaceOutcome::Uncertain(_) => Err(PlatformError::Unverified),
-        ReplaceOutcome::ClipboardKept(error) => Err(error),
-    }
+    replace::replace(&services(), capture, text, clip)
 }
 
 /// Puts `text` on the clipboard for the user to paste. The copy is made on a thread of its own, one
@@ -391,6 +386,46 @@ pub fn serve_clipboard_snapshot(args: &[String]) -> i32 {
 }
 
 pub use clipboard::SNAPSHOT_COMMAND as CLIPBOARD_SNAPSHOT_COMMAND;
+
+/// A mode of the program that runs instead of the app, named by its first argument: the clipboard
+/// snapshot a replacement reads the clipboard through ([`serve_clipboard_snapshot`]), a short-lived
+/// copy of the program that can be stopped if the app that owns the clipboard stalls. Returns its
+/// exit code.
+pub fn run_helper_command() -> Option<i32> {
+    let args: Vec<String> = std::env::args().collect();
+    (args.get(1).map(String::as_str) == Some(CLIPBOARD_SNAPSHOT_COMMAND)).then(|| serve_clipboard_snapshot(&args[2..]))
+}
+
+/// SuperEditr's place in a Dock is macOS's; Windows has nothing to change.
+pub fn set_in_dock(_app: &tauri::AppHandle, _in_dock: bool) {}
+
+/// Whether a Run key entry pointing at this executable keeps working after a restart: an installed
+/// copy on a local drive, such as the installer's `%LOCALAPPDATA%\SuperEditr`, not a build folder or
+/// a temporary folder (a downloaded copy run from an archive). A copy in `WindowsApps`, where
+/// Windows installs packaged apps, doesn't count either: a packaged app's Run key entries stay in its
+/// package's own registry, which Windows doesn't read at sign-in.
+pub fn lasting_app_path(exe: &str) -> bool {
+    let exe = exe.strip_prefix(r"\\?\").unwrap_or(exe).to_lowercase();
+    let on_drive = exe.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) && exe.get(1..3) == Some(r":\");
+    let temp = std::env::temp_dir().display().to_string().to_lowercase();
+    let temporary = [r"\appdata\local\temp\", r":\windows\temp\"].iter().any(|dir| exe.contains(dir))
+        || (temp.len() > 3 && exe.starts_with(temp.trim_end_matches('\\')));
+    let build = exe.contains(r"\target\debug\") || exe.contains(r"\target\release\");
+    on_drive && !temporary && !build && !exe.contains(r"\windowsapps\")
+}
+
+/// After the login item is turned on. The Run key value needs nothing more.
+pub fn reload_autostart() {}
+
+/// Whether the desktop setup is done, so Settings needn't open at launch. Windows has no setup page.
+pub fn desktop_set_up() -> bool {
+    false
+}
+
+/// Once at start-up: the panel never activates on a click (`overlay::init`).
+pub fn init_overlay(window: &tauri::WebviewWindow) {
+    overlay::init(window);
+}
 
 /// The pointer, in physical pixels.
 pub fn mouse_location() -> (f64, f64) {

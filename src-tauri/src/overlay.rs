@@ -34,53 +34,15 @@ pub const PAD_BOTTOM: f64 = 38.0;
 pub const GAP: f64 = 8.0;
 pub const MARGIN: f64 = 10.0;
 
-#[cfg(target_os = "macos")]
-tauri_nspanel::tauri_panel! {
-    panel!(OverlayPanel {
-        config: {
-            can_become_key_window: true,
-            can_become_main_window: false,
-            is_floating_panel: true,
-            hides_on_deactivate: false
-        }
-    })
-}
-
 fn window(app: &AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window("overlay")
 }
 
-/// Converts the overlay window to a panel once at start-up.
+/// Makes the overlay window the platform's panel once at start-up (`platform::init_overlay`).
 pub fn init(app: &AppHandle) {
-    #[cfg(target_os = "macos")]
-    {
-        use tauri_nspanel::{CollectionBehavior, PanelLevel, StyleMask, WebviewWindowExt};
-        if let Some(window) = window(app)
-            && let Ok(panel) = window.to_panel::<OverlayPanel>()
-        {
-            panel.set_level(PanelLevel::PopUpMenu.value());
-            let _ = panel.set_style_mask(StyleMask::empty().borderless().nonactivating_panel().value());
-            // It opens on the Space the user is on, and stays there: on a move to another Space it
-            // slides away with the text it reviews, and closes once the move ends
-            // (`review::on_space_change`). On every Space, it would float over the switch.
-            panel.set_collection_behavior(
-                CollectionBehavior::new().move_to_active_space().full_screen_auxiliary().transient().value(),
-            );
-            panel.set_has_shadow(false);
-            panel.set_opaque(false);
-        }
-    }
-    // The desktop's rule for the panel matches this title: every SuperEditr window shares one app ID.
-    #[cfg(target_os = "linux")]
     if let Some(window) = window(app) {
-        let _ = window.set_title(platform::OVERLAY_TITLE);
+        platform::init_overlay(&window);
     }
-    #[cfg(windows)]
-    if let Some(window) = window(app) {
-        platform::overlay::init(&window);
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-    let _ = app;
 }
 
 /// Where the overlay window was last put, in points.
@@ -95,7 +57,7 @@ pub fn pointer_anchor() -> Option<Rect> {
     #[cfg(windows)]
     return platform::overlay::pointer_anchor();
     #[cfg(not(windows))]
-    *POINTER_ANCHOR.lock().unwrap()
+    *platform::lock(&POINTER_ANCHOR)
 }
 
 /// Places the overlay just below the selection, or above it when there's no room below.
@@ -107,7 +69,7 @@ pub fn position(app: &AppHandle, anchor: Option<Rect>, height: f64) {
     let anchor = anchor.unwrap_or_else(|| {
         let (x, y) = platform::mouse_location();
         let at_pointer = Rect { x: x - 24.0, y: y - 10.0, width: 1.0, height: 20.0 };
-        *POINTER_ANCHOR.lock().unwrap() = Some(at_pointer);
+        *platform::lock(&POINTER_ANCHOR) = Some(at_pointer);
         at_pointer
     });
     place(app, anchor, height);
@@ -122,7 +84,7 @@ pub fn resize(app: &AppHandle, anchor: Option<Rect>, height: f64) {
     }
     // Read on its own line: a lock taken in a match's scrutinee is held until the match ends, and
     // `position` below takes it again, which would hang the main thread.
-    let at_pointer = *POINTER_ANCHOR.lock().unwrap();
+    let at_pointer = *platform::lock(&POINTER_ANCHOR);
     match anchor.or(at_pointer) {
         Some(anchor) => place(app, anchor, height),
         None => position(app, None, height),
@@ -133,7 +95,7 @@ pub fn resize(app: &AppHandle, anchor: Option<Rect>, height: f64) {
 fn place(app: &AppHandle, anchor: Rect, height: f64) {
     let Some(window) = window(app) else { return };
     let (x, y) = target(app, anchor, height);
-    *PLACED.lock().unwrap() = Some(Rect { x, y, width: WIDTH, height });
+    *platform::lock(&PLACED) = Some(Rect { x, y, width: WIDTH, height });
     let _ = window.set_size(LogicalSize::new(WIDTH, height));
     #[cfg(target_os = "linux")]
     {
@@ -265,7 +227,7 @@ pub fn glide(app: &AppHandle, anchor: Rect, height: f64) {
 fn glide_in_points(app: &AppHandle, window: WebviewWindow, anchor: Rect, height: f64) {
     let (x, y) = target(app, anchor, height);
     let to = Rect { x, y, width: WIDTH, height };
-    let placed = PLACED.lock().unwrap().replace(to);
+    let placed = platform::lock(&PLACED).replace(to);
     if placed == Some(to) {
         return;
     }
@@ -285,7 +247,7 @@ fn glide_in_points(app: &AppHandle, window: WebviewWindow, anchor: Rect, height:
 /// from there once the window settles.
 pub fn stop_glide(app: &AppHandle) {
     // Where the glide stops isn't known here: no target matches it, so the next glide goes ahead.
-    if let Some(placed) = PLACED.lock().unwrap().as_mut() {
+    if let Some(placed) = platform::lock(&PLACED).as_mut() {
         placed.x = f64::NAN;
     }
     #[cfg(target_os = "macos")]

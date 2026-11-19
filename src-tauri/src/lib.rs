@@ -96,22 +96,9 @@ fn shortcut_status(_app: &AppHandle) -> Option<serde_json::Value> {
     None
 }
 
-/// SuperEditr is a menu-bar app, out of the Dock and ⌘Tab, except while Settings is open: then it
-/// behaves like a normal app so the user can switch back to it.
-fn set_in_dock(app: &AppHandle, in_dock: bool) {
-    #[cfg(target_os = "macos")]
-    let _ = app.set_activation_policy(if in_dock {
-        tauri::ActivationPolicy::Regular
-    } else {
-        tauri::ActivationPolicy::Accessory
-    });
-    #[cfg(not(target_os = "macos"))]
-    let _ = (app, in_dock);
-}
-
 pub fn show_settings(app: &AppHandle, section: Option<String>) {
     if let Some(window) = app.get_webview_window("settings") {
-        set_in_dock(app, true);
+        platform::set_in_dock(app, true);
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
@@ -230,42 +217,6 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Whether a Launch Agent pointing at this executable keeps working after a restart: it's inside an
-/// app bundle, and not on a mounted disk image or in the temporary copy macOS runs a downloaded app
-/// from until it's moved (App Translocation).
-#[cfg(target_os = "macos")]
-fn lasting_app_path(exe: &str) -> bool {
-    exe.contains(".app/Contents/MacOS/") && !exe.starts_with("/Volumes/") && !exe.contains("/AppTranslocation/")
-}
-
-/// Whether an autostart entry pointing at this executable keeps working after a restart: it's
-/// installed, not in a temporary folder (where an AppImage is mounted while it runs) or a build
-/// folder. The entry's `Exec=` line holds the path unquoted, and systemd skips an entry it can't
-/// parse without saying so, so a path with characters that need quoting doesn't count either.
-#[cfg(not(any(target_os = "macos", windows)))]
-fn lasting_app_path(exe: &str) -> bool {
-    let plain = exe.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+".contains(c));
-    let temporary = ["/tmp/", "/var/tmp/", "/run/", "/dev/shm/"].iter().any(|dir| exe.starts_with(dir));
-    let build = exe.contains("/target/debug/") || exe.contains("/target/release/");
-    exe.starts_with('/') && plain && !temporary && !build
-}
-
-/// Whether a Run key entry pointing at this executable keeps working after a restart: an installed
-/// copy on a local drive, such as the installer's `%LOCALAPPDATA%\SuperEditr`, not a build folder or
-/// a temporary folder (a downloaded copy run from an archive). A copy in `WindowsApps`, where
-/// Windows installs packaged apps, doesn't count either: a packaged app's Run key entries stay in its
-/// package's own registry, which Windows doesn't read at sign-in.
-#[cfg(windows)]
-fn lasting_app_path(exe: &str) -> bool {
-    let exe = exe.strip_prefix(r"\\?\").unwrap_or(exe).to_lowercase();
-    let on_drive = exe.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) && exe.get(1..3) == Some(r":\");
-    let temp = std::env::temp_dir().display().to_string().to_lowercase();
-    let temporary = [r"\appdata\local\temp\", r":\windows\temp\"].iter().any(|dir| exe.contains(dir))
-        || (temp.len() > 3 && exe.starts_with(temp.trim_end_matches('\\')));
-    let build = exe.contains(r"\target\debug\") || exe.contains(r"\target\release\");
-    on_drive && !temporary && !build && !exe.contains(r"\windowsapps\")
-}
-
 /// The file that opens SuperEditr at login, as the autostart plugin writes it.
 #[cfg(not(windows))]
 fn login_item(app: &AppHandle) -> Option<std::path::PathBuf> {
@@ -355,7 +306,7 @@ fn launch_at_login_by_default(app: &AppHandle) {
     else {
         return;
     };
-    if !lasting_app_path(&exe) {
+    if !platform::lasting_app_path(&exe) {
         return;
     }
     let state = app.state::<AppState>();
@@ -373,23 +324,11 @@ fn launch_at_login_by_default(app: &AppHandle) {
         eprintln!("SuperEditr: couldn't turn on opening at login: {e}");
         return;
     }
-    #[cfg(target_os = "linux")]
-    platform::setup::reload_autostart();
+    platform::reload_autostart();
     config.offered_launch_at_login = true;
     if let Err(e) = state.save_config(config) {
         eprintln!("SuperEditr: couldn't save settings: {e}");
     }
-}
-
-/// Whether the desktop setup is done, so Settings needn't open at launch (Linux's setup page).
-#[cfg(target_os = "linux")]
-fn desktop_set_up() -> bool {
-    platform::setup::config_home().is_some_and(|config| platform::setup::complete(&config))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn desktop_set_up() -> bool {
-    false
 }
 
 /// SuperEditr was started again while running. `supereditr review` and `supereditr quick-fix` act as
@@ -434,7 +373,7 @@ fn prepare_settings(app: &AppHandle, settings: &tauri::WebviewWindow) {
         if let WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
             let _ = window.hide();
-            set_in_dock(&app, false);
+            platform::set_in_dock(&app, false);
         }
     });
 }
@@ -542,21 +481,9 @@ pub fn run() {
             }
         });
     }
-    // A replacement reads the clipboard through a short-lived copy of the program, which can be
-    // stopped if the app that owns the clipboard stalls (see `platform::windows::clipboard`).
-    #[cfg(windows)]
-    {
-        let args: Vec<String> = std::env::args().collect();
-        if args.get(1).map(String::as_str) == Some(platform::CLIPBOARD_SNAPSHOT_COMMAND) {
-            std::process::exit(platform::serve_clipboard_snapshot(&args[2..]));
-        }
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let args: Vec<String> = std::env::args().collect();
-        if args.get(1).map(String::as_str) == Some("uninstall-omarchy") {
-            std::process::exit(platform::setup::uninstall_command(&args[2..]));
-        }
+    // A mode of the program that runs instead of the app (`platform::run_helper_command`).
+    if let Some(code) = platform::run_helper_command() {
+        std::process::exit(code);
     }
     let mut builder = tauri::Builder::default();
     if updater::available() {
@@ -695,7 +622,7 @@ pub fn run() {
             // Settings opens by itself on the first run, until Get Started is done or, on Linux,
             // the desktop is set up (SuperEditr then opens at login, so Settings would open at every
             // login); and on macOS while Accessibility isn't granted, since nothing works without it.
-            let first_run = !handle.state::<AppState>().config().onboarded && !desktop_set_up();
+            let first_run = !handle.state::<AppState>().config().onboarded && !platform::desktop_set_up();
             if first_run || (cfg!(target_os = "macos") && !platform::accessibility_trusted(false)) {
                 show_settings(&handle, Some(if first_run { "welcome".into() } else { "privacy".into() }));
             }
@@ -752,7 +679,8 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{OLD_IDENTIFIER, copy_old_settings, lasting_app_path};
+    use super::{OLD_IDENTIFIER, copy_old_settings};
+    use crate::platform::lasting_app_path;
 
     #[test]
     fn an_update_keeps_the_settings_from_the_old_folder() {

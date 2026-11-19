@@ -269,6 +269,23 @@
       ]
     },
     {
+      "id": "automatic-excluded",
+      "writer": "Automatic",
+      "text": "automatic: after ⌘A, skipped: the app is excluded in Settings",
+      "matched_by": [
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "skipped: the app is excluded" }
+      ]
+    },
+    {
+      "id": "automatic-not-editable",
+      "writer": "Automatic",
+      "text": "automatic com.apple.Terminal: after ⌘A, skipped: the field isn't editable",
+      "matched_by": [
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "automatic com.apple.Terminal: " },
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "skipped: the field isn't editable" }
+      ]
+    },
+    {
       "id": "pasted-in-place",
       "writer": "PastedInPlace",
       "text": "paste chromium: applied in place: 2 changes in 2 writes in 310 ms",

@@ -24,6 +24,31 @@ fn text<'a>(value: &'a Value, key: &str) -> &'a str {
     value[key].as_str().unwrap_or_else(|| panic!("{key} missing in {value}"))
 }
 
+/// An automatic suggestion's outcome, as the app writes it. Its type is private to the review code,
+/// so this checks the wording is still a whole string literal in the app's source (other than this
+/// file) instead.
+fn outcome_in_source(outcome: &'static str) -> &'static str {
+    fn sources(dir: &Path, found: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().map(Result::unwrap) {
+            let path = entry.path();
+            if path.is_dir() {
+                sources(&path, found);
+            // This file holds each outcome too, so it doesn't count.
+            } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("log_lines/tests.rs") {
+                found.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    sources(&repository().join("src-tauri/src"), &mut files);
+    let literal = format!("\"{outcome}\"");
+    assert!(
+        files.iter().any(|f| std::fs::read_to_string(f).unwrap().contains(&literal)),
+        "no source file in src-tauri/src writes {literal}; update tests/contracts/log-lines.json and the drivers"
+    );
+    outcome
+}
+
 /// The line `id` in the fixture, as the types here write it.
 fn written(id: &str) -> String {
     let ms = Duration::from_millis;
@@ -109,6 +134,18 @@ fn written(id: &str) -> String {
             gesture: &super::super::SelectionGesture::SelectAll,
             // The driver looks for the default maximum.
             outcome: &OverMaximum { chars: 3000, max: supereditr_core::config::Config::default().auto_max_chars },
+        }
+        .to_string(),
+        "automatic-excluded" => Automatic {
+            app: None,
+            gesture: &super::super::SelectionGesture::SelectAll,
+            outcome: &outcome_in_source("skipped: the app is excluded in Settings"),
+        }
+        .to_string(),
+        "automatic-not-editable" => Automatic {
+            app: Some("com.apple.Terminal"),
+            gesture: &super::super::SelectionGesture::SelectAll,
+            outcome: &outcome_in_source("skipped: the field isn't editable"),
         }
         .to_string(),
         "pasted-in-place" => PastedInPlace { app: "chromium", changes: 2, writes: 2, ms: 310 }.to_string(),

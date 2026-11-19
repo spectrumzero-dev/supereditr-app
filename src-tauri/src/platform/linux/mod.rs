@@ -23,8 +23,9 @@ mod testing;
 pub mod watchdog;
 
 pub use log::{log_path, set_trace, trace};
+pub use setup::reload_autostart;
 
-use super::{PlatformError, Rect, ReplaceMethod, ReplaceOutcome};
+use super::{PlatformError, Rect, ReplaceOutcome};
 use desktop::hyprland::HyprlandDesktop;
 use desktop::shortcuts::HyprlandShortcuts;
 use desktop::{Action, Binding, Desktop, FallbackDesktop, SetupCheck, ShortcutBackend, WindowRef};
@@ -402,21 +403,11 @@ pub fn focused_app_identity() -> Option<(i32, String, String)> {
 /// Pastes `text` over the captured selection. A `proofread` of formatted text in a web editor
 /// changes only the words it fixes, where the app lets SuperEditr select them; anything else
 /// replaces the whole selection. Runs on a worker thread.
-pub fn replace(capture: &Capture, text: &str, proofread: bool) -> Result<ReplaceMethod, PlatformError> {
+pub fn replace(capture: &Capture, text: &str, proofread: bool) -> ReplaceOutcome {
     let _one_at_a_time = CHAIN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let desktop = desktop();
     let clipboard = clipboard::Wayland;
-    match tauri::async_runtime::block_on(replace::replace(
-        &services(desktop.as_ref(), &clipboard),
-        capture,
-        text,
-        proofread,
-    )) {
-        ReplaceOutcome::Applied => Ok(ReplaceMethod::Paste),
-        ReplaceOutcome::CopyOnly(error) => Err(error),
-        ReplaceOutcome::Uncertain(error) => Err(error),
-        ReplaceOutcome::ClipboardKept(error) => Err(error),
-    }
+    tauri::async_runtime::block_on(replace::replace(&services(desktop.as_ref(), &clipboard), capture, text, proofread))
 }
 
 /// Puts a suggestion on the clipboard, marked sensitive so clipboard history skips it.
@@ -447,8 +438,40 @@ pub fn app_identity(pid: i32) -> (String, String) {
 
 pub fn selection_app_switched() {}
 
+/// A mode of the program that runs instead of the app, named by its first argument:
+/// `uninstall-omarchy` (`setup::uninstall_command`). Returns its exit code.
+pub fn run_helper_command() -> Option<i32> {
+    let args: Vec<String> = std::env::args().collect();
+    (args.get(1).map(String::as_str) == Some("uninstall-omarchy")).then(|| setup::uninstall_command(&args[2..]))
+}
+
+/// SuperEditr's place in a Dock is macOS's; Linux has nothing to change.
+pub fn set_in_dock(_app: &tauri::AppHandle, _in_dock: bool) {}
+
+/// Whether an autostart entry pointing at this executable keeps working after a restart: it's
+/// installed, not in a temporary folder (where an AppImage is mounted while it runs) or a build
+/// folder. The entry's `Exec=` line holds the path unquoted, and systemd skips an entry it can't
+/// parse without saying so, so a path with characters that need quoting doesn't count either.
+pub fn lasting_app_path(exe: &str) -> bool {
+    let plain = exe.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+".contains(c));
+    let temporary = ["/tmp/", "/var/tmp/", "/run/", "/dev/shm/"].iter().any(|dir| exe.starts_with(dir));
+    let build = exe.contains("/target/debug/") || exe.contains("/target/release/");
+    exe.starts_with('/') && plain && !temporary && !build
+}
+
+/// Whether the desktop setup is done, so Settings needn't open at launch (Linux's setup page).
+pub fn desktop_set_up() -> bool {
+    setup::config_home().is_some_and(|config| setup::complete(&config))
+}
+
 /// The panel's window title, which the desktop's rule for it matches.
 pub const OVERLAY_TITLE: &str = desktop::lua::OVERLAY_TITLE;
+
+/// Once at start-up. The desktop's rule for the panel matches its title: every SuperEditr window
+/// shares one app ID.
+pub fn init_overlay(window: &tauri::WebviewWindow) {
+    let _ = window.set_title(OVERLAY_TITLE);
+}
 
 /// Where the panel goes: where it opens next, or, while it shows, where it moves.
 pub fn place_overlay(at: Rect, shown: bool) {

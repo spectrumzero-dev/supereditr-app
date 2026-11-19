@@ -196,6 +196,8 @@ impl Host for Fake<'_> {
 fn capture(text: &str, playground: bool) -> Capture {
     let mut capture = platform::playground_capture(text.into(), BOUNDS);
     capture.playground = playground;
+    // Set here: on Linux the platform finds a playground's place on screen through the desktop.
+    capture.bounds = Some(BOUNDS);
     if !playground {
         capture.pid = REVIEWED;
         capture.app_name = "QuillPoint Notes".into();
@@ -637,6 +639,20 @@ fn a_review_that_begins_while_text_is_written_stays_open() {
     assert_eq!(block_on(fake.controller().apply(7, FIXED.into(), false)).unwrap(), "Replaced.");
     assert_eq!(fake.take(), [closes(), vec![written()]].concat(), "the new review's panel stays up");
     assert_eq!(showing(&state), Some(8));
+}
+
+#[test]
+fn a_failed_write_never_takes_the_panel_from_a_review_that_began_meanwhile() {
+    let state = test_state();
+    let mut fake = Fake::new(&state);
+    let message = PlatformError::FocusNotReturned.to_string();
+    *fake.written.lock().unwrap() = Some(Ok(Some(ReplaceOutcome::CopyOnly(PlatformError::FocusNotReturned))));
+    fake.while_writing = Some(Box::new(|state| open(state, 8, true)));
+    open(&state, 7, true);
+    assert_eq!(block_on(fake.controller().apply(7, FIXED.into(), false)).unwrap_err(), message);
+    assert_eq!(fake.take(), [closes(), vec![written(), Copy(FIXED.into())]].concat(), "no notice over the new review");
+    assert_eq!(showing(&state), Some(8));
+    assert!(!state.review.lock().unwrap().notice_visible());
 }
 
 #[test]

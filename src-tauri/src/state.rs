@@ -127,6 +127,16 @@ impl ReviewState {
         old
     }
 
+    /// A standalone notice goes up only while no review is showing: one opened since keeps the
+    /// panel. True when the notice is up.
+    pub fn show_notice_if_free(&mut self) -> bool {
+        if self.session.is_some() {
+            return false;
+        }
+        self.notice = true;
+        true
+    }
+
     /// The panel asks for run number `run` of review `id`. Returns the review, its earlier run
     /// cancelled, when the run is current; None when the review has ended or a later run was
     /// asked for already.

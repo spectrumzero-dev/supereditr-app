@@ -207,7 +207,7 @@ pub fn show_error(app: &AppHandle, message: String) {
 }
 
 fn show_outcome(app: &AppHandle, outcome: ReplaceOutcome, suggestion: String) -> Option<String> {
-    controller(app, |c| c.show_outcome(outcome, suggestion))
+    controller(app, |c| c.show_outcome(outcome, suggestion, false))
 }
 
 /// Whether a replacement's outcome puts the suggestion on the clipboard: only when nothing was
@@ -244,19 +244,20 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
 
     /// Says what became of a replacement that didn't apply: a copy-only one puts the suggestion on
     /// the clipboard; an uncertain one, or one that couldn't put the clipboard aside, leaves the
-    /// clipboard alone and offers the suggestion to copy.
-    fn show_outcome(&self, outcome: ReplaceOutcome, suggestion: String) -> Option<String> {
+    /// clipboard alone and offers the suggestion to copy. With `after_review`, the replacement was
+    /// a review's, which has ended: a review opened since keeps the panel, and nothing is shown.
+    fn show_outcome(&self, outcome: ReplaceOutcome, suggestion: String, after_review: bool) -> Option<String> {
         if copies_suggestion(&outcome) {
             self.host.copy_to_clipboard(&suggestion);
         }
         match outcome {
             ReplaceOutcome::Applied => None,
             ReplaceOutcome::CopyOnly(error) => {
-                self.show_error(error.to_string());
+                self.show_outcome_notice(error.to_string(), None, after_review);
                 Some(error.to_string())
             }
             ReplaceOutcome::Uncertain(error) | ReplaceOutcome::ClipboardKept(error) => {
-                self.show_notice(error.to_string(), Some(suggestion));
+                self.show_outcome_notice(error.to_string(), Some(suggestion), after_review);
                 Some(error.to_string())
             }
         }
@@ -266,10 +267,28 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
         self.show_notice_with(message, copy, true);
     }
 
+    /// A notice about a replacement. After a review's, it yields to a review opened since: checked
+    /// and set under one lock, so that review is never replaced.
+    fn show_outcome_notice(&self, message: String, copy: Option<String>, after_review: bool) {
+        if !after_review {
+            return self.show_notice(message, copy);
+        }
+        let id = self.state.next_session_id();
+        let free = self.state.review.lock().unwrap().show_notice_if_free();
+        if free {
+            self.present_notice(id, message, copy, true);
+        }
+    }
+
     fn show_notice_with(&self, message: String, copy: Option<String>, keys: bool) {
         let id = self.state.next_session_id();
         let replaced = self.state.review.lock().unwrap().show_notice();
         drop(replaced);
+        self.present_notice(id, message, copy, keys);
+    }
+
+    /// Puts up the notice the state now holds.
+    fn present_notice(&self, id: u64, message: String, copy: Option<String>, keys: bool) {
         self.shell.emit("overlay", "overlay:status", StatusPayload { id, kind: "notice", message, copy });
         self.shell.position(None, 126.0);
         // Does nothing outside macOS.
@@ -507,7 +526,7 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
         drop(ended);
         match result {
             None => Ok("No changes needed.".into()),
-            Some(outcome) => match self.show_outcome(outcome, suggestion) {
+            Some(outcome) => match self.show_outcome(outcome, suggestion, true) {
                 None => Ok("Replaced.".into()),
                 Some(error) => Err(error),
             },

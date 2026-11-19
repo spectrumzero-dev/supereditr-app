@@ -1091,6 +1091,29 @@ pump(3)
 check(overlay() == nil, "no automatic suggestion for terminal output", "overlay appeared")
 quitOpened("com.apple.Terminal")
 
+section("4a")
+// 4a. Selecting a whole long document shows nothing on its own: it is over the maximum selection
+// for automatic suggestions. The shortcut still reviews it.
+let long = work + "/long.txt"
+try! String(repeating: "Brynlee sent the KPI report to Kyndal on Friday. ", count: 60)
+    .write(toFile: long, atomically: true, encoding: .utf8)
+check(openFront("TextEdit", bundleID: "com.apple.TextEdit", file: long), "TextEdit opens the long draft")
+check(selectAll(), "the long draft's text is selected")
+let overMaximum = waitFor(5) { () -> Bool? in
+    let lines = (try? String(contentsOfFile: captureLogPath, encoding: .utf8)) ?? ""
+    return lines.contains("over the maximum of 2000") ? true : nil
+}
+check(overMaximum != nil, "a selection over the maximum is skipped for its length", "capture.log has no “over the maximum” line")
+pump(2)
+check(overlay() == nil, "no automatic suggestion for a whole long document", "overlay appeared")
+press(keyE, .maskCommand)
+pump(0.1)
+press(keyE, .maskCommand)
+check(waitFor(5) { overlay() } != nil, "⌘E E still reviews the long document", "no overlay within 5 s")
+press(keyEscape)
+check(waitFor(3) { overlay() == nil ? true : nil } != nil, "Escape closes that review", "overlay still showing")
+quitOpened("com.apple.TextEdit")
+
 section("5")
 // 5. Recording a shortcut that's already Quick fix's (⌃⌥⇧E) reaches the recorder, which says why
 // it can't be used, instead of running Quick fix.

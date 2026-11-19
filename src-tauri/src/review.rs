@@ -731,8 +731,9 @@ pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
                     Err(error) => return trace_auto(gesture, None, &AutoOutcome::ReadFailed(error)),
                 };
                 let app_id = Some(captured.bundle_id.as_str());
-                let min_chars = state.config().auto_min_chars;
-                if let Some(outcome) = check_selection(&captured.text, captured.editable, min_chars) {
+                let config = state.config();
+                let (min_chars, max_chars) = (config.auto_min_chars, config.auto_max_chars);
+                if let Some(outcome) = check_selection(&captured.text, captured.editable, min_chars, max_chars) {
                     return trace_auto(gesture, app_id, &outcome);
                 }
                 if state.session.lock().unwrap().as_ref().is_some_and(|s| s.capture.text == captured.text) {
@@ -779,6 +780,11 @@ enum AutoOutcome {
         chars: usize,
         min: usize,
     },
+    /// The selection is more than a few paragraphs, such as a whole document.
+    TooLong {
+        chars: usize,
+        max: usize,
+    },
     NoLetter,
     /// The selection is one link, e-mail address, domain or file path, such as a browser's address bar.
     Address,
@@ -806,6 +812,7 @@ impl std::fmt::Display for AutoOutcome {
             Self::Retrying { attempt, of } => write!(f, "no selection yet, reading again ({attempt} of {of})"),
             Self::NotEditable => write!(f, "skipped: the field isn't editable"),
             Self::TooShort { chars, min } => write!(f, "skipped: {chars} characters, under the minimum of {min}"),
+            Self::TooLong { chars, max } => write!(f, "skipped: {chars} characters, over the maximum of {max}"),
             Self::NoLetter => write!(f, "skipped: the selection has no letter"),
             Self::Address => write!(f, "skipped: the selection is a single link or address"),
             Self::AlreadyShowing => write!(f, "skipped: the same text is already showing"),
@@ -848,13 +855,15 @@ fn auto_gate(gate: &AutoGate) -> Option<AutoOutcome> {
 }
 
 /// Applies the rules an automatic suggestion's selection must pass; `None` when it may open.
-fn check_selection(text: &str, editable: bool, min_chars: usize) -> Option<AutoOutcome> {
+fn check_selection(text: &str, editable: bool, min_chars: usize, max_chars: usize) -> Option<AutoOutcome> {
     let trimmed = text.trim();
     let chars = trimmed.chars().count();
     if !editable {
         Some(AutoOutcome::NotEditable)
     } else if chars < min_chars {
         Some(AutoOutcome::TooShort { chars, min: min_chars })
+    } else if chars > max_chars {
+        Some(AutoOutcome::TooLong { chars, max: max_chars })
     } else if !trimmed.chars().any(char::is_alphabetic) {
         Some(AutoOutcome::NoLetter)
     } else if is_address(trimmed) {
@@ -930,7 +939,7 @@ mod tests {
     }
 
     fn reason(text: &str, editable: bool, min_chars: usize) -> Option<String> {
-        check_selection(text, editable, min_chars).map(|outcome| outcome.to_string())
+        check_selection(text, editable, min_chars, 2_000).map(|outcome| outcome.to_string())
     }
 
     #[test]
@@ -950,6 +959,24 @@ mod tests {
     }
 
     #[test]
+    fn a_selection_over_the_maximum_is_skipped() {
+        let sentence = "Rhyan sent the KPI report. ";
+        let document = sentence.repeat(100);
+        let chars = document.trim().chars().count();
+        assert_eq!(
+            reason(&document, true, 12).unwrap(),
+            format!("skipped: {chars} characters, over the maximum of 2000")
+        );
+        // The limit counts characters, not bytes, after trimming, and a selection exactly at it opens.
+        let at_the_limit = format!("  {}  ", "é".repeat(2_000));
+        assert_eq!(reason(&at_the_limit, true, 12), None);
+        assert!(matches!(
+            check_selection(&"é".repeat(2_001), true, 12, 2_000),
+            Some(AutoOutcome::TooLong { chars: 2_001, max: 2_000 })
+        ));
+    }
+
+    #[test]
     fn a_single_link_address_or_path_is_skipped() {
         for text in [
             "https://quillpoint.example/",
@@ -962,7 +989,7 @@ mod tests {
             "/Users/rhyan/notes",
             "docs/quarterly-okr.md",
         ] {
-            assert!(matches!(check_selection(text, true, 12), Some(AutoOutcome::Address)), "{text}");
+            assert!(matches!(check_selection(text, true, 12, 2_000), Some(AutoOutcome::Address)), "{text}");
         }
     }
 
@@ -975,7 +1002,7 @@ mod tests {
             "Done. Thanks!",
             "The input/output split looks rihgt.",
         ] {
-            assert!(check_selection(text, true, 12).is_none(), "{text}");
+            assert!(check_selection(text, true, 12, 2_000).is_none(), "{text}");
         }
     }
 

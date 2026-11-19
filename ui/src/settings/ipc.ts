@@ -20,6 +20,7 @@ let demoConfig: Config = {
   hotkeys: { review: "Command+E Command+E", quick_fix: "Control+Alt+Shift+E" },
   auto_popup: true,
   auto_min_chars: 12,
+  auto_max_chars: 2000,
   select_sentence: true,
   keep_formatting: true,
   words: ["Rhyan", "1234 Glenmoor Ct"],

@@ -193,6 +193,9 @@ pub struct Config {
     pub auto_popup: bool,
     /// Minimum selection length (characters) for automatic suggestions.
     pub auto_min_chars: usize,
+    /// Maximum selection length (characters) for automatic suggestions, so selecting a whole
+    /// document doesn't start a review of it. The shortcut reviews a selection of any length.
+    pub auto_max_chars: usize,
     /// With nothing selected, the review shortcut and quick fix select the sentence before the
     /// caret and review that. Automatic suggestions never do.
     pub select_sentence: bool,
@@ -239,6 +242,7 @@ impl Default for Config {
             // On Linux and Windows, only the shortcut starts a review.
             auto_popup: AUTO_POPUP,
             auto_min_chars: 12,
+            auto_max_chars: 2_000,
             select_sentence: true,
             keep_formatting: true,
             words: Vec::new(),

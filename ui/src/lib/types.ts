@@ -108,6 +108,7 @@ export interface Config {
   hotkeys: { review: string; quick_fix: string };
   auto_popup: boolean;
   auto_min_chars: number;
+  auto_max_chars: number;
   /** With nothing selected, the shortcuts select and review the sentence before the cursor. */
   select_sentence: boolean;
   /** Apply a proofread by changing only the words it fixes, keeping the formatting around them. */

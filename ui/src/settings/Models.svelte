@@ -14,8 +14,9 @@
     config: Config;
     keys: Record<string, boolean>;
     onchange: () => void;
-    /** Saves the config now, based on the settings the app last gave Settings. */
-    saveNow: () => Promise<void>;
+    /** Saves the config now, based on the settings the app last gave Settings. False when it
+     * couldn't be saved. */
+    saveNow: () => Promise<boolean>;
     reload: () => Promise<void>;
     /** Scan as soon as the page opens (Get Started's "Find my AI accounts"); cleared once it starts. */
     scanOnOpen?: boolean;
@@ -225,7 +226,11 @@
 
   /** After a setup field changes: try again to make it the AI in use. */
   async function retry(p: ProviderProfile) {
-    await saveNow();
+    // Unsaved, the check would run against the address or model the app still has.
+    if (!(await saveNow())) {
+      checks[p.id] = { ready: false, problem: "Couldn’t save this change. Change it again to retry", code: null, models: [] };
+      return;
+    }
     await tryActivate(p);
   }
 

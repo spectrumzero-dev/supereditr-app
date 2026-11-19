@@ -14,8 +14,9 @@
   interface Props {
     config: Config;
     accessibility: boolean;
-    /** Saves the config now, based on the settings the app last gave Settings. */
-    saveNow: () => Promise<void>;
+    /** Saves the config now, based on the settings the app last gave Settings. False when it
+     * couldn't be saved. */
+    saveNow: () => Promise<boolean>;
     finish: () => void;
     /** Opens the Models page, to fix an AI that isn't working. */
     openModels: () => void;

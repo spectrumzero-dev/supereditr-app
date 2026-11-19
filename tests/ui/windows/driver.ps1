@@ -9,7 +9,8 @@
 #
 # Root holds this folder's files, the composer page's bundle and setup.exe, the installer under
 # test. Results go to Root\out: results.tsv (case, PASS or FAIL, check, milliseconds into the case,
-# detail), summary.txt, shots\*.png, capture.log, and done.txt last.
+# detail), summary.txt, timings.tsv (case, seconds; slowest first, then the total), shots\*.png,
+# capture.log, and done.txt last.
 #
 # No AI and no sign-ins: reviews use the built-in rule-based checker (Proofread on English), and the
 # Claude Code that Settings finds is fake-claude.cs, which is signed out and can't sign in.
@@ -48,12 +49,34 @@ $script:Step = 0
 $script:Passed = 0
 $script:Failed = 0
 function Say($line) { $line | Add-Content "$Out\summary.txt" -Encoding UTF8 }
+# Each finished case and its seconds, for Write-Timings; OpenCase while one is running.
+$script:Timings = @()
+$script:OpenCase = ''
 function Begin-Case($name, $what) {
   $script:Case = $name
+  $script:OpenCase = $name
   $script:CaseClock = [Diagnostics.Stopwatch]::StartNew()
   Say ''; Say "== ${name}: $what"
 }
-function End-Case { Say "   ($script:Case took $([int]$script:CaseClock.Elapsed.TotalSeconds) s)" }
+function End-Case {
+  $s = $script:CaseClock.Elapsed.TotalSeconds
+  $script:Timings += [pscustomobject]@{ Case = $script:Case; Seconds = $s }
+  $script:OpenCase = ''
+  Say "   ($script:Case took $([int]$s) s)"
+}
+# The seconds each case took, slowest first, then the whole run's, in summary.txt and timings.tsv.
+# A case cut short is marked unfinished.
+function Write-Timings($total) {
+  $rows = @($script:Timings)
+  if ($script:OpenCase) { $rows += [pscustomobject]@{ Case = "$script:OpenCase (unfinished)"; Seconds = $script:CaseClock.Elapsed.TotalSeconds } }
+  $rows = @($rows | Sort-Object Seconds -Descending) + @([pscustomobject]@{ Case = 'total'; Seconds = $total })
+  $inv = [Globalization.CultureInfo]::InvariantCulture
+  Say ''; Say 'Seconds per case, slowest first:'
+  foreach ($r in $rows) { Say ('  ' + $r.Seconds.ToString('F1', $inv).PadLeft(7) + ' s  ' + $r.Case) }
+  # No byte-order mark and Unix line ends, for the shell that reads it.
+  $lines = $rows | ForEach-Object { "$($_.Case)`t$($_.Seconds.ToString('F1', $inv))" }
+  [IO.File]::WriteAllText("$Out\timings.tsv", (($lines -join "`n") + "`n"))
+}
 # One line, short, with no tabs or line breaks, for the results file.
 function Flat($text, $max = 200) {
   $t = ("$text" -replace '[\t\r\n]+', ' ').Trim()
@@ -904,7 +927,7 @@ function WarmUp-Case {
 
 # Run ----------------------------------------------------------------------------------------
 
-Remove-Item "$Out\results.tsv", "$Out\summary.txt", "$Out\done.txt", "$Out\capture.log" -ErrorAction SilentlyContinue
+Remove-Item "$Out\results.tsv", "$Out\summary.txt", "$Out\done.txt", "$Out\capture.log", "$Out\timings.tsv" -ErrorAction SilentlyContinue
 Remove-Item "$Shots\*" -ErrorAction SilentlyContinue
 $started = [Diagnostics.Stopwatch]::StartNew()
 Say "SuperEditr Windows smoke tests, $([Environment]::OSVersion.VersionString), $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
@@ -929,6 +952,7 @@ try {
   Check 'the driver ran to the end' $false "$_ at $($_.InvocationInfo.PositionMessage)"
 } finally {
   Copy-Item $Trace "$Out\capture.log" -ErrorAction SilentlyContinue
+  try { Write-Timings $started.Elapsed.TotalSeconds } catch { Note "no timings: $_" }
   Say ''; Say "$script:Passed passed, $script:Failed failed in $([int]$started.Elapsed.TotalSeconds) s"
   [Desk]::ReleaseModifiers()
   "$script:Passed $script:Failed" | Set-Content "$Out\done.txt"

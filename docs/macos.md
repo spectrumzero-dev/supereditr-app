@@ -30,4 +30,4 @@ On a Mac, the requirements are macOS 13+, Xcode command-line tools, Rust (stable
 
 `build.sh` writes `build/SuperEditr.app` and `build/SuperEditr-<version>.dmg`. Set `SUPEREDITR_SIGNING_IDENTITY` to an Apple Development identity so macOS keeps the Accessibility permission across rebuilds; without it the app is ad-hoc signed.
 
-`scripts/ui-smoke.sh` runs the live UI tests in `tests/ui/smoke.swift` against `build/SuperEditr.app` and saves screenshots to `build/ui-smoke`. It needs an unlocked display and Accessibility access, and it types into real apps such as TextEdit, so don't use the Mac while it runs. Where it can't run, it warns and skips.
+`scripts/ui-smoke.sh` runs the live UI tests in `tests/ui/smoke.swift` against `build/SuperEditr.app` and saves screenshots to `build/ui-smoke`, with `timings.tsv`, the seconds each numbered section took. It needs an unlocked display and Accessibility access, and it types into real apps such as TextEdit, so don't use the Mac while it runs. Where it can't run, it warns and skips.

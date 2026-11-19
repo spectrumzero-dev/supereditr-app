@@ -11,22 +11,25 @@ use crate::platform::{self, Capture, PlatformError, ReplaceOutcome, SelectionGes
 use crate::state::{AppState, Dismissal, Session};
 use serde::Serialize;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use supereditr_core::prompts::Preset;
-use supereditr_core::provider::{ProviderKind, ProviderProfile};
+use supereditr_core::provider::ProviderProfile;
 use supereditr_core::{Config, Event, Job, sensitive};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 mod shell;
 #[cfg(test)]
 mod tests_handlers;
+#[cfg(test)]
+mod tests_runs;
 
 use shell::{Host, Live, Shell};
 
 const INITIAL_HEIGHT: f64 = 210.0;
 
-/// The review's event handlers, over its state, its UI (`Shell`) and the platform (`Host`). The app
-/// runs them on [`Live`] (see [`controller`]); tests on fakes that record each call.
+/// The review's event handlers, over its state, its UI (`Shell`) and the platform and engine
+/// (`Host`). The app runs them on [`Live`] (see [`controller`]); tests on fakes that record each
+/// call.
 pub(crate) struct Controller<'a, S, H> {
     state: &'a AppState,
     shell: &'a S,
@@ -37,6 +40,11 @@ pub(crate) struct Controller<'a, S, H> {
 fn controller<R>(app: &AppHandle, f: impl FnOnce(&Controller<'_, Live<'_>, Live<'_>>) -> R) -> R {
     let live = Live(app);
     f(&Controller { state: app.state::<AppState>().inner(), shell: &live, host: &live })
+}
+
+/// The app's controller, for a handler that waits: it borrows `live`, which the caller keeps.
+fn live_controller<'a>(app: &'a AppHandle, live: &'a Live<'a>) -> Controller<'a, Live<'a>, Live<'a>> {
+    Controller { state: app.state::<AppState>().inner(), shell: live, host: live }
 }
 
 #[derive(Clone, Serialize)]
@@ -93,30 +101,6 @@ pub struct StatusPayload {
     pub copy: Option<String>,
 }
 
-fn state(app: &AppHandle) -> tauri::State<'_, AppState> {
-    app.state::<AppState>()
-}
-
-/// Reads the selection on a worker thread. AX calls can block on a busy app; they must never
-/// run on the UI thread. `select_sentence` is for the shortcuts only: an automatic suggestion
-/// never changes what the user selected.
-async fn capture(app: &AppHandle, allow_clipboard: bool, select_sentence: bool) -> Result<Capture, PlatformError> {
-    #[cfg(target_os = "macos")]
-    {
-        // Keyboard-layout lookups must happen on the main thread.
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let _ = app.run_on_main_thread(move || {
-            platform::refresh_keyboard_layout();
-            let _ = tx.send(());
-        });
-        let _ = tokio::time::timeout(Duration::from_millis(100), rx).await;
-    }
-    let _ = app;
-    tauri::async_runtime::spawn_blocking(move || platform::capture(allow_clipboard, select_sentence))
-        .await
-        .unwrap_or_else(|e| Err(PlatformError::Other(e.to_string())))
-}
-
 /// Decides, before any text is read, whether SuperEditr may act in the focused app. Returns a
 /// message to show when the user explicitly asked (shortcut) and the app is excluded.
 enum Target {
@@ -132,25 +116,6 @@ enum Target {
 
 const NOT_TRUSTED: &str = "Allow SuperEditr in System Settings first: open SuperEditr Settings → Get Started.";
 
-fn check_target(app: &AppHandle) -> Target {
-    // SuperEditr's own Settings window. Asked directly: right after SuperEditr reopens (returning
-    // from System Settings), Accessibility can still report the previous app as focused.
-    if app.get_webview_window("settings").and_then(|w| w.is_focused().ok()).unwrap_or(false) {
-        return Target::Ignored;
-    }
-    if !platform::accessibility_trusted(false) {
-        return Target::NotTrusted;
-    }
-    let config = state(app).config();
-    match platform::focused_app_identity() {
-        Some((pid, _, _)) if pid == platform::own_pid() => Target::Ignored,
-        Some((_, bundle_id, name)) if config.is_excluded(&bundle_id) => {
-            Target::Excluded(excluded_message(&config, &bundle_id, &name))
-        }
-        _ => Target::Allowed,
-    }
-}
-
 fn excluded_message(config: &Config, bundle_id: &str, name: &str) -> String {
     if app_toggle::offered(config, bundle_id) {
         let tray = if cfg!(windows) { "notification area" } else { "menu bar" };
@@ -160,13 +125,6 @@ fn excluded_message(config: &Config, bundle_id: &str, name: &str) -> String {
     } else {
         format!("SuperEditr is turned off in {name}. Change this in Settings → Privacy.")
     }
-}
-
-fn warm_connection(app: &AppHandle) {
-    let state = state(app);
-    let profile = state.active_profile().unwrap_or_else(|| ProviderProfile::new(ProviderKind::AppleIntelligence));
-    let providers = state.engine.providers.clone();
-    tauri::async_runtime::spawn(async move { providers.warm(&profile).await });
 }
 
 /// Review hotkey: give the keys to an automatic overlay that's already showing, or start a new
@@ -181,40 +139,14 @@ pub fn on_review_hotkey(app: &AppHandle) {
 
 pub async fn start_manual(app: &AppHandle, preset_id: Option<String>) {
     let _busy = crate::updater::busy();
-    match check_target(app) {
-        Target::Allowed => {}
-        // In SuperEditr's own window, the shortcut reviews Settings' "Try it now" box, if focused.
-        Target::Ignored => {
-            let _ = app.emit_to("settings", "settings:review-shortcut", ());
-            return;
-        }
-        Target::Excluded(message) => return show_error(app, message),
-        Target::NotTrusted => return show_error(app, NOT_TRUSTED.into()),
-    }
-    warm_connection(app);
-    let select_sentence = state(app).config().select_sentence;
-    match capture(app, true, select_sentence).await {
-        Ok(captured) => {
-            let _ = begin(app, captured, false, preset_id);
-        }
-        Err(error) => show_capture_error(app, error),
-    }
-}
-
-/// Says why nothing could be read. While an input method is composing, the panel doesn't take
-/// focus: that would commit the composition into the user's text.
-fn show_capture_error(app: &AppHandle, error: PlatformError) {
-    let keys = !matches!(error, PlatformError::Composing);
-    controller(app, |c| c.show_notice_with(error.to_string(), None, keys));
+    let live = Live(app);
+    let controller = live_controller(app, &live);
+    controller.start_manual(preset_id).await;
 }
 
 /// Shows a standalone message (no selection to work on) near the pointer.
 pub fn show_error(app: &AppHandle, message: String) {
     controller(app, |c| c.show_error(message));
-}
-
-fn show_outcome(app: &AppHandle, outcome: ReplaceOutcome, suggestion: String) -> Option<String> {
-    controller(app, |c| c.show_outcome(outcome, suggestion))
 }
 
 /// Whether a replacement's outcome puts the suggestion on the clipboard: only when nothing was
@@ -224,14 +156,64 @@ fn copies_suggestion(outcome: &ReplaceOutcome) -> bool {
     matches!(outcome, ReplaceOutcome::CopyOnly(_))
 }
 
-/// Opens the panel for a selection. Returns why it didn't, for an automatic suggestion's log line.
-fn begin(app: &AppHandle, captured: Capture, auto: bool, preset_id: Option<String>) -> Result<(), AutoOutcome> {
-    let (id, preset_id) = controller(app, |c| c.begin(captured, auto, preset_id))?;
-    run(app, id, 0, preset_id, None, false);
-    Ok(())
-}
-
 impl<S: Shell, H: Host> Controller<'_, S, H> {
+    /// Decides, before any text is read, whether SuperEditr may act in the focused app.
+    fn check_target(&self) -> Target {
+        // SuperEditr's own Settings window. Asked directly: right after SuperEditr reopens (returning
+        // from System Settings), Accessibility can still report the previous app as focused.
+        if self.host.settings_focused() {
+            return Target::Ignored;
+        }
+        if !self.host.accessibility_trusted() {
+            return Target::NotTrusted;
+        }
+        let config = self.state.config();
+        match self.host.focused_app() {
+            Some((pid, _, _)) if pid == self.host.own_pid() => Target::Ignored,
+            Some((_, bundle_id, name)) if config.is_excluded(&bundle_id) => {
+                Target::Excluded(excluded_message(&config, &bundle_id, &name))
+            }
+            _ => Target::Allowed,
+        }
+    }
+
+    /// The review shortcut, with no automatic review to give the keys to (see [`start_manual`]).
+    async fn start_manual(&self, preset_id: Option<String>) {
+        match self.check_target() {
+            Target::Allowed => {}
+            // In SuperEditr's own window, the shortcut reviews Settings' "Try it now" box, if focused.
+            Target::Ignored => {
+                self.shell.emit("settings", "settings:review-shortcut", ());
+                return;
+            }
+            Target::Excluded(message) => return self.show_error(message),
+            Target::NotTrusted => return self.show_error(NOT_TRUSTED.into()),
+        }
+        self.host.warm_connection();
+        let select_sentence = self.state.config().select_sentence;
+        match self.host.capture(true, select_sentence).await {
+            Ok(captured) => {
+                let _ = self.open(captured, false, preset_id);
+            }
+            Err(error) => self.show_capture_error(error),
+        }
+    }
+
+    /// Says why nothing could be read. While an input method is composing, the panel doesn't take
+    /// focus: that would commit the composition into the user's text.
+    fn show_capture_error(&self, error: PlatformError) {
+        let keys = !matches!(error, PlatformError::Composing);
+        self.show_notice_with(error.to_string(), None, keys);
+    }
+
+    /// Opens the panel for a selection and starts its first run. Returns why it didn't, for an
+    /// automatic suggestion's log line.
+    fn open(&self, captured: Capture, auto: bool, preset_id: Option<String>) -> Result<(), AutoOutcome> {
+        let (id, preset_id) = self.begin(captured, auto, preset_id)?;
+        self.run(id, 0, preset_id, None, false);
+        Ok(())
+    }
+
     /// The review shortcut, with an automatic review showing: the panel takes the keys, and the
     /// shortcut starts no new review. False when there's no automatic review to give them to.
     fn keys_to_automatic_review(&self) -> bool {
@@ -320,7 +302,7 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
         // and `run` shows that result again.
         let preset_id = preset_id
             .or_else(|| {
-                state.last_review.last_style(&captured, Instant::now()).filter(|id| config.preset(id).is_some())
+                state.last_review.last_style(&captured, self.host.now()).filter(|id| config.preset(id).is_some())
             })
             .unwrap_or_else(|| config.default_preset().id.clone());
         let id = state.next_session_id();
@@ -398,47 +380,71 @@ fn job_for(
 /// they interleave with the request. A request numbered below the session's latest run is stale and
 /// starts nothing.
 pub fn run(app: &AppHandle, id: u64, run: u64, preset_id: String, steer: Option<String>, fresh: bool) {
-    let state = state(app);
-    // Read before the settings and key: a save from here on forgets, so this run's result isn't
-    // kept when it may have been asked with settings from before the save.
-    let generation = state.last_review.generation();
-    let config = state.config();
-    let Some(preset) = config.preset(&preset_id).cloned() else { return };
-    let profile = state.active_profile();
-    let proofread = is_proofread(&preset_id, steer.as_deref());
-    let mut review = state.review.lock().unwrap();
-    let Some(current) = review.start_run(id, run, proofread) else { return };
-    let job = job_for(&config, profile, &current.capture, preset, steer);
-    if !fresh && let Some(outcome) = state.last_review.recall(&current.capture, &job, Instant::now()) {
-        drop(review);
-        platform::trace(format_args!("review: the same selection again, showing the last result"));
-        let _ = app.emit_to(
+    controller(app, |c| c.run(id, run, preset_id, steer, fresh));
+}
+
+/// One run of a review, as its engine task knows it: what each of its events carries, and what a
+/// finished run is kept with.
+pub(crate) struct Asked {
+    id: u64,
+    preset_id: String,
+    run: u64,
+    /// `last_review`'s generation when the run started (`Memory::generation`).
+    generation: u64,
+    /// Kept with the result, to tell whether a later review is of the same selection, asked the
+    /// same way.
+    capture: Capture,
+    job: Job,
+}
+
+impl<S: Shell, H: Host> Controller<'_, S, H> {
+    /// Starts (or restarts) run `run` of review `id` (see [`run`]).
+    fn run(&self, id: u64, run: u64, preset_id: String, steer: Option<String>, fresh: bool) {
+        let state = self.state;
+        // Read before the settings and key: a save from here on forgets, so this run's result isn't
+        // kept when it may have been asked with settings from before the save.
+        let generation = state.last_review.generation();
+        let config = state.config();
+        let Some(preset) = config.preset(&preset_id).cloned() else { return };
+        let profile = state.active_profile();
+        let proofread = is_proofread(&preset_id, steer.as_deref());
+        let mut review = state.review.lock().unwrap();
+        let Some(current) = review.start_run(id, run, proofread) else { return };
+        let job = job_for(&config, profile, &current.capture, preset, steer);
+        if !fresh && let Some(outcome) = state.last_review.recall(&current.capture, &job, self.host.now()) {
+            drop(review);
+            self.host.trace(format_args!("review: the same selection again, showing the last result"));
+            self.shell.emit(
+                "overlay",
+                "overlay:engine",
+                EnginePayload { id, preset_id, run, event: Event::Done(outcome), remembered: true },
+            );
+            return;
+        }
+        let asked = Asked { id, preset_id, run, generation, capture: current.capture.clone(), job: job.clone() };
+        // Under the lock, as the review's task: a dismissal or a newer run cancels it.
+        current.task = Some(self.host.start_run(job, asked));
+    }
+
+    /// The engine sent `event` for run `asked`: a finished result is kept, to show again, and each
+    /// event goes to the panel, which drops those of a run or review it has replaced.
+    fn engine_event(&self, asked: &Asked, event: Event) {
+        if let Event::Done(outcome) = &event {
+            let review = Finished::new(asked.capture.clone(), asked.job.clone(), outcome.clone(), self.host.now());
+            self.state.last_review.remember(asked.generation, review);
+        }
+        self.shell.emit(
             "overlay",
             "overlay:engine",
-            EnginePayload { id, preset_id, run, event: Event::Done(outcome), remembered: true },
+            EnginePayload {
+                id: asked.id,
+                preset_id: asked.preset_id.clone(),
+                run: asked.run,
+                event,
+                remembered: false,
+            },
         );
-        return;
     }
-    // Kept with the result, to tell whether a later review is of the same selection, asked the same way.
-    let asked = (current.capture.clone(), job.clone());
-    let engine = state.engine.clone();
-    let handle = app.clone();
-    current.task = Some(tauri::async_runtime::spawn(async move {
-        engine
-            .run(job, &mut |event| {
-                if let Event::Done(outcome) = &event {
-                    let (capture, job) = asked.clone();
-                    let review = Finished::new(capture, job, outcome.clone(), Instant::now());
-                    handle.state::<AppState>().last_review.remember(generation, review);
-                }
-                let _ = handle.emit_to(
-                    "overlay",
-                    "overlay:engine",
-                    EnginePayload { id, preset_id: preset_id.clone(), run, event, remembered: false },
-                );
-            })
-            .await;
-    }));
 }
 
 /// Whether a run is a plain proofread: the Proofread style with no instruction. Only a proofread is
@@ -451,14 +457,14 @@ fn is_proofread(preset_id: &str, steer: Option<&str>) -> bool {
 /// without their clipboard put aside, after a replacement that couldn't (Windows).
 pub async fn apply(app: &AppHandle, id: u64, text: String, anyway: bool) -> Result<String, String> {
     let live = Live(app);
-    let controller = Controller { state: app.state::<AppState>().inner(), shell: &live, host: &live };
+    let controller = live_controller(app, &live);
     controller.apply(id, text, anyway).await
 }
 
 /// Settings' "Try it now" box asked for a review (⌘E E, or its Review button), as if its text were
 /// selected in another app.
 pub fn review_playground(app: &AppHandle, text: String, bounds: platform::Rect) {
-    let _ = begin(app, platform::playground_capture(text, bounds), false, None);
+    let _ = controller(app, |c| c.open(platform::playground_capture(text, bounds), false, None));
 }
 
 pub fn dismiss(app: &AppHandle, id: Option<u64>) {
@@ -501,7 +507,7 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
             self.shell.emit("settings", "settings:playground-apply", text);
             return Ok("Applied.".into());
         }
-        state.review.lock().unwrap().start_quiet(Instant::now());
+        state.review.lock().unwrap().start_quiet(self.host.now());
         let suggestion = text.clone();
         let result = self.host.write(captured, text, proofread, anyway).await?;
         if let Some(ReplaceOutcome::ClipboardKept(PlatformError::ClipboardUnrestorable(why))) = &result
@@ -572,56 +578,62 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
 /// Quick fix: proofread the selection and replace it directly, with no overlay.
 pub async fn quick_fix(app: &AppHandle) {
     let _busy = crate::updater::busy();
-    match check_target(app) {
-        Target::Allowed => {}
-        Target::Ignored => return,
-        Target::Excluded(message) => return show_error(app, message),
-        Target::NotTrusted => return show_error(app, NOT_TRUSTED.into()),
-    }
-    warm_connection(app);
-    let state = state(app);
-    let captured = match capture(app, true, state.config().select_sentence).await {
-        Ok(c) => c,
-        Err(error) => return show_capture_error(app, error),
-    };
-    let config = state.config();
-    if captured.pid == platform::own_pid() || config.is_excluded(&captured.bundle_id) {
-        return;
-    }
-    if !captured.editable {
-        return show_error(
-            app,
-            "Quick fix works in text you’re editing. Use your review shortcut to review this text instead.".into(),
-        );
-    }
-    let job = job_for(&config, state.active_profile(), &captured, config.default_preset().clone(), None);
-    let mut outcome = None;
-    let mut failure = None;
-    state
-        .engine
-        .run(job, &mut |event| match event {
-            Event::Done(done) => outcome = Some(done),
-            Event::Failed { message, .. } => failure = Some(message),
-            _ => {}
-        })
-        .await;
-    let Some(outcome) = outcome else {
-        return show_error(app, failure.unwrap_or_else(|| "Couldn’t check that text.".into()));
-    };
-    // Like the panel, leave out changes that would drop the author's own terms.
-    let revised = outcome.kept_text();
-    if revised == captured.text {
-        return;
-    }
-    state.review.lock().unwrap().start_quiet(Instant::now());
-    let text = revised.clone();
-    let proofread = config.keep_formatting && is_proofread(&config.default_preset().id, None);
-    let result = tauri::async_runtime::spawn_blocking(move || platform::replace(&captured, &text, proofread)).await;
-    match result {
-        Ok(result) => {
-            show_outcome(app, result.into(), revised);
+    let live = Live(app);
+    let controller = live_controller(app, &live);
+    controller.quick_fix().await;
+}
+
+impl<S: Shell, H: Host> Controller<'_, S, H> {
+    /// Quick fix (see [`quick_fix`]).
+    async fn quick_fix(&self) {
+        match self.check_target() {
+            Target::Allowed => {}
+            Target::Ignored => return,
+            Target::Excluded(message) => return self.show_error(message),
+            Target::NotTrusted => return self.show_error(NOT_TRUSTED.into()),
         }
-        Err(error) => show_error(app, error.to_string()),
+        self.host.warm_connection();
+        let state = self.state;
+        let captured = match self.host.capture(true, state.config().select_sentence).await {
+            Ok(c) => c,
+            Err(error) => return self.show_capture_error(error),
+        };
+        let config = state.config();
+        if captured.pid == self.host.own_pid() || config.is_excluded(&captured.bundle_id) {
+            return;
+        }
+        if !captured.editable {
+            return self.show_error(
+                "Quick fix works in text you’re editing. Use your review shortcut to review this text instead.".into(),
+            );
+        }
+        let job = job_for(&config, state.active_profile(), &captured, config.default_preset().clone(), None);
+        let mut outcome = None;
+        let mut failure = None;
+        for event in self.host.run_to_end(job).await {
+            match event {
+                Event::Done(done) => outcome = Some(done),
+                Event::Failed { message, .. } => failure = Some(message),
+                _ => {}
+            }
+        }
+        let Some(outcome) = outcome else {
+            return self.show_error(failure.unwrap_or_else(|| "Couldn’t check that text.".into()));
+        };
+        // Like the panel, leave out changes that would drop the author's own terms.
+        let revised = outcome.kept_text();
+        if revised == captured.text {
+            return;
+        }
+        state.review.lock().unwrap().start_quiet(self.host.now());
+        let text = revised.clone();
+        let proofread = config.keep_formatting && is_proofread(&config.default_preset().id, None);
+        match self.host.replace(captured, text, proofread).await {
+            Ok(result) => {
+                self.show_outcome(result, revised);
+            }
+            Err(error) => self.show_error(error),
+        }
     }
 }
 
@@ -701,7 +713,7 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
         // Keys the panel takes never reach other apps, so any typing or clicking seen here means the
         // user has moved on.
         // In its own statement: `hold_for_click` takes the review lock.
-        let closes = state.review.lock().unwrap().closes_on_interaction(Instant::now());
+        let closes = state.review.lock().unwrap().closes_on_interaction(self.host.now());
         // A click on the reviewed window may be the start of dragging it by its title bar.
         if closes && !self.host.hold_for_click() {
             self.dismiss(None);
@@ -722,79 +734,107 @@ fn platform_panel_focused() -> bool {
 /// Reacts to activity in other apps: dismiss transient overlays, start automatic reviews.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn on_watch_event(app: &AppHandle, event: WatchEvent) {
-    let state = state(app);
     match event {
         WatchEvent::Interaction => controller(app, |c| c.on_interaction()),
-        WatchEvent::Wait => {
-            state.watch_generation.fetch_add(1, Ordering::Relaxed);
-        }
+        WatchEvent::Wait => controller(app, |c| c.on_wait()),
         WatchEvent::MaybeSelection { settle, gesture } => {
-            // In this order: ending the gesture may close a panel, which the last check reads. Each
-            // lock is read in its own statement, so none is held while another is taken.
-            let window_dragged = crate::follow::gesture_ended(app);
-            let turned_on = state.config().auto_popup;
-            let paused = state.paused.load(Ordering::Relaxed);
-            let (just_applied, review_open) = {
-                let review = state.review.lock().unwrap();
-                (review.is_quiet(Instant::now()), review.keyboard_review_open())
-            };
-            let gate = AutoGate { window_dragged, turned_on, paused, just_applied, review_open };
-            if let Some(outcome) = auto_gate(&gate) {
-                return trace_auto(gesture, None, &outcome);
-            }
-            let generation = state.watch_generation.fetch_add(1, Ordering::Relaxed) + 1;
+            let Some(generation) = controller(app, |c| c.maybe_selection(gesture)) else { return };
             let app = app.clone();
-            warm_connection(&app);
             tauri::async_runtime::spawn(async move {
-                // Wait for the selection to settle; any newer event cancels this one.
-                tokio::time::sleep(settle).await;
-                let state = app.state::<AppState>();
-                if state.watch_generation.load(Ordering::Relaxed) != generation {
-                    return trace_auto(gesture, None, &AutoOutcome::Superseded);
-                }
-                match check_target(&app) {
-                    Target::Allowed => {}
-                    Target::Ignored => return trace_auto(gesture, None, &AutoOutcome::OwnWindow),
-                    Target::Excluded(_) => return trace_auto(gesture, None, &AutoOutcome::Excluded),
-                    Target::NotTrusted => return trace_auto(gesture, None, &AutoOutcome::NotTrusted),
-                }
-                let mut captured = capture(&app, false, false).await;
-                // After ⌘A, some apps (Electron ones especially) take a moment to report the new
-                // selection through Accessibility. Try again briefly; never fall back to ⌘C.
-                if gesture == SelectionGesture::SelectAll {
-                    for attempt in 1..=SELECT_ALL_RETRIES {
-                        let Err(PlatformError::NoSelection) = captured else { break };
-                        trace_auto(gesture, None, &AutoOutcome::Retrying { attempt, of: SELECT_ALL_RETRIES });
-                        tokio::time::sleep(SELECT_ALL_RETRY_DELAY).await;
-                        if state.watch_generation.load(Ordering::Relaxed) != generation {
-                            return trace_auto(gesture, None, &AutoOutcome::Superseded);
-                        }
-                        captured = capture(&app, false, false).await;
-                    }
-                }
-                let captured = match captured {
-                    Ok(captured) => captured,
-                    Err(error) => return trace_auto(gesture, None, &AutoOutcome::ReadFailed(error)),
-                };
-                let app_id = Some(captured.bundle_id.as_str());
-                let config = state.config();
-                let (min_chars, max_chars) = (config.auto_min_chars, config.auto_max_chars);
-                if let Some(outcome) = check_selection(&captured.text, captured.editable, min_chars, max_chars) {
-                    return trace_auto(gesture, app_id, &outcome);
-                }
-                if state.review.lock().unwrap().is_showing_text(&captured.text) {
-                    return trace_auto(gesture, app_id, &AutoOutcome::AlreadyShowing);
-                }
-                if state.watch_generation.load(Ordering::Relaxed) != generation {
-                    return trace_auto(gesture, app_id, &AutoOutcome::Superseded);
-                }
-                let bundle_id = captured.bundle_id.clone();
-                let outcome = match begin(&app, captured, true, None) {
-                    Ok(()) => AutoOutcome::Shown,
-                    Err(refused) => refused,
-                };
-                trace_auto(gesture, Some(bundle_id.as_str()), &outcome);
+                let live = Live(&app);
+                let controller = live_controller(&app, &live);
+                controller.automatic_review(settle, gesture, generation).await;
             });
+        }
+    }
+}
+
+impl<S: Shell, H: Host> Controller<'_, S, H> {
+    /// The selection watcher asks to wait: a review about to start is for a selection still changing.
+    fn on_wait(&self) {
+        self.state.watch_generation.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A selection may have been made with `gesture`. Returns the watcher's generation for the
+    /// automatic review to start once the selection settles, or None when a rule stops it now.
+    fn maybe_selection(&self, gesture: SelectionGesture) -> Option<u64> {
+        let state = self.state;
+        // In this order: ending the gesture may close a panel, which the last check reads. Each
+        // lock is read in its own statement, so none is held while another is taken.
+        let window_dragged = self.host.gesture_ended();
+        let turned_on = state.config().auto_popup;
+        let paused = state.paused.load(Ordering::Relaxed);
+        let (just_applied, review_open) = {
+            let review = state.review.lock().unwrap();
+            (review.is_quiet(self.host.now()), review.keyboard_review_open())
+        };
+        let gate = AutoGate { window_dragged, turned_on, paused, just_applied, review_open };
+        if let Some(outcome) = auto_gate(&gate) {
+            self.trace_auto(gesture, None, &outcome);
+            return None;
+        }
+        let generation = state.watch_generation.fetch_add(1, Ordering::Relaxed) + 1;
+        self.host.warm_connection();
+        Some(generation)
+    }
+
+    /// Waits for the selection to settle, then reads it and opens an automatic review when every
+    /// rule allows it. Any newer watcher event (`generation` moved on) cancels it.
+    async fn automatic_review(&self, settle: Duration, gesture: SelectionGesture, generation: u64) {
+        let state = self.state;
+        // Wait for the selection to settle; any newer event cancels this one.
+        self.host.sleep(settle).await;
+        if state.watch_generation.load(Ordering::Relaxed) != generation {
+            return self.trace_auto(gesture, None, &AutoOutcome::Superseded);
+        }
+        match self.check_target() {
+            Target::Allowed => {}
+            Target::Ignored => return self.trace_auto(gesture, None, &AutoOutcome::OwnWindow),
+            Target::Excluded(_) => return self.trace_auto(gesture, None, &AutoOutcome::Excluded),
+            Target::NotTrusted => return self.trace_auto(gesture, None, &AutoOutcome::NotTrusted),
+        }
+        let mut captured = self.host.capture(false, false).await;
+        // After ⌘A, some apps (Electron ones especially) take a moment to report the new
+        // selection through Accessibility. Try again briefly; never fall back to ⌘C.
+        if gesture == SelectionGesture::SelectAll {
+            for attempt in 1..=SELECT_ALL_RETRIES {
+                let Err(PlatformError::NoSelection) = captured else { break };
+                self.trace_auto(gesture, None, &AutoOutcome::Retrying { attempt, of: SELECT_ALL_RETRIES });
+                self.host.sleep(SELECT_ALL_RETRY_DELAY).await;
+                if state.watch_generation.load(Ordering::Relaxed) != generation {
+                    return self.trace_auto(gesture, None, &AutoOutcome::Superseded);
+                }
+                captured = self.host.capture(false, false).await;
+            }
+        }
+        let captured = match captured {
+            Ok(captured) => captured,
+            Err(error) => return self.trace_auto(gesture, None, &AutoOutcome::ReadFailed(error)),
+        };
+        let app_id = Some(captured.bundle_id.as_str());
+        let config = state.config();
+        let (min_chars, max_chars) = (config.auto_min_chars, config.auto_max_chars);
+        if let Some(outcome) = check_selection(&captured.text, captured.editable, min_chars, max_chars) {
+            return self.trace_auto(gesture, app_id, &outcome);
+        }
+        if state.review.lock().unwrap().is_showing_text(&captured.text) {
+            return self.trace_auto(gesture, app_id, &AutoOutcome::AlreadyShowing);
+        }
+        if state.watch_generation.load(Ordering::Relaxed) != generation {
+            return self.trace_auto(gesture, app_id, &AutoOutcome::Superseded);
+        }
+        let bundle_id = captured.bundle_id.clone();
+        let outcome = match self.open(captured, true, None) {
+            Ok(()) => AutoOutcome::Shown,
+            Err(refused) => refused,
+        };
+        self.trace_auto(gesture, Some(bundle_id.as_str()), &outcome);
+    }
+
+    fn trace_auto(&self, gesture: SelectionGesture, app_id: Option<&str>, outcome: &AutoOutcome) {
+        match app_id {
+            Some(app_id) => self.host.trace(format_args!("automatic {app_id}: after {gesture}, {outcome}")),
+            None => self.host.trace(format_args!("automatic: after {gesture}, {outcome}")),
         }
     }
 }
@@ -938,16 +978,10 @@ fn is_address(text: &str) -> bool {
     is_link || is_email || is_path || is_domain
 }
 
-fn trace_auto(gesture: SelectionGesture, app_id: Option<&str>, outcome: &AutoOutcome) {
-    match app_id {
-        Some(app_id) => platform::trace(format_args!("automatic {app_id}: after {gesture}, {outcome}")),
-        None => platform::trace(format_args!("automatic: after {gesture}, {outcome}")),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use supereditr_core::provider::ProviderKind;
 
     #[test]
     fn focus_goes_back_only_when_the_reviewed_app_comes_to_the_front() {

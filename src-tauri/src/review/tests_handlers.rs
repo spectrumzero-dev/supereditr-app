@@ -1,25 +1,31 @@
 //! The review's event handlers, run against a fake shell and host that record each call, and
-//! whether the review lock was held when it was made.
+//! whether the review lock was held when it was made. The fake is shared with `tests_runs`.
 
+use super::shell::Engine;
 use super::*;
 use crate::follow::Following;
 use crate::platform::Rect;
+use crate::state::Task;
 use serde_json::{Value, json};
+use std::collections::VecDeque;
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 /// SuperEditr's own process, as the fake host reports it.
-const OWN: i32 = 100;
+pub(super) const OWN: i32 = 100;
 /// The app whose text is reviewed.
-const REVIEWED: i32 = 4242;
+pub(super) const REVIEWED: i32 = 4242;
+/// Its bundle ID.
+pub(super) const REVIEWED_APP: &str = "com.quillpoint.notes";
 /// Another app.
 const OTHER: i32 = 5151;
 
-const BOUNDS: Rect = Rect { x: 40.0, y: 120.0, width: 300.0, height: 20.0 };
+pub(super) const BOUNDS: Rect = Rect { x: 40.0, y: 120.0, width: 300.0, height: 20.0 };
 
 /// An `AppState` with its settings in a folder of its own, deleted afterwards.
-struct TestState {
+pub(super) struct TestState {
     state: AppState,
     dir: PathBuf,
 }
@@ -37,74 +43,148 @@ impl Drop for TestState {
     }
 }
 
-fn test_state() -> TestState {
+pub(super) fn test_state() -> TestState {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("supereditr-review-{}-{n}", std::process::id()));
     TestState { state: AppState::new(dir.join("settings.json")), dir }
 }
 
-/// What the handlers asked of the shell or the host.
+/// What the handlers asked of the shell, the host or the engine.
 #[derive(Debug, Clone, PartialEq)]
-enum Call {
-    Emit { window: String, event: String, payload: Value },
-    Show { keys: bool },
+pub(super) enum Call {
+    Emit {
+        window: String,
+        event: String,
+        payload: Value,
+    },
+    Show {
+        keys: bool,
+    },
     Hide,
-    Position { anchor: Option<Rect>, height: f64 },
-    Resize { anchor: Option<Rect>, height: f64 },
+    Position {
+        anchor: Option<Rect>,
+        height: f64,
+    },
+    Resize {
+        anchor: Option<Rect>,
+        height: f64,
+    },
     Shortcuts(bool),
     StartTyping(i32),
     StopTyping,
     ForgetFocusReturn,
     SelectionAppSwitched,
     HoldForClick,
+    GestureEnded,
     Follow(u64),
     SetReviewApp(i32),
-    Write { text: String, proofread: bool, anyway: bool },
+    ReadSelection {
+        allow_clipboard: bool,
+        select_sentence: bool,
+    },
+    Write {
+        text: String,
+        proofread: bool,
+        anyway: bool,
+    },
+    Replace {
+        text: String,
+        proofread: bool,
+    },
     Copy(String),
+    Sleep(Duration),
+    Trace(String),
+    WarmConnection,
+    /// The engine started run `run` of review `id`, on the text it was asked about.
+    StartRun {
+        id: u64,
+        run: u64,
+        text: String,
+        preset_id: String,
+        steer: Option<String>,
+    },
+    /// Quick fix ran the engine to the end on `text`.
+    RunToEnd(String),
 }
 
-use Call::*;
+pub(super) use Call::*;
 
-fn emit(window: &str, event: &str, payload: Value) -> Call {
+pub(super) fn emit(window: &str, event: &str, payload: Value) -> Call {
     Emit { window: window.into(), event: event.into(), payload }
 }
 
-fn closes() -> Vec<Call> {
+pub(super) fn closes() -> Vec<Call> {
     vec![Hide, Shortcuts(false)]
 }
 
-/// Something that happens to the review while its text is being written.
-type Meanwhile = Box<dyn Fn(&AppState) + Sync>;
+/// Something that happens to the review while the fake waits on the platform.
+pub(super) type Meanwhile = Box<dyn Fn(&AppState) + Sync>;
 
-/// The panel and the platform, made up: each call is recorded; the host answers as set.
-struct Fake<'a> {
-    state: &'a AppState,
+/// The panel, the platform and the engine, made up: each call is recorded; the host answers as set.
+pub(super) struct Fake<'a> {
+    pub(super) state: &'a AppState,
     /// Each call, and whether the review lock was held while it was made.
     calls: Mutex<Vec<(Call, bool)>>,
     /// The panel had keyboard focus (as on Windows after a click back into the app).
-    panel_focused: bool,
+    pub(super) panel_focused: bool,
     /// A press on the reviewed window holds the close.
-    holds_click: bool,
+    pub(super) holds_click: bool,
+    /// The selection gesture that just ended was a drag of the reviewed window.
+    pub(super) window_dragged: bool,
+    /// SuperEditr's Settings window has focus.
+    pub(super) settings_focused: bool,
+    /// Accessibility is granted; true by default.
+    pub(super) trusted: bool,
+    /// The app in front (process, bundle ID, name); the reviewed app by default.
+    pub(super) front: Option<(i32, String, String)>,
+    /// What each read of the selection returns, in turn; no selection once they run out.
+    pub(super) captures: Mutex<VecDeque<Result<Capture, PlatformError>>>,
+    /// What else happens while the selection is read.
+    pub(super) while_reading: Option<Meanwhile>,
+    /// What else happens while the fake waits (the settle wait, a retry's pause).
+    pub(super) while_sleeping: Option<Meanwhile>,
     /// What writing the text into the app comes to; None by default: nothing to write.
-    written: Mutex<Option<Result<Option<ReplaceOutcome>, String>>>,
+    pub(super) written: Mutex<Option<Result<Option<ReplaceOutcome>, String>>>,
     /// What else happens while the text is being written.
-    while_writing: Option<Meanwhile>,
+    pub(super) while_writing: Option<Meanwhile>,
+    /// What quick fix's replacement comes to; applied by default.
+    pub(super) replaced: Mutex<Option<Result<ReplaceOutcome, String>>>,
+    /// The events quick fix's engine run sends.
+    pub(super) events: Mutex<Vec<Event>>,
+    /// The runs the engine started, in order, for a test to send their events.
+    pub(super) runs: Mutex<Vec<Asked>>,
+    /// Each run cancelled, by review and run number.
+    pub(super) cancelled: Arc<Mutex<Vec<(u64, u64)>>>,
+    /// How far the fake clock is ahead of the real one.
+    pub(super) ahead: Mutex<Duration>,
 }
 
 impl<'a> Fake<'a> {
-    fn new(state: &'a AppState) -> Self {
+    pub(super) fn new(state: &'a AppState) -> Self {
         Self {
             state,
             calls: Mutex::default(),
             panel_focused: false,
             holds_click: false,
+            window_dragged: false,
+            settings_focused: false,
+            trusted: true,
+            front: Some((REVIEWED, REVIEWED_APP.into(), "QuillPoint Notes".into())),
+            captures: Mutex::default(),
+            while_reading: None,
+            while_sleeping: None,
             written: Mutex::default(),
             while_writing: None,
+            replaced: Mutex::default(),
+            events: Mutex::default(),
+            runs: Mutex::default(),
+            cancelled: Arc::default(),
+            ahead: Mutex::default(),
         }
     }
 
-    fn controller(&self) -> Controller<'_, Self, Self> {
+    pub(super) fn controller(&self) -> Controller<'_, Self, Self> {
         Controller { state: self.state, shell: self, host: self }
     }
 
@@ -114,11 +194,11 @@ impl<'a> Fake<'a> {
     }
 
     /// The calls made so far, and forgets them.
-    fn take(&self) -> Vec<Call> {
+    pub(super) fn take(&self) -> Vec<Call> {
         self.take_with_lock().into_iter().map(|(call, _)| call).collect()
     }
 
-    fn take_with_lock(&self) -> Vec<(Call, bool)> {
+    pub(super) fn take_with_lock(&self) -> Vec<(Call, bool)> {
         std::mem::take(&mut *self.calls.lock().unwrap())
     }
 }
@@ -167,12 +247,58 @@ impl Host for Fake<'_> {
         self.record(HoldForClick);
         self.holds_click
     }
+    fn gesture_ended(&self) -> bool {
+        self.record(GestureEnded);
+        self.window_dragged
+    }
     fn follow(&self, id: u64, _capture: &Capture) -> Option<Following> {
         self.record(Follow(id));
         None
     }
     fn set_review_app(&self, pid: i32) {
         self.record(SetReviewApp(pid));
+    }
+    fn settings_focused(&self) -> bool {
+        self.settings_focused
+    }
+    fn accessibility_trusted(&self) -> bool {
+        self.trusted
+    }
+    fn focused_app(&self) -> Option<(i32, String, String)> {
+        self.front.clone()
+    }
+    fn capture(
+        &self,
+        allow_clipboard: bool,
+        select_sentence: bool,
+    ) -> impl Future<Output = Result<Capture, PlatformError>> + Send {
+        self.record(ReadSelection { allow_clipboard, select_sentence });
+        if let Some(meanwhile) = &self.while_reading {
+            meanwhile(self.state);
+        }
+        std::future::ready(self.captures.lock().unwrap().pop_front().unwrap_or(Err(PlatformError::NoSelection)))
+    }
+    fn replace(
+        &self,
+        _captured: Capture,
+        text: String,
+        proofread: bool,
+    ) -> impl Future<Output = Result<ReplaceOutcome, String>> + Send {
+        self.record(Replace { text, proofread });
+        std::future::ready(self.replaced.lock().unwrap().take().unwrap_or(Ok(ReplaceOutcome::Applied)))
+    }
+    fn now(&self) -> Instant {
+        Instant::now() + *self.ahead.lock().unwrap()
+    }
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send {
+        self.record(Sleep(duration));
+        if let Some(meanwhile) = &self.while_sleeping {
+            meanwhile(self.state);
+        }
+        std::future::ready(())
+    }
+    fn trace(&self, message: std::fmt::Arguments) {
+        self.record(Trace(message.to_string()));
     }
     fn write(
         &self,
@@ -192,20 +318,43 @@ impl Host for Fake<'_> {
     }
 }
 
+impl Engine for Fake<'_> {
+    fn warm_connection(&self) {
+        self.record(WarmConnection);
+    }
+    fn start_run(&self, job: Job, asked: Asked) -> Task {
+        self.record(StartRun {
+            id: asked.id,
+            run: asked.run,
+            text: job.text,
+            preset_id: job.preset.id,
+            steer: job.steer,
+        });
+        let (cancelled, which) = (self.cancelled.clone(), (asked.id, asked.run));
+        self.runs.lock().unwrap().push(asked);
+        Task::new(move || cancelled.lock().unwrap().push(which))
+    }
+    fn run_to_end(&self, job: Job) -> impl Future<Output = Vec<Event>> + Send {
+        self.record(RunToEnd(job.text));
+        std::future::ready(std::mem::take(&mut *self.events.lock().unwrap()))
+    }
+}
+
 /// A selection in another app (`REVIEWED`), or with `playground` in Settings' "Try it now" box.
-fn capture(text: &str, playground: bool) -> Capture {
+pub(super) fn capture(text: &str, playground: bool) -> Capture {
     let mut capture = platform::playground_capture(text.into(), BOUNDS);
     capture.playground = playground;
     // Set here: on Linux the platform finds a playground's place on screen through the desktop.
     capture.bounds = Some(BOUNDS);
     if !playground {
         capture.pid = REVIEWED;
+        capture.bundle_id = REVIEWED_APP.into();
         capture.app_name = "QuillPoint Notes".into();
     }
     capture
 }
 
-fn session(id: u64, keyboard: bool, captured: Capture) -> Session {
+pub(super) fn session(id: u64, keyboard: bool, captured: Capture) -> Session {
     Session {
         id,
         capture: captured,
@@ -219,19 +368,19 @@ fn session(id: u64, keyboard: bool, captured: Capture) -> Session {
     }
 }
 
-const TEXT: &str = "Brynlee sent the KPI updaet.";
-const FIXED: &str = "Brynlee sent the KPI update.";
+pub(super) const TEXT: &str = "Brynlee sent the KPI updaet.";
+pub(super) const FIXED: &str = "Brynlee sent the KPI update.";
 
 /// Opens review `id` of a selection in another app; `keyboard` when opened with the shortcut.
-fn open(state: &AppState, id: u64, keyboard: bool) {
+pub(super) fn open(state: &AppState, id: u64, keyboard: bool) {
     drop(state.review.lock().unwrap().begin(session(id, keyboard, capture(TEXT, false))));
 }
 
-fn showing(state: &AppState) -> Option<u64> {
+pub(super) fn showing(state: &AppState) -> Option<u64> {
     state.review.lock().unwrap().session().map(|s| s.id)
 }
 
-fn notice_shown(id: u64, message: &str, copy: Option<&str>, keys: bool) -> Vec<Call> {
+pub(super) fn notice_shown(id: u64, message: &str, copy: Option<&str>, keys: bool) -> Vec<Call> {
     let mut calls = vec![
         emit("overlay", "overlay:status", json!({ "id": id, "kind": "notice", "message": message, "copy": copy })),
         Position { anchor: None, height: 126.0 },
@@ -534,7 +683,7 @@ fn the_shortcut_starts_a_new_review_over_one_that_has_the_keys_or_none() {
 
 // Applying.
 
-fn block_on<F: Future>(future: F) -> F::Output {
+pub(super) fn block_on<F: Future>(future: F) -> F::Output {
     tauri::async_runtime::block_on(future)
 }
 

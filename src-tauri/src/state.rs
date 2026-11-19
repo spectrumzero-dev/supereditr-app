@@ -38,7 +38,8 @@ pub struct Session {
     pub keyboard: bool,
     pub anchor: Option<Rect>,
     pub height: f64,
-    pub task: Option<tauri::async_runtime::JoinHandle<()>>,
+    /// The engine's latest run for the review, which `cancel` stops.
+    pub task: Option<Task>,
     /// The number of the latest run the panel asked for: 0 for the one the session starts with,
     /// then one more for each run the panel asks for. Its engine events carry it.
     pub run: u64,
@@ -54,6 +55,21 @@ impl Session {
         if let Some(task) = self.task.take() {
             task.abort();
         }
+    }
+}
+
+/// Work running for a review on a task of its own, such as the engine's run. Dropping it leaves the
+/// work running; `abort` stops it.
+pub struct Task(Box<dyn FnOnce() + Send>);
+
+impl Task {
+    /// The task that `abort` stops.
+    pub fn new(abort: impl FnOnce() + Send + 'static) -> Self {
+        Self(Box::new(abort))
+    }
+
+    pub fn abort(self) {
+        (self.0)()
     }
 }
 

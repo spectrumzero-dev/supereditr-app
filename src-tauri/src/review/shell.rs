@@ -1,18 +1,25 @@
-//! What a review does outside its own state, behind two narrow traits, so its event handlers
+//! What a review does outside its own state, behind three narrow traits, so its event handlers
 //! (`Controller` in `review`) run in tests against fakes that record each call.
 //!
 //! - [`Shell`]: the review's own UI: the panel's events, showing, hiding and placing it, and its
 //!   shortcuts.
-//! - [`Host`]: the few things a review asks of, or does to, the platform and the app it reviews.
+//! - [`Host`]: the few things a review asks of, or does to, the platform and the app it reviews,
+//!   and the clock.
+//! - [`Engine`]: the proofreading engine, as a review starts it and hears from it.
 //!
-//! [`Live`] is the app's implementation of both: each method is the call the handlers made directly
-//! before, on the `AppHandle`, `overlay`, `hotkeys`, `follow` or `platform`.
+//! [`Live`] is the app's implementation of all three: each method is the call the handlers made
+//! directly before, on the `AppHandle`, `overlay`, `hotkeys`, `follow`, `platform` or the engine.
 
+use super::Asked;
 use crate::follow::Following;
 use crate::platform::{self, Capture, PlatformError, Rect, ReplaceOutcome};
+use crate::state::{AppState, Task};
 use serde::Serialize;
 use std::future::Future;
-use tauri::{AppHandle, Emitter};
+use std::time::{Duration, Instant};
+use supereditr_core::provider::{ProviderKind, ProviderProfile};
+use supereditr_core::{Event, Job};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// The review panel and its shortcuts.
 pub(crate) trait Shell: Sync {
@@ -35,7 +42,7 @@ pub(crate) trait Shell: Sync {
 }
 
 /// The platform, and the app whose text is reviewed.
-pub(crate) trait Host: Sync {
+pub(crate) trait Host: Engine + Sync {
     /// SuperEditr's own process.
     fn own_pid(&self) -> i32;
     /// Another app or Space came to the front: a selection under way belongs to the one left.
@@ -45,11 +52,27 @@ pub(crate) trait Host: Sync {
     /// The selection watcher saw a press or key that would close the panel. True when it was a
     /// press on the reviewed window, which then holds the close (`follow::hold_for_click`).
     fn hold_for_click(&self) -> bool;
+    /// A selection gesture ended. True when it was the end of a drag of the reviewed window, which
+    /// selected nothing (`follow::gesture_ended`, which takes the review lock and may close the
+    /// panel).
+    fn gesture_ended(&self) -> bool;
     /// Starts following the window review `id`'s text is in (`follow::start`).
     fn follow(&self, id: u64, capture: &Capture) -> Option<Following>;
     /// The panel's keys come from the app numbered `pid` only; 0 for none (macOS only; does nothing
     /// elsewhere).
     fn set_review_app(&self, pid: i32);
+    /// SuperEditr's own Settings window has focus, asked of the window itself.
+    fn settings_focused(&self) -> bool;
+    /// SuperEditr may read other apps' text: Accessibility is granted. Never asks for it.
+    fn accessibility_trusted(&self) -> bool;
+    /// The app in front: its process, bundle ID (or executable) and name.
+    fn focused_app(&self) -> Option<(i32, String, String)>;
+    /// Reads the selection off the calling thread. `select_sentence` is for the shortcuts only.
+    fn capture(
+        &self,
+        allow_clipboard: bool,
+        select_sentence: bool,
+    ) -> impl Future<Output = Result<Capture, PlatformError>> + Send;
     /// Returns focus to the reviewed field and, when it's back there and `text` differs, writes
     /// `text` into it, off the calling thread. None when there was nothing to write; Err when the
     /// worker failed.
@@ -60,7 +83,30 @@ pub(crate) trait Host: Sync {
         proofread: bool,
         anyway: bool,
     ) -> impl Future<Output = Result<Option<ReplaceOutcome>, String>> + Send;
+    /// Replaces the selection with `text` as it is, off the calling thread (quick fix). Err when the
+    /// worker failed.
+    fn replace(
+        &self,
+        captured: Capture,
+        text: String,
+        proofread: bool,
+    ) -> impl Future<Output = Result<ReplaceOutcome, String>> + Send;
     fn copy_to_clipboard(&self, text: &str);
+    fn now(&self) -> Instant;
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send;
+    /// Writes a line to the diagnostic log (`platform::trace`).
+    fn trace(&self, message: std::fmt::Arguments);
+}
+
+/// The proofreading engine.
+pub(crate) trait Engine: Sync {
+    /// Opens a connection to the active AI ahead of a review, on a task of its own.
+    fn warm_connection(&self);
+    /// Starts run `asked` of a review on a task of its own: the engine works through `job` and
+    /// hands each event to `Controller::engine_event`, with `asked`. Returns the task.
+    fn start_run(&self, job: Job, asked: Asked) -> Task;
+    /// Runs `job` to the end, for quick fix, and returns every event it sent.
+    fn run_to_end(&self, job: Job) -> impl Future<Output = Vec<Event>> + Send;
 }
 
 /// The running app.
@@ -122,6 +168,10 @@ impl Host for Live<'_> {
         crate::follow::hold_for_click(self.0)
     }
 
+    fn gesture_ended(&self) -> bool {
+        crate::follow::gesture_ended(self.0)
+    }
+
     fn follow(&self, id: u64, capture: &Capture) -> Option<Following> {
         crate::follow::start(self.0, id, capture)
     }
@@ -131,6 +181,26 @@ impl Host for Live<'_> {
         platform::set_review_app(pid);
         #[cfg(not(target_os = "macos"))]
         let _ = pid;
+    }
+
+    fn settings_focused(&self) -> bool {
+        self.0.get_webview_window("settings").and_then(|w| w.is_focused().ok()).unwrap_or(false)
+    }
+
+    fn accessibility_trusted(&self) -> bool {
+        platform::accessibility_trusted(false)
+    }
+
+    fn focused_app(&self) -> Option<(i32, String, String)> {
+        platform::focused_app_identity()
+    }
+
+    fn capture(
+        &self,
+        allow_clipboard: bool,
+        select_sentence: bool,
+    ) -> impl Future<Output = Result<Capture, PlatformError>> + Send {
+        capture(self.0, allow_clipboard, select_sentence)
     }
 
     fn write(
@@ -155,9 +225,78 @@ impl Host for Live<'_> {
         async move { written.await.map_err(|e| e.to_string()) }
     }
 
+    fn replace(
+        &self,
+        captured: Capture,
+        text: String,
+        proofread: bool,
+    ) -> impl Future<Output = Result<ReplaceOutcome, String>> + Send {
+        let replaced = tauri::async_runtime::spawn_blocking(move || platform::replace(&captured, &text, proofread));
+        async move { replaced.await.map(ReplaceOutcome::from).map_err(|e| e.to_string()) }
+    }
+
     fn copy_to_clipboard(&self, text: &str) {
         platform::copy_to_clipboard(text);
     }
+
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send {
+        tokio::time::sleep(duration)
+    }
+
+    fn trace(&self, message: std::fmt::Arguments) {
+        platform::trace(message);
+    }
+}
+
+impl Engine for Live<'_> {
+    fn warm_connection(&self) {
+        let state = self.0.state::<AppState>();
+        let profile = state.active_profile().unwrap_or_else(|| ProviderProfile::new(ProviderKind::AppleIntelligence));
+        let providers = state.engine.providers.clone();
+        tauri::async_runtime::spawn(async move { providers.warm(&profile).await });
+    }
+
+    fn start_run(&self, job: Job, asked: Asked) -> Task {
+        let engine = self.0.state::<AppState>().engine.clone();
+        let handle = self.0.clone();
+        let task = tauri::async_runtime::spawn(async move {
+            engine.run(job, &mut |event| super::controller(&handle, |c| c.engine_event(&asked, event))).await;
+        });
+        Task::new(move || task.abort())
+    }
+
+    fn run_to_end(&self, job: Job) -> impl Future<Output = Vec<Event>> + Send {
+        let engine = self.0.state::<AppState>().engine.clone();
+        async move {
+            let mut events = Vec::new();
+            engine.run(job, &mut |event| events.push(event)).await;
+            events
+        }
+    }
+}
+
+/// Reads the selection on a worker thread. AX calls can block on a busy app; they must never
+/// run on the UI thread. `select_sentence` is for the shortcuts only: an automatic suggestion
+/// never changes what the user selected.
+async fn capture(app: &AppHandle, allow_clipboard: bool, select_sentence: bool) -> Result<Capture, PlatformError> {
+    #[cfg(target_os = "macos")]
+    {
+        // Keyboard-layout lookups must happen on the main thread.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = app.run_on_main_thread(move || {
+            platform::refresh_keyboard_layout();
+            let _ = tx.send(());
+        });
+        let _ = tokio::time::timeout(Duration::from_millis(100), rx).await;
+    }
+    let _ = app;
+    tauri::async_runtime::spawn_blocking(move || platform::capture(allow_clipboard, select_sentence))
+        .await
+        .unwrap_or_else(|e| Err(PlatformError::Other(e.to_string())))
 }
 
 /// The platform's replacement. `anyway` is asked for only where the panel offered it (Windows): the

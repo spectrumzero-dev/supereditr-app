@@ -59,8 +59,25 @@ struct LogMark {
     var file: UInt64?
     var lines: Int
 }
-func logFileID(_ path: String) -> UInt64? {
-    (try? FileManager.default.attributesOfItem(atPath: path))?[.systemFileNumber] as? UInt64
+/// One of the log's files, opened once: its identity and its lines come from the same file even
+/// when the app renames the log meanwhile.
+func logFile(_ path: String) -> (file: UInt64?, lines: [Substring]) {
+    guard let handle = FileHandle(forReadingAtPath: path) else { return (nil, []) }
+    defer { try? handle.close() }
+    var info = stat()
+    let file = fstat(handle.fileDescriptor, &info) == 0 ? UInt64(info.st_ino) : nil
+    let text = String(decoding: (try? handle.readToEnd()) ?? Data(), as: UTF8.self)
+    return (file, text.split(separator: "\n"))
+}
+/// capture.log and capture.old.log as they are at one moment. The same file under both names means
+/// the log was renamed between the two reads, so they are read again.
+func logFiles() -> (current: (file: UInt64?, lines: [Substring]), old: (file: UInt64?, lines: [Substring])) {
+    let oldPath = (captureLogPath as NSString).deletingLastPathComponent + "/capture.old.log"
+    var files = (current: logFile(captureLogPath), old: logFile(oldPath))
+    for _ in 0..<5 where files.current.file != nil && files.current.file == files.old.file {
+        files = (current: logFile(captureLogPath), old: logFile(oldPath))
+    }
+    return files
 }
 /// capture.log's lines after `mark` (a `logMark()`), or all of them without one, so a check reads
 /// only what a step added, never an earlier step's line. SuperEditr renames the log to
@@ -68,9 +85,8 @@ func logFileID(_ path: String) -> UInt64? {
 /// was taken in, wherever that file is now: once renamed, its lines after the mark come first and
 /// the whole new file follows.
 func logSince(_ mark: LogMark? = nil) -> [Substring] {
-    let read = { (path: String) in ((try? String(contentsOfFile: path, encoding: .utf8)) ?? "").split(separator: "\n") }
-    let oldPath = (captureLogPath as NSString).deletingLastPathComponent + "/capture.old.log"
-    return logLines(since: mark, current: (logFileID(captureLogPath), read(captureLogPath)), old: (logFileID(oldPath), read(oldPath)))
+    let files = logFiles()
+    return logLines(since: mark, current: files.current, old: files.old)
 }
 /// `logSince` over the two files' identities and lines.
 func logLines(since mark: LogMark?, current: (file: UInt64?, lines: [Substring]), old: (file: UInt64?, lines: [Substring])) -> [Substring] {
@@ -86,7 +102,10 @@ precondition(
         && logLines(since: LogMark(file: 1, lines: 2), current: (1, ["a", "b", "x"]), old: (nil, [])) == ["x"],
     "logLines reads the wrong lines after a mark")
 /// Where capture.log ends now, for `logSince`.
-func logMark() -> LogMark { LogMark(file: logFileID(captureLogPath), lines: logSince().count) }
+func logMark() -> LogMark {
+    let current = logFile(captureLogPath)
+    return LogMark(file: current.file, lines: current.lines.count)
+}
 /// The last line since `mark` that contains `text`, with its timestamp; nil when there is none.
 func lastLogLine(since mark: LogMark, containing text: String) -> String? {
     logSince(mark).last { $0.contains(text) }.map(String.init)

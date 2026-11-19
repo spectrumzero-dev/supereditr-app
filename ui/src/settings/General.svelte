@@ -57,6 +57,13 @@
       </div>
       <span><input type="number" min="1" max="500" bind:value={config.auto_min_chars} onchange={onchange} style="width: 70px" /> characters</span>
     </div>
+    <div class="row">
+      <div>
+        <div class="label">Maximum selection</div>
+        <div class="hint">Longer selections, such as a whole document, are ignored for automatic suggestions. The shortcut still reviews any selection.</div>
+      </div>
+      <span><input type="number" min="500" max="100000" bind:value={config.auto_max_chars} onchange={onchange} style="width: 70px" /> characters</span>
+    </div>
     {/if}
     <div class="row">
       <div>

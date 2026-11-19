@@ -3,8 +3,9 @@
 //!
 //! Pasting a correction and the guarded copy each run as a [`Transaction`]: the user's clipboard is
 //! put aside with every type it offers, SuperEditr's own content goes in, and the user's comes back
-//! afterwards, unless something newer was copied meanwhile. Reads are bounded in size and time, so
-//! an app that holds the clipboard but never answers can't hang SuperEditr.
+//! afterwards, unless something newer was copied meanwhile or a paste may still land. Reads are
+//! bounded in size and time, so an app that holds the clipboard but never answers can't hang
+//! SuperEditr.
 //!
 //! Everything SuperEditr puts on the clipboard, a restore included, carries the password-manager
 //! hint, so clipboard history (Omarchy's included) leaves it out.
@@ -227,6 +228,11 @@ impl<'a> Transaction<'a> {
     pub fn restore_after_copy(self) -> Restore {
         self.put_back()
     }
+
+    /// Ends the transaction without giving the user's clipboard back: SuperEditr's content stays on
+    /// the clipboard, and what was put aside is dropped. For a paste that may still land late, so it
+    /// can't insert the user's old clipboard instead.
+    pub fn leave(self) {}
 
     fn put_back(self) -> Restore {
         let result = if self.before.items.is_empty() {

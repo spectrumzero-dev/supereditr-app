@@ -212,7 +212,8 @@ fn show_outcome(app: &AppHandle, outcome: ReplaceOutcome, suggestion: String) ->
 }
 
 /// Whether a replacement's outcome puts the suggestion on the clipboard: only when nothing was
-/// written. After a write that may have landed, the clipboard is the user's.
+/// written. After a write that may have landed, the clipboard stays as the platform left it: a
+/// paste that can't be confirmed leaves the fix there, so a late paste inserts it.
 fn copies_suggestion(outcome: &ReplaceOutcome) -> bool {
     matches!(outcome, ReplaceOutcome::CopyOnly(_))
 }

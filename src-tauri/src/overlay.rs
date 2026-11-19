@@ -138,8 +138,15 @@ fn place(app: &AppHandle, anchor: Rect, height: f64) {
     #[cfg(target_os = "linux")]
     {
         let wanted = Rect { x, y, width: WIDTH, height };
-        platform::place_overlay(wanted, window.is_visible().unwrap_or(false));
-        keep_placed(wanted);
+        // Counted before anything is sent, and under the lock a correction takes, so a correction
+        // of an earlier placement either finishes first or finds itself superseded and sends nothing.
+        let placement = {
+            let _one_at_a_time = platform::lock(&PLACING);
+            let placement = PLACEMENT.fetch_add(1, Ordering::Relaxed) + 1;
+            platform::place_overlay(wanted, window.is_visible().unwrap_or(false));
+            placement
+        };
+        keep_placed(wanted, placement);
     }
     #[cfg(target_os = "macos")]
     let _ = window.set_position(LogicalPosition::new(x, y));
@@ -149,6 +156,11 @@ fn place(app: &AppHandle, anchor: Rect, height: f64) {
 /// stops.
 #[cfg(target_os = "linux")]
 static PLACEMENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Held while a placement or a correction of one is sent to the compositor, so the two don't
+/// interleave.
+#[cfg(target_os = "linux")]
+static PLACING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Whether the panel's window isn't where it was put, or is smaller than it was asked to be, which
 /// cuts the card off. A larger window is left alone: a window has a smallest size of its own, and
@@ -170,12 +182,11 @@ fn drifted(wanted: Rect, actual: Rect) -> bool {
 /// Hyprland also resizes a window around its centre whenever the window's own limits on its size
 /// change, which moves it. Nothing corrects any of that later.
 #[cfg(target_os = "linux")]
-fn keep_placed(wanted: Rect) {
+fn keep_placed(wanted: Rect, placement: u64) {
     use std::time::Duration;
     /// Milliseconds between checks. They start again after a correction.
     const WAITS: [u64; 6] = [40, 80, 150, 300, 600, 1200];
     const MOST_CORRECTIONS: u32 = 6;
-    let placement = PLACEMENT.fetch_add(1, Ordering::Relaxed) + 1;
     tauri::async_runtime::spawn(async move {
         let (mut corrections, mut next) = (0, 0);
         while let Some(wait) = WAITS.get(next) {
@@ -203,7 +214,15 @@ fn keep_placed(wanted: Rect) {
                 return;
             }
             corrections += 1;
-            let _ = tauri::async_runtime::spawn_blocking(move || platform::place_overlay(wanted, true)).await;
+            // Checked again where it is sent: the panel may have been placed anew, or hidden, while
+            // the compositor answered or this waited its turn.
+            let _ = tauri::async_runtime::spawn_blocking(move || {
+                let _one_at_a_time = platform::lock(&PLACING);
+                if PLACEMENT.load(Ordering::Relaxed) == placement {
+                    platform::place_overlay(wanted, true);
+                }
+            })
+            .await;
             next = 0;
         }
     });

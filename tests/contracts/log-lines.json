@@ -12,14 +12,7 @@
       "text": "shortcut com.google.Chrome: read 42 characters of 42 in the field via Accessibility in 12ms; replacing allowed",
       "matched_by": [
         { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "com.google.Chrome: read" },
-        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "via Accessibility" },
-        {
-          "driver": "macos",
-          "file": "tests/ui/smoke.swift",
-          "kind": "substring",
-          "pattern": "read \\(paragraphText.count) characters",
-          "vars": { "\\(paragraphText.count)": "42" }
-        }
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "via Accessibility" }
       ]
     },
     {
@@ -295,8 +288,7 @@
       "text": "paste chromium: the whole selection: 9 changes, more than 8",
       "matched_by": [
         { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "paste chromium: " },
-        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "the whole selection: " },
-        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "more than 8" }
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "the whole selection: " }
       ]
     },
     {

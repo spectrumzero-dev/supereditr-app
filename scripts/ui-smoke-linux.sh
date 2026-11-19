@@ -275,6 +275,14 @@ set_clipboard() {
   esac
 }
 
+# wait_replaced MARK APP_ID SECONDS prints the line that says how a replacement in the app ended
+# (log_lines.rs, Replaced), or nothing. Other lines start "replace APP_ID: " too, such as one about
+# the clipboard after a paste, and come before it: a wait for the bare prefix would take one of them.
+wait_replaced() {
+  local mark="$1" app="$2" seconds="$3"
+  vm "wait_log $mark 'replace $app: (applied|copy-only|uncertain|clipboard kept) ' $seconds"
+}
+
 # review_and_apply CASE_LABEL WINDOW_REGEX APP_ID SHOT [apply|copy]: presses the review shortcut over
 # the selection in the window in front, waits for a suggestion and presses Alt+Enter. Sets
 # REVIEW_PANEL, REVIEW_READ and REVIEW_RESULT.
@@ -324,7 +332,7 @@ review_and_apply() {
     REVIEW_RESULT="copy"
   else
     key alt-ret
-    REVIEW_RESULT="$(vm "wait_log $mark 'replace $app: ' 6")"
+    REVIEW_RESULT="$(wait_replaced "$mark" "$app" 6)"
   fi
   vm 'wait_closed 3' || true
   sleep 0.5
@@ -405,7 +413,7 @@ chromium_cases() {
     check "$id: the panel shows the fixes" "$(ok has "$text" "[0-9]+ changes?")" "${text:0:120}"
     vm "shot 13-chromium-$id-review"
     key alt-ret
-    REVIEW_RESULT="$(vm "wait_log $mark 'replace chromium: ' 10")"
+    REVIEW_RESULT="$(wait_replaced "$mark" chromium 10)"
     vm 'wait_closed 3' || true
     sleep 0.5
     how="$(vm "log_since $mark | grep 'paste chromium: ' | cut -d' ' -f2- | tr '\n' ';'")"
@@ -538,7 +546,12 @@ editor_cases() {
   after="$(vm 'sleep 0.3; clip_digest')"
   clip_same "$before" "$after" "gnome-text-editor: the clipboard (image) is restored"
   vm "d_keys $e CTRL Z; sleep 0.5"
-  value="$(vm "field $pid | jq -r .text")"
+  # A slow undo gets three seconds more; a second Ctrl+Z is never pressed.
+  for _ in 1 2 3 4 5 6; do
+    value="$(vm "field $pid | jq -r .text")"
+    [[ "$value" == "$SAMPLE" ]] && break
+    sleep 0.5
+  done
   check "gnome-text-editor: one undo puts the original back" "$(ok is "$value" "$SAMPLE")" "${value:0:100}"
   vm 'shot 41-editor-undone'
 
@@ -551,7 +564,7 @@ editor_cases() {
   local pressed
   pressed="$(vm 'python3 $SMOKE/probe.py press "SuperEditr suggestions" "~replace"')"
   check "the footer's replace key is a button" "$(ok has "$pressed" '"pressed": true')" "$pressed; panel: $(vm panel_text | head -c 160)"
-  result="$(vm "wait_log $mark 'replace org.gnome.TextEditor: ' 6")"
+  result="$(wait_replaced "$mark" org.gnome.TextEditor 6)"
   check "pressing the replace key applies the fix" "$(ok has "$result" ": applied")" "${result#* }"
   value="$(vm "field $pid | jq -r .text")"
   check "pressing the replace key: the document holds the fix" "$(ok both has "$value" "They're going" has "$value" tomorrow)" "${value:0:100}"
@@ -563,7 +576,7 @@ editor_cases() {
   vm "d_focus $e; sleep 0.3; select_all $e; sleep 0.3"
   mark="$(vm log_mark)"
   key meta_l-alt-r
-  result="$(vm "wait_log $mark 'replace org.gnome.TextEditor: ' 10")"
+  result="$(wait_replaced "$mark" org.gnome.TextEditor 10)"
   check "quick fix: applies without a review" "$(ok has "$result" ": applied")" "${result#* }"
   value="$(vm "field $pid | jq -r .text")"
   check "quick fix: the document holds the fix" "$(ok has "$value" "They're going")" "${value:0:100}"
@@ -573,7 +586,7 @@ editor_cases() {
 
 placement_case() {
   begin_case placement "the panel opens by the selection (or the pointer), on screen and over the app"
-  local e corner x y panel win where rect selected after
+  local e corner x y panel win where rect selected after try
   e="$(vm "d_addr '^org.gnome.TextEditor'")"
   [[ "$e" != null ]] || e="$(start_editor "" smoke-sample.txt | tail -1)"
   vm "d_focus $e; sleep 0.3; d_keys $e CTRL Z; sleep 0.3; select_all $e"
@@ -590,9 +603,15 @@ placement_case() {
     key meta_l-alt-e
     vm 'wait_panel 6' > /dev/null || true
     sleep 0.5
-    panel="$(vm panel_placed)"
-    where="$(placement "$panel" "$win")"
-    check "pointer at the $corner: the panel is on screen, over the app" "$(ok has "$where" "^ok")" "pointer $x,$y; ${where#* }"
+    # As in review_and_apply: SuperEditr puts back a move the compositor lost while mapping the
+    # panel, so it gets two seconds more to be in place.
+    for try in 1 2 3 4 5 6 7 8; do
+      panel="$(vm panel_placed)"
+      where="$(placement "$panel" "$win")"
+      has "$where" "^ok" && break
+      sleep 0.25
+    done
+    check "pointer at the $corner: the panel is on screen, over the app" "$(ok has "$where" "^ok")" "pointer $x,$y; ${where#* } (look $try)"
     where="$(next_to "$panel" "$win" "${rect:-null}" "[$x,$y]")"
     check "pointer at the $corner: the panel is next to what was reviewed" "$(ok has "$where" "^ok")" "${where#* }"
     vm "shot 45-placement-$corner"

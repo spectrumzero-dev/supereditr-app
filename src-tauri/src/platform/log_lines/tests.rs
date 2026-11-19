@@ -67,6 +67,9 @@ fn written(id: &str) -> String {
         }
         "replace-applied-linux" => replaced("org.gnome.TextEditor", &ReplaceOutcome::Applied, ms(180)),
         "replace-applied-windows" => replaced("notepad.exe", &ReplaceOutcome::Applied, ms(250)),
+        "replace-applied-anyway-windows" => {
+            Replaced { app: "notepad.exe", anyway: true, outcome: &ReplaceOutcome::Applied, took: ms(250) }.to_string()
+        }
         "replace-uncertain" => replaced("racepad.exe", &ReplaceOutcome::Uncertain(PlatformError::Unverified), ms(1200)),
         "replace-clipboard-kept" => {
             let why = PlatformError::ClipboardUnrestorable("The clipboard couldn’t be put aside.".into());

@@ -111,11 +111,24 @@
           "driver": "linux",
           "file": "scripts/ui-smoke-linux.sh",
           "kind": "regex",
-          "pattern": "replace $app: ",
+          "pattern": "replace $app: (applied|copy-only|uncertain|clipboard kept) ",
           "vars": { "$app": "org.gnome.TextEditor" }
         },
-        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "replace org.gnome.TextEditor: " },
         { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": ": applied" }
+      ]
+    },
+    {
+      "id": "replace-applied-anyway-windows",
+      "writer": "Replaced",
+      "text": "replace notepad.exe anyway, without putting the clipboard aside: applied in 250ms",
+      "matched_by": [
+        {
+          "driver": "windows",
+          "file": "tests/ui/windows/driver.ps1",
+          "kind": "regex-ignore-case",
+          "pattern": " replace ${img}( anyway[^:]*)?: |^\\d+\\.\\d+ focus not back",
+          "vars": { "${img}": "notepad\\.exe" }
+        }
       ]
     },
     {
@@ -127,7 +140,7 @@
           "driver": "windows",
           "file": "tests/ui/windows/driver.ps1",
           "kind": "regex-ignore-case",
-          "pattern": " replace ${img}: |^\\d+\\.\\d+ focus not back",
+          "pattern": " replace ${img}( anyway[^:]*)?: |^\\d+\\.\\d+ focus not back",
           "vars": { "${img}": "notepad\\.exe" }
         },
         { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": ": applied in " },
@@ -178,7 +191,7 @@
           "driver": "windows",
           "file": "tests/ui/windows/driver.ps1",
           "kind": "regex-ignore-case",
-          "pattern": " replace ${img}: |^\\d+\\.\\d+ focus not back",
+          "pattern": " replace ${img}( anyway[^:]*)?: |^\\d+\\.\\d+ focus not back",
           "vars": { "${img}": "notepad\\.exe" }
         },
         { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": ": copy-only |focus not back" }

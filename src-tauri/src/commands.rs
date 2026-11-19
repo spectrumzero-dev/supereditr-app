@@ -486,13 +486,16 @@ pub async fn activate_provider(
 
 /// `activate_provider` without the menu bar.
 pub(crate) async fn activate(state: &AppState, servers: &impl Servers, profile_id: String) -> CmdResult<ProviderCheck> {
-    let mut result = check_with(state, servers, &profile_id).await;
+    // The profile as it is now: both checks use it, and the activation is saved only if it is
+    // still what the settings hold.
+    let checked = state.profile(&profile_id);
+    let mut result = check_profile(servers, checked.as_ref()).await;
     // Reachable, but its saved model isn't offered: switch to the fastest one it has. The switch is
     // checked on a copy and saved only with the activation, so a failed one changes nothing.
     let mut switched = None;
     if !result.ready
         && !result.models.is_empty()
-        && let Some(mut candidate) = state.profile(&profile_id)
+        && let Some(mut candidate) = checked.clone()
     {
         candidate.model = preferred_model(candidate.kind, &result.models);
         result = check_profile(servers, Some(&candidate)).await;
@@ -501,15 +504,24 @@ pub(crate) async fn activate(state: &AppState, servers: &impl Servers, profile_i
     if !result.ready {
         return Err(result.problem.unwrap_or_else(|| "This AI isn’t working yet.".into()));
     }
-    let mut config = state.config();
-    if let Some(model) = switched
-        && let Some(p) = config.providers.iter_mut().find(|p| p.id == profile_id)
-    {
-        p.model = model;
+    // The keys aren't in the settings file, so they are left out of the comparison.
+    let settings = |p: &ProviderProfile| ProviderProfile { api_key: None, ..p.clone() };
+    loop {
+        let (mut config, revision) = state.config_at_revision();
+        let saved = config.providers.iter_mut().find(|p| p.id == profile_id).ok_or("This AI was removed.")?;
+        // Edited during the check: what passed isn't what is saved, and the edit is the newer choice.
+        if checked.as_ref().map(settings) != Some(settings(saved)) {
+            return Err("This AI’s settings changed while it was being checked. Try again.".into());
+        }
+        if let Some(model) = &switched {
+            saved.model = model.clone();
+        }
+        config.active_provider = Some(profile_id.clone());
+        // Refused when anything was saved since the comparison: compare again.
+        if state.save_config_based_on(config, Some(revision)).map_err(|e| e.to_string())?.is_some() {
+            return Ok(result);
+        }
     }
-    config.active_provider = Some(profile_id);
-    state.save_config(config).map_err(|e| e.to_string())?;
-    Ok(result)
 }
 
 fn unique_id(state: &AppState, kind: ProviderKind) -> String {

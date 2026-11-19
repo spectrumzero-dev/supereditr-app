@@ -532,11 +532,15 @@ pub fn start_double_press_tap(
                     }
                     match CFRunLoop::run_in_mode(mode, Duration::from_secs(1), false) {
                         // Only when macOS turned the tap off, so that no key can wait on it, ask
-                        // afresh before turning it back on. Any other stop rereads the last answer.
-                        CFRunLoopRunResult::Stopped => {
-                            enable = turned_off.swap(false, Ordering::Relaxed) && tap_trusted() && check_trust()
+                        // afresh before turning it back on; on a no, remove the tap that's off
+                        // rather than keep it. Any other stop rereads the last answer.
+                        CFRunLoopRunResult::Stopped if turned_off.swap(false, Ordering::Relaxed) => {
+                            if !(tap_trusted() && check_trust()) {
+                                break;
+                            }
+                            enable = true;
                         }
-                        CFRunLoopRunResult::TimedOut => enable = false,
+                        CFRunLoopRunResult::Stopped | CFRunLoopRunResult::TimedOut => enable = false,
                         _ => break,
                     }
                 }

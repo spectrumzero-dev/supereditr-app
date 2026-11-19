@@ -6,7 +6,15 @@
 //! `unsupported.rs`, which reads and writes nothing.
 
 use serde::Serialize;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
+
+/// Locks `mutex` even if a thread panicked while holding it. The platform's statics hold plain
+/// values that stay usable after a panic, so one panic mustn't make every later use panic too.
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux", windows)), allow(dead_code))]
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 pub mod gesture;
 pub mod log_lines;
@@ -229,6 +237,22 @@ impl From<Result<ReplaceMethod, PlatformError>> for ReplaceOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lock_poisoned_by_a_panic_is_still_usable() {
+        let target = std::sync::Arc::new(Mutex::new(Some(7)));
+        let held = std::sync::Arc::clone(&target);
+        let panicked = std::thread::spawn(move || {
+            let _guard = held.lock().unwrap();
+            panic!("a panic while the lock is held");
+        })
+        .join();
+        assert!(panicked.is_err());
+        assert!(target.is_poisoned());
+        assert_eq!(*lock(&target), Some(7));
+        *lock(&target) = None;
+        assert_eq!(*lock(&target), None);
+    }
 
     #[test]
     fn a_write_that_may_have_landed_is_uncertain() {

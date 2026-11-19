@@ -24,7 +24,7 @@ const VOICEOVER_FLAG: &str = "AXEnhancedUserInterface";
 /// moment for every read until then, so a second read can't overtake the first and give up early.
 pub(super) fn enable_web_accessibility(app: &Element, pid: i32, bundle_id: &str) -> Instant {
     static ASKED: Mutex<Option<HashMap<i32, (Instant, bool)>>> = Mutex::new(None);
-    let mut asked = ASKED.lock().unwrap();
+    let mut asked = crate::platform::lock(&ASKED);
     let asked = asked.get_or_insert_with(HashMap::new);
     // VoiceOver turns its flag off when it quits, which takes the tree away, so that flag is checked.
     if let Some(&(deadline, voiceover_flag)) = asked.get(&pid)

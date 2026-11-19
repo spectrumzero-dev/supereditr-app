@@ -237,7 +237,8 @@ async fn quit_on_signal() {
         _ = interrupt.recv() => {}
         _ = hangup.recv() => {}
     }
-    stop();
+    // Off the async runtime's workers: taking the binds out waits on the compositor.
+    let _ = tauri::async_runtime::spawn_blocking(stop).await;
     std::process::exit(0);
 }
 
@@ -286,7 +287,7 @@ pub fn start_app_switch_watcher(on_switch: impl Fn(i32) + Send + Sync + 'static)
     std::mem::forget(desktop().watch_front_window(Box::new(move |window| {
         // Before `on_switch` closes the panel: focus stays with the window the user moved to, even
         // one of the same app, such as a second terminal on another workspace.
-        let mut target = TARGET.lock().unwrap();
+        let mut target = super::lock(&TARGET);
         if moved_away_from(target.as_ref(), &window, own_pid()) {
             *target = None;
         }
@@ -348,7 +349,7 @@ pub fn take_review_keys(_take: bool) -> bool {
 
 /// Gives keyboard focus back to the window the review started in, if it's still `pid`'s.
 pub fn return_focus(pid: i32) {
-    let target = TARGET.lock().unwrap().clone();
+    let target = super::lock(&TARGET).clone();
     if let Some(window) = target.filter(|window| window.pid == pid) {
         let desktop = desktop();
         tauri::async_runtime::spawn(async move {
@@ -383,7 +384,7 @@ fn services<'a>(desktop: &'a dyn Desktop, clipboard: &'a clipboard::Wayland) -> 
 pub fn capture(allow_clipboard: bool, select_sentence: bool) -> Result<Capture, PlatformError> {
     let _one_at_a_time = CHAIN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let desktop = desktop();
-    *TARGET.lock().unwrap() = desktop.front_window().ok().filter(|window| window.pid != own_pid());
+    *super::lock(&TARGET) = desktop.front_window().ok().filter(|window| window.pid != own_pid());
     let clipboard = clipboard::Wayland;
     tauri::async_runtime::block_on(capture::capture(
         &services(desktop.as_ref(), &clipboard),
@@ -484,12 +485,12 @@ pub fn overlay_focused() -> bool {
 /// The user moved to another workspace. The window the text came from stays on the one they left,
 /// and focusing it as the panel closes would take them back there.
 pub fn forget_focus_target() {
-    *TARGET.lock().unwrap() = None;
+    *super::lock(&TARGET) = None;
 }
 
 pub fn overlay_closed() {
     // Not inside an `if let` on the lock: `return_focus` takes it too.
-    let target = TARGET.lock().unwrap().clone();
+    let target = super::lock(&TARGET).clone();
     if let Some(window) = target {
         return_focus(window.pid);
     }

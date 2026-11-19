@@ -285,6 +285,8 @@ pub mod system {
 
     impl Uia {
         fn new() -> Option<Self> {
+            // SAFETY: runs on the worker's own thread, which joins the multithreaded apartment
+            // before making any COM object; the objects made are reference-counted and stay on it.
             unsafe {
                 CoInitializeEx(None, COINIT_MULTITHREADED).ok().ok()?;
                 let automation: IUIAutomation = CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER).ok()?;
@@ -298,20 +300,24 @@ pub mod system {
         }
 
         fn parent(&self, element: &IUIAutomationElement) -> Option<IUIAutomationElement> {
+            // SAFETY: COM calls on live, reference-counted interfaces, on the thread that owns them.
             unsafe { self.walker.as_ref()?.GetParentElement(element).ok() }
         }
 
         /// The focused element or its nearest parent, in the same process, with a TextPattern.
         fn editor(&self, focused: &IUIAutomationElement) -> Option<(IUIAutomationElement, IUIAutomationTextPattern)> {
+            // SAFETY: COM calls on live, reference-counted interfaces, on the thread that owns them.
             let pid = unsafe { focused.CurrentProcessId() }.unwrap_or(0);
             let mut current = Some(focused.clone());
             for _ in 0..PARENTS {
                 let element = current.take()?;
+                // SAFETY: as above.
                 if let Ok(pattern) =
                     unsafe { element.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) }
                 {
                     return Some((element, pattern));
                 }
+                // SAFETY: as above.
                 current = self.parent(&element).filter(|p| unsafe { p.CurrentProcessId() }.unwrap_or(-1) == pid);
             }
             None
@@ -319,19 +325,23 @@ pub mod system {
 
         /// Whether the element or a parent in its process says it's a password field.
         fn password(&self, focused: &IUIAutomationElement) -> bool {
+            // SAFETY: COM calls on live, reference-counted interfaces, on the thread that owns them.
             let pid = unsafe { focused.CurrentProcessId() }.unwrap_or(0);
             let mut current = Some(focused.clone());
             for _ in 0..PARENTS {
                 let Some(element) = current.take() else { return false };
+                // SAFETY: as above.
                 if unsafe { element.CurrentIsPassword() }.is_ok_and(|b| b.as_bool()) {
                     return true;
                 }
+                // SAFETY: as above.
                 current = self.parent(&element).filter(|p| unsafe { p.CurrentProcessId() }.unwrap_or(-1) == pid);
             }
             false
         }
 
         fn read_only(&self, range: &IUIAutomationTextRange) -> Option<bool> {
+            // SAFETY: a COM call on a live, reference-counted interface, on the thread that owns it.
             let value = unsafe { range.GetAttributeValue(UIA_IsReadOnlyAttributeId) }.ok()?;
             // Anything but a boolean (mixed, not supported, or a timed-out call that reports
             // success) is unknown, never "not read-only".
@@ -339,6 +349,7 @@ pub mod system {
         }
 
         fn composing(&self, focused: &IUIAutomationElement, editor: &IUIAutomationElement) -> bool {
+            // SAFETY: COM calls on live, reference-counted interfaces, on the thread that owns them.
             [focused, editor].into_iter().any(|element| unsafe {
                 element
                     .GetCurrentPatternAs::<IUIAutomationTextEditPattern>(UIA_TextEditPatternId)
@@ -352,9 +363,11 @@ pub mod system {
             let mut current = Some(element.clone());
             for _ in 0..ROOT_PARENTS {
                 let element = current.take()?;
+                // SAFETY: a COM call on a live, reference-counted interface, on the thread that owns it.
                 if let Ok(hwnd) = unsafe { element.CurrentNativeWindowHandle() }
                     && !hwnd.is_invalid()
                 {
+                    // SAFETY: takes its arguments by value; a stale handle gives null.
                     let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
                     return (!root.is_invalid()).then_some(root.0 as isize);
                 }
@@ -364,6 +377,8 @@ pub mod system {
         }
 
         fn runtime_id(&self, element: &IUIAutomationElement) -> Vec<i32> {
+            // SAFETY: the caller owns the returned array, a one-dimensional array of 32-bit integers,
+            // so each element fits `id`; it's checked for null and destroyed once, after its last use.
             unsafe {
                 let Ok(array) = element.GetRuntimeId() else { return Vec::new() };
                 if array.is_null() {
@@ -384,6 +399,8 @@ pub mod system {
         }
 
         fn first_rect(&self, range: &IUIAutomationTextRange) -> Option<PxRect> {
+            // SAFETY: the caller owns both arrays: only the `n` RECTs in `rects` are read, it's freed
+            // once with CoTaskMemFree, and `array` is checked for null and destroyed once.
             unsafe {
                 let array = range.GetBoundingRectangles().ok()?;
                 if array.is_null() {
@@ -413,10 +430,12 @@ pub mod system {
         }
 
         fn focused_element(&self) -> Result<IUIAutomationElement, ReadError> {
+            // SAFETY: a COM call on a live, reference-counted interface, on the thread that owns it.
             unsafe { self.automation.GetFocusedElement() }.map_err(|e| ReadError::Failed(format!("{:#x}", e.code().0)))
         }
 
         fn same(&self, a: &IUIAutomationElement, b: &IUIAutomationElement) -> bool {
+            // SAFETY: a COM call on live, reference-counted interfaces, on the thread that owns them.
             unsafe { self.automation.CompareElements(a, b) }.is_ok_and(|same| same.as_bool())
         }
 
@@ -427,6 +446,8 @@ pub mod system {
                 return Err(ReadError::Password);
             }
             let (editor, pattern) = self.editor(&focused).ok_or(ReadError::NoText)?;
+            // SAFETY: here and below, COM calls on live, reference-counted interfaces, on the thread
+            // that owns them.
             let selection = unsafe { pattern.GetSelection() }.map_err(|_| ReadError::NoText)?;
             let ranges = unsafe { selection.Length() }.unwrap_or(0).max(0) as usize;
             // Firefox reports the page document, with no selection, for a field that was focused
@@ -485,6 +506,8 @@ pub mod system {
             let stored = self.stored(token)?;
             let now = self.focused_element()?;
             let same_element = self.same(&now, &stored.focused);
+            // SAFETY: here and below, COM calls on live, reference-counted interfaces, on the thread
+            // that owns them.
             let pattern = unsafe { stored.editor.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) }
                 .map_err(|_| ReadError::NoText)?;
             let selection = unsafe { pattern.GetSelection() }.map_err(|_| ReadError::NoText)?;
@@ -519,6 +542,7 @@ pub mod system {
                 return Err(ReadError::Gone);
             }
             let (_, pattern) = self.editor(&now).ok_or(ReadError::NoText)?;
+            // SAFETY: a COM call on a live, reference-counted interface, on the thread that owns it.
             let document = unsafe { pattern.DocumentRange() }.map_err(|_| ReadError::NoText)?;
             text_of(&document).ok_or(ReadError::NoText)
         }
@@ -530,11 +554,13 @@ pub mod system {
     }
 
     fn text_of(range: &IUIAutomationTextRange) -> Option<Vec<u16>> {
+        // SAFETY: a COM call on a live, reference-counted interface, on the thread that owns it.
         unsafe { range.GetText(MAX_TEXT) }.ok().map(|text| text.to_string().encode_utf16().collect())
     }
 
     /// UTF-16 offsets of a range's ends in the document.
     fn offsets(document: &IUIAutomationTextRange, range: &IUIAutomationTextRange) -> Option<(usize, usize)> {
+        // SAFETY: COM calls on live, reference-counted interfaces, on the thread that owns them.
         let upto = |end: TextPatternRangeEndpoint| unsafe {
             let prefix = document.Clone().ok()?;
             prefix.MoveEndpointByRange(TextPatternRangeEndpoint_End, range, end).ok()?;

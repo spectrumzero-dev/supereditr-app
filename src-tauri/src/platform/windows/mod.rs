@@ -261,7 +261,7 @@ pub fn take_review_keys(_take: bool) -> bool {
 
 /// Gives the keyboard back to the window the review started in.
 pub fn focus_target() {
-    let target = *TARGET.lock().unwrap();
+    let target = *super::lock(&TARGET);
     if let Some(target) = target.filter(|&t| window::alive(t)) {
         overlay::bring_to_front(window::hwnd(target.hwnd));
     }
@@ -275,7 +275,7 @@ pub fn return_focus(pid: i32) {
     if overlay::showing() {
         return;
     }
-    let target = *TARGET.lock().unwrap();
+    let target = *super::lock(&TARGET);
     if target.is_some_and(|t| t.pid as i32 == pid) {
         focus_target();
     }
@@ -319,7 +319,7 @@ pub fn input_idle() -> std::time::Duration {
 /// yet. Runs on a worker thread.
 pub fn capture(allow_clipboard: bool, _select_sentence: bool) -> Result<Capture, PlatformError> {
     let _one_at_a_time = CHAIN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    *TARGET.lock().unwrap() = window::foreground().filter(|w| w.pid as i32 != own_pid());
+    *super::lock(&TARGET) = window::foreground().filter(|w| w.pid as i32 != own_pid());
     capture::capture(&services(), allow_clipboard)
 }
 

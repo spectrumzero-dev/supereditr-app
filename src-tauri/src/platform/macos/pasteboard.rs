@@ -51,6 +51,8 @@ pub struct Snapshot {
     items: Vec<Vec<(Retained<NSString>, Retained<NSData>)>>,
 }
 
+// SAFETY: it holds only NSString and NSData objects read from the pasteboard and never mutated
+// afterwards, and Apple documents immutable NSString and NSData as safe to use from any thread.
 unsafe impl Send for Snapshot {}
 
 impl Snapshot {

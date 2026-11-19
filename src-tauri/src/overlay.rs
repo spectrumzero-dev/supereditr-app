@@ -184,8 +184,9 @@ fn keep_placed(wanted: Rect) {
             if PLACEMENT.load(Ordering::Relaxed) != placement {
                 return;
             }
-            // Not on screen yet, or on a desktop that can't say where its windows are.
-            let Some(actual) = platform::overlay_rect() else { continue };
+            // Not on screen yet, or on a desktop that can't say where its windows are. Asked off the
+            // async runtime's workers, as the placing below is: both wait on the compositor.
+            let Ok(Some(actual)) = tauri::async_runtime::spawn_blocking(platform::overlay_rect).await else { continue };
             if !drifted(wanted, actual) {
                 continue;
             }
@@ -202,7 +203,7 @@ fn keep_placed(wanted: Rect) {
                 return;
             }
             corrections += 1;
-            platform::place_overlay(wanted, true);
+            let _ = tauri::async_runtime::spawn_blocking(move || platform::place_overlay(wanted, true)).await;
             next = 0;
         }
     });

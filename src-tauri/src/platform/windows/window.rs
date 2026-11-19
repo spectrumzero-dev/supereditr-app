@@ -36,11 +36,13 @@ pub fn hwnd(handle: isize) -> HWND {
 
 /// The window in front, or None when there's none (the desktop is switching).
 pub fn foreground() -> Option<WindowRef> {
+    // SAFETY: takes no arguments.
     let handle = unsafe { GetForegroundWindow() };
     if handle.0.is_null() {
         return None;
     }
     let mut pid = 0;
+    // SAFETY: `pid` is a live local; a window destroyed meanwhile makes the call fail, leaving it 0.
     unsafe { GetWindowThreadProcessId(handle, Some(&mut pid)) };
     Some(WindowRef { hwnd: handle.0 as isize, pid })
 }
@@ -48,10 +50,12 @@ pub fn foreground() -> Option<WindowRef> {
 /// Whether `window` still exists and still belongs to the same process.
 pub fn alive(window: WindowRef) -> bool {
     let handle = hwnd(window.hwnd);
+    // SAFETY: IsWindow accepts any handle value, valid or not.
     if !unsafe { IsWindow(Some(handle)) }.as_bool() {
         return false;
     }
     let mut pid = 0;
+    // SAFETY: `pid` is a live local; a window destroyed meanwhile makes the call fail, leaving it 0.
     unsafe { GetWindowThreadProcessId(handle, Some(&mut pid)) };
     pid == window.pid
 }
@@ -59,6 +63,8 @@ pub fn alive(window: WindowRef) -> bool {
 /// The window's class name, such as `Chrome_WidgetWin_1` or `ConsoleWindowClass`.
 pub fn class_name(handle: isize) -> String {
     let mut buffer = [0u16; 256];
+    // SAFETY: the slice passes the buffer's length, which the call writes within; an invalid handle
+    // makes it return 0.
     let n = unsafe { GetClassNameW(hwnd(handle), &mut buffer) };
     String::from_utf16_lossy(&buffer[..n.max(0) as usize])
 }
@@ -66,11 +72,14 @@ pub fn class_name(handle: isize) -> String {
 /// The top-level owner of a window, for comparing a dialog with its app.
 #[allow(dead_code)]
 pub fn root_owner(handle: isize) -> isize {
+    // SAFETY: an invalid handle makes GetAncestor return null.
     unsafe { GetAncestor(hwnd(handle), GA_ROOTOWNER) }.0 as isize
 }
 
 /// The process's program file, such as `C:\Windows\System32\notepad.exe`.
 pub fn image_path(pid: u32) -> Option<String> {
+    // SAFETY: `len` starts at the buffer's length, so the name is written within it, and the process
+    // handle is closed once, after its last use.
     unsafe {
         let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut buffer = [0u16; 1024];
@@ -94,16 +103,18 @@ pub fn file_name(path: &str) -> &str {
 /// ordinary app), 0x3000 high (run as administrator), 0x4000 system. None when its token can't be
 /// read, which for an ordinary user means the process runs above them.
 fn integrity_of(process: HANDLE) -> Option<u32> {
+    // SAFETY: the buffer outlives every pointer into it and is aligned for the label Windows
+    // writes there, whose SID pointer leads back into the same buffer; the token is closed once.
     unsafe {
         let mut token = HANDLE::default();
         OpenProcessToken(process, TOKEN_QUERY, &mut token).ok()?;
-        let mut buffer = [0u8; 256];
+        let mut buffer = [0u64; 32];
         let mut len = 0u32;
         let read = GetTokenInformation(
             token,
             TokenIntegrityLevel,
             Some(buffer.as_mut_ptr() as *mut _),
-            buffer.len() as u32,
+            std::mem::size_of_val(&buffer) as u32,
             &mut len,
         );
         let _ = CloseHandle(token);
@@ -115,6 +126,7 @@ fn integrity_of(process: HANDLE) -> Option<u32> {
 }
 
 pub fn own_integrity() -> u32 {
+    // SAFETY: takes no arguments; the pseudo-handle it returns needs no closing.
     integrity_of(unsafe { GetCurrentProcess() }).unwrap_or(0x2000)
 }
 
@@ -122,6 +134,7 @@ pub fn own_integrity() -> u32 {
 /// SuperEditr sends to such a window, and UI Automation can't read it. A process whose level can't
 /// be read counts as higher.
 pub fn elevated(pid: u32) -> bool {
+    // SAFETY: the process handle is closed once, after its last use.
     let level = unsafe {
         match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
             Ok(process) => {
@@ -137,6 +150,8 @@ pub fn elevated(pid: u32) -> bool {
 
 /// The caret of the window's thread, in screen pixels, when the app uses the system caret.
 pub fn caret_rect(window: WindowRef) -> Option<RECT> {
+    // SAFETY: `info` and `origin` are live locals and `info.cbSize` is its size; the handles are
+    // only passed by value, and a stale one makes a call fail.
     unsafe {
         let thread = GetWindowThreadProcessId(hwnd(window.hwnd), None);
         let mut info = GUITHREADINFO { cbSize: std::mem::size_of::<GUITHREADINFO>() as u32, ..Default::default() };
@@ -155,6 +170,7 @@ pub fn caret_rect(window: WindowRef) -> Option<RECT> {
 
 pub fn cursor() -> Option<POINT> {
     let mut point = POINT::default();
+    // SAFETY: `point` is a live local.
     unsafe { GetCursorPos(&mut point) }.ok()?;
     Some(point)
 }
@@ -171,17 +187,21 @@ pub struct Monitor {
 
 fn monitor_info(monitor: HMONITOR) -> Option<Monitor> {
     let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+    // SAFETY: `info` is a live local with `cbSize` set to its size; a bad monitor handle fails.
     unsafe { GetMonitorInfoW(monitor, &mut info) }.ok().ok()?;
     let (mut dpi_x, mut dpi_y) = (96u32, 96u32);
+    // SAFETY: both outputs are live locals.
     let _ = unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) };
     Some(Monitor { area: info.rcMonitor, work: info.rcWork, scale: f64::from(dpi_x.max(48)) / 96.0 })
 }
 
 /// The monitor holding most of `rect`, or the nearest one.
 pub fn monitor_for_rect(rect: RECT) -> Option<Monitor> {
+    // SAFETY: `rect` is a live local, only read.
     monitor_info(unsafe { MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST) })
 }
 
 pub fn monitor_for_point(point: POINT) -> Option<Monitor> {
+    // SAFETY: takes its arguments by value.
     monitor_info(unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) })
 }

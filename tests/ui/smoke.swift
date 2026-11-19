@@ -228,6 +228,19 @@ func waitFor<T>(_ seconds: Double, _ probe: () -> T?) -> T? {
     return nil
 }
 
+/// For a check that something didn't happen: waits until `probe` finds SuperEditr's sign that it
+/// has decided (a line saying it skipped a suggestion, a key it replayed, a message in its panel),
+/// for at most `limit` seconds, and for at least `floor` seconds in all, so the check looks no
+/// sooner than it did after a fixed wait. Nil when SuperEditr gave no sign in time: then nothing
+/// shows it decided anything, and the check fails rather than passing because it was slow.
+func waitForDecision<T>(atLeast floor: Double, within limit: Double, _ probe: () -> T?) -> T? {
+    let start = Date()
+    let found = waitFor(limit, probe)
+    let left = floor - Date().timeIntervalSince(start)
+    if left > 0 { pump(left) }
+    return found
+}
+
 func screenshot(window: Window?, rect: CGRect? = nil, to path: String) {
     var arguments = ["-x", "-o"]
     if let area = window?.frame ?? rect { arguments += ["-R", "\(Int(area.minX)),\(Int(area.minY)),\(Int(area.width)),\(Int(area.height))"] }
@@ -888,9 +901,12 @@ let turnedOff = waitFor(5) { excludedApps().contains("com.apple.TextEdit") ? tru
 check(turnedOff != nil, "choosing it adds TextEdit to the excluded apps", "excluded_apps: \(excludedApps())")
 press(keyUp, .maskCommand)  // nothing selected
 pump(0.5)
+let offMark = logMark()
 check(selectAll(), "TextEdit's text is selected while SuperEditr is off there")
-pump(3)
-check(overlay() == nil, "no automatic suggestion in an app it's turned off in", "overlay appeared")
+// The selection's automatic suggestion says it skipped the excluded app; the panel is looked for after that.
+let offSkipped = waitForDecision(atLeast: 3, within: 8) { lastLogLine(since: offMark, containing: "skipped: the app is excluded") }
+check(offSkipped != nil && overlay() == nil, "no automatic suggestion in an app it's turned off in",
+      offSkipped == nil ? "capture.log has no line skipping the excluded app within 8 s; latest automatic line: \(lastLogLine(since: offMark, containing: "automatic") ?? "none")" : "overlay appeared")
 press(keyE, .maskCommand)
 pump(0.1)
 press(keyE, .maskCommand)
@@ -929,9 +945,11 @@ section("2")
 pump(0.5)
 KeyLog.seen.removeAll()
 press(keyE, .maskCommand)
-pump(1.0)
+// SuperEditr replaying the ⌘E is its decision that no second press came; the panel is looked for after that.
+let replayed = waitForDecision(atLeast: 1.0, within: 3) { KeyLog.eKeys().contains(true) ? true : nil }
 check(KeyLog.eKeys() == [true], "a single ⌘E reaches the app", "E key downs seen (replayed?): \(KeyLog.eKeys())")
-check(overlay() == nil, "a single ⌘E doesn't open a review", "overlay showing")
+check(replayed != nil && overlay() == nil, "a single ⌘E doesn't open a review",
+      replayed == nil ? "SuperEditr replayed no ⌘E within 3 s, so it hadn't decided" : "overlay showing")
 
 section("3")
 // 3. ⌘E E opens the review and neither press reaches the app.
@@ -1118,10 +1136,19 @@ check(openFront("Terminal", bundleID: "com.apple.Terminal"), "Terminal opens")
 check(waitFor(3) { overlay() == nil ? true : nil } != nil, "switching apps closes the panel", "panel still showing over Terminal")
 quitOpened("com.apple.TextEdit")
 pump(1.5)
+let terminalMark = logMark()
 check(selectAll(), "Terminal's text is selected")
 if focusedValueSettable() == true { log("NOTE Terminal's text reports an editable value; check 4 proves less") }
-pump(3)
-check(overlay() == nil, "no automatic suggestion for terminal output", "overlay appeared")
+// The automatic suggestion's line says what it decided: one naming Terminal once the selection was
+// read, or one saying the app is excluded or the selection couldn't be read, which name no app.
+// The panel is looked for after that.
+let terminalDecided = waitForDecision(atLeast: 3, within: 8) {
+    ["automatic com.apple.Terminal: ", "skipped: the app is excluded", "skipped: the selection couldn't be read"]
+        .lazy.compactMap { lastLogLine(since: terminalMark, containing: $0) }.first
+}
+if let terminalDecided { log("NOTE Terminal's selection: \(terminalDecided)") }
+check(terminalDecided != nil && overlay() == nil, "no automatic suggestion for terminal output",
+      terminalDecided == nil ? "capture.log has no automatic line deciding on Terminal's selection within 8 s; latest automatic line: \(lastLogLine(since: terminalMark, containing: "automatic") ?? "none")" : "overlay appeared")
 quitOpened("com.apple.Terminal")
 
 section("4a")
@@ -1131,11 +1158,10 @@ let long = work + "/long.txt"
 try! String(repeating: "Brynlee sent the KPI report to Kyndal on Friday. ", count: 60)
     .write(toFile: long, atomically: true, encoding: .utf8)
 check(openFront("TextEdit", bundleID: "com.apple.TextEdit", file: long), "TextEdit opens the long draft")
+let longMark = logMark()
 check(selectAll(), "the long draft's text is selected")
-let overMaximum = waitFor(5) { () -> Bool? in
-    let lines = (try? String(contentsOfFile: captureLogPath, encoding: .utf8)) ?? ""
-    return lines.contains("over the maximum of 2000") ? true : nil
-}
+// This selection's line, not an earlier one's.
+let overMaximum = waitFor(5) { lastLogLine(since: longMark, containing: "over the maximum of 2000") }
 check(overMaximum != nil, "a selection over the maximum is skipped for its length", "capture.log has no “over the maximum” line")
 pump(2)
 check(overlay() == nil, "no automatic suggestion for a whole long document", "overlay appeared")
@@ -2071,9 +2097,12 @@ if !FileManager.default.fileExists(atPath: chromeApp) {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(untouched, forType: .string)
             press(keyReturn, .maskAlternate)
-            pump(1)
-            check(NSPasteboard.general.string(forType: .string) == untouched, "⌥↩ leaves the clipboard alone",
-                  "the clipboard holds \"\(NSPasteboard.general.string(forType: .string) ?? "")\"")
+            // The panel saying nothing was replaced is SuperEditr's answer to ⌥↩; the clipboard is
+            // looked at after that.
+            let answered = waitForDecision(atLeast: 1, within: 4) { panelText().contains("Nothing replaced") ? true : nil }
+            check(answered != nil && NSPasteboard.general.string(forType: .string) == untouched, "⌥↩ leaves the clipboard alone",
+                  answered == nil ? "the panel didn't answer ⌥↩ within 4 s; panel text: \(panelText())"
+                      : "the clipboard holds \"\(NSPasteboard.general.string(forType: .string) ?? "")\"")
             check(overlay() != nil, "⌥↩ leaves the panel open when it can't replace")
             check(panelText().contains("Nothing replaced"), "⌥↩ says nothing was replaced", "panel text: \(panelText())")
             screenshot(window: overlay(), to: outDir + "/read-only-pressed.png")

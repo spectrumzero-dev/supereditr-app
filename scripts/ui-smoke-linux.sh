@@ -431,21 +431,25 @@ chromium_cases() {
     vm "shot 13-chromium-$id-applied"
   done
 
-  # Refused: a password field, and a selection holding a key.
+  # Refused: a password field, and a selection holding a key. The panel's message saying why is
+  # SuperEditr's answer: the panel is read once it shows (crates/core's sensitive.rs words the
+  # secret's), and no sooner than 1.5 s after the shortcut.
+  local refused
   for id in password secret; do
     vm "d_focus $page; sleep 0.2; cdp_select $id" > /dev/null
     set_clipboard text
     vm "d_focus $page; sleep 0.3; cdp_select $id" > /dev/null
     before="$(vm clip_digest)"
     mark="$(vm log_mark)"
+    refused='[Pp]assword'
+    [[ "$id" == secret ]] && refused='looks like'
     key meta_l-alt-e
-    sleep 1.5
-    text="$(vm panel_text)"
+    text="$(vm "sleep 1.5; wait_panel_text '$refused' 5")"
     vm "shot 12-chromium-$id"
     if [[ "$id" == password ]]; then
       check "password: the review is refused" "$(ok both lacks "$text" "[0-9] changes?" has "$text" "[Pp]assword")" "panel: ${text:0:120}; log: $(vm "log_since $mark | grep 'shortcut chromium' | cut -d' ' -f2- | head -1")"
     else
-      check "secret: the review is refused" "$(ok both lacks "$text" "[0-9] changes?" isnt "$text" "")" "panel: ${text:0:140}"
+      check "secret: the review is refused" "$(ok both lacks "$text" "[0-9] changes?" has "$text" "looks like")" "panel: ${text:0:140}"
     fi
     key esc
     vm 'wait_closed 3' || true

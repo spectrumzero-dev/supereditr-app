@@ -25,6 +25,8 @@ mod shortcut_check;
 mod state;
 #[cfg(target_os = "linux")]
 mod tray_linux;
+#[cfg(test)]
+mod ui_wording_contract;
 mod updater;
 
 use state::AppState;

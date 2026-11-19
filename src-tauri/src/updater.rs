@@ -55,6 +55,8 @@ const USER_IDLE: Duration = Duration::from_secs(60);
 /// The update window's label, and the event that tells it what's happening.
 const WINDOW: &str = "update";
 const STATUS_EVENT: &str = "update:status";
+/// The update window's title.
+pub(crate) const TITLE: &str = "SuperEditr Updates";
 
 /// Where updating has got to. Serialized for the update window (`UpdateStatus` in the UI).
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -89,7 +91,7 @@ impl Status {
 
     /// The menu-bar menu's line. A window reports a result, so a check that found nothing or failed
     /// leaves the usual words behind.
-    fn menu_line(&self) -> String {
+    pub(crate) fn menu_line(&self) -> String {
         match self {
             Status::Idle | Status::UpToDate { .. } | Status::CheckFailed => "Check for Updates…".into(),
             Status::Checking => "Checking for Updates…".into(),
@@ -284,7 +286,7 @@ pub fn status(app: &AppHandle) -> Status {
 fn show_window(app: &AppHandle) {
     let window = app.get_webview_window(WINDOW).map(Ok).unwrap_or_else(|| {
         WebviewWindowBuilder::new(app, WINDOW, WebviewUrl::App("update.html".into()))
-            .title("SuperEditr Updates")
+            .title(TITLE)
             .inner_size(420.0, 200.0)
             .resizable(false)
             .minimizable(false)

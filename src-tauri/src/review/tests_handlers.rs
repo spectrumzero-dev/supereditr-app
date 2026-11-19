@@ -587,6 +587,23 @@ fn a_notice_replaces_the_review() {
 }
 
 #[test]
+fn a_notice_and_a_new_review_reach_the_panel_in_the_order_they_took_it() {
+    // Each is sent to the panel under the lock that orders them, so a review beginning on another
+    // thread can't have its panel replaced by the notice it had replaced, or the other way round.
+    let state = test_state();
+    let fake = Fake::new(&state);
+    fake.controller().show_error("Select some text first.".into());
+    let notice = fake.take_with_lock();
+    assert!(notice[0].1, "{notice:?}");
+    assert!(notice[1..].iter().all(|(_, held)| !held), "placing and showing the panel come after: {notice:?}");
+
+    fake.controller().begin(capture(TEXT, false), false, None).unwrap();
+    let review = fake.take_with_lock();
+    let sent = review.iter().position(|(call, _)| matches!(call, Emit { event, .. } if event == "overlay:session"));
+    assert_eq!(sent.map(|at| review[at].1), Some(true), "{review:?}");
+}
+
+#[test]
 fn a_notice_while_an_input_method_is_composing_leaves_the_keys_with_the_app() {
     let state = test_state();
     let fake = Fake::new(&state);

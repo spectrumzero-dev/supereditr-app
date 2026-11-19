@@ -53,15 +53,27 @@ struct FakeServers {
     reachable: bool,
     /// The profiles checked, by ID, in order.
     checked: Mutex<Vec<String>>,
+    /// How many checks answer before the server stops answering.
+    answers: usize,
 }
 
 impl FakeServers {
     fn offering(models: &[&str]) -> Self {
-        Self { offered: models.iter().map(|m| m.to_string()).collect(), reachable: true, checked: Mutex::default() }
+        Self {
+            offered: models.iter().map(|m| m.to_string()).collect(),
+            reachable: true,
+            checked: Mutex::default(),
+            answers: usize::MAX,
+        }
     }
 
     fn unreachable() -> Self {
         Self { reachable: false, ..Self::offering(&[]) }
+    }
+
+    /// Answers the first check only.
+    fn answering_once(self) -> Self {
+        Self { answers: 1, ..self }
     }
 }
 
@@ -71,11 +83,14 @@ impl Servers for FakeServers {
     }
 
     async fn check(&self, profile: &ProviderProfile) -> Result<Vec<String>, CheckProblem> {
-        self.checked.lock().unwrap().push(profile.id.clone());
+        let mut checked = self.checked.lock().unwrap();
+        checked.push(profile.id.clone());
+        let answered_before = checked.len() > self.answers;
+        drop(checked);
         if profile.kind.needs_key() && profile.api_key.is_none() {
             return Err("Add an API key".into());
         }
-        if !self.reachable {
+        if !self.reachable || answered_before {
             return Err("Can’t connect: no answer in 8 seconds".into());
         }
         Ok(self.offered.clone())
@@ -289,6 +304,17 @@ fn a_provider_whose_model_is_gone_switches_to_one_its_server_offers() {
     assert_eq!(state.profile(&id).unwrap().model, "qwen3:4b");
     assert_eq!(state.config().active_provider, Some(id.clone()));
     assert_eq!(*servers.checked.lock().unwrap(), [id.clone(), id], "checked again with the new model");
+}
+
+#[test]
+fn a_provider_that_fails_its_check_with_the_switched_model_keeps_the_model_it_had() {
+    let state = test_state();
+    let id = add(&state, ProviderKind::Ollama, "retired-model");
+    let servers = FakeServers::offering(&["mistral", "qwen3:4b"]).answering_once();
+    let error = block_on(activate(&state, &servers, id.clone())).unwrap_err();
+    assert_eq!(error, "Can’t connect: no answer in 8 seconds");
+    assert_eq!(state.profile(&id).unwrap().model, "retired-model");
+    assert_eq!(state.config().active_provider, None);
 }
 
 #[test]

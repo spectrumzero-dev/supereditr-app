@@ -241,15 +241,40 @@ fn dismissing_a_review_cancels_its_run_and_a_later_run_starts_nothing() {
 }
 
 #[test]
-fn an_event_from_a_replaced_review_still_carries_its_own_number_for_the_panel_to_drop() {
+fn an_event_from_a_replaced_review_never_reaches_the_panel() {
     let state = test_state();
     let fake = Fake::new(&state);
     let first = opened(&fake);
     let second = opened(&fake);
     assert_eq!(*fake.cancelled.lock().unwrap(), [(first, 0)]);
     send(&fake, 0, done());
-    assert_eq!(fake.take(), [engine(first, 0, &done(), false)]);
+    assert_eq!(fake.take(), []);
     assert_eq!(showing(&state), Some(second));
+}
+
+#[test]
+fn an_event_from_a_dismissed_review_never_reaches_the_panel() {
+    let state = test_state();
+    let fake = Fake::new(&state);
+    let id = opened(&fake);
+    fake.controller().dismiss(Some(id));
+    fake.take();
+    // The cancelled run's task was already handing the engine's event on.
+    send(&fake, 0, done());
+    assert_eq!(fake.take(), []);
+}
+
+#[test]
+fn an_event_from_a_replaced_run_never_reaches_the_panel() {
+    let state = test_state();
+    let fake = Fake::new(&state);
+    let id = opened(&fake);
+    fake.controller().run(id, 1, proofread(), None, true);
+    fake.take();
+    send(&fake, 0, done());
+    assert_eq!(fake.take(), []);
+    send(&fake, 1, done());
+    assert_eq!(fake.take(), [engine(id, 1, &done(), false)]);
 }
 
 // The review shortcut.

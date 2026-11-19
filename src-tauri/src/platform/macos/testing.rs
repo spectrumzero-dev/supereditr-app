@@ -133,6 +133,8 @@ pub struct World {
     no_text: Cell<bool>,
     write: Cell<Write>,
     moves_selection: Cell<bool>,
+    /// Every request to move the selection fails.
+    refuses_selection: Cell<bool>,
     pastes: Cell<Pastes>,
     /// Like Chromium's rich fields, `AXValue` leaves out empty paragraphs and the rebuilt web text
     /// has them.
@@ -185,6 +187,7 @@ impl World {
             no_text: Cell::new(false),
             write: Cell::new(Write::Applies),
             moves_selection: Cell::new(true),
+            refuses_selection: Cell::new(false),
             pastes: Cell::new(Pastes::Yes),
             drops_empty_paragraphs: Cell::new(false),
             clipboard: RefCell::new(("Rhyan's own copy".into(), Some("<b>Rhyan's own copy</b>".into()))),
@@ -349,6 +352,13 @@ impl World {
     /// The app accepts every request to move its selection and leaves it where it was.
     pub fn keeping_its_selection(self) -> Self {
         self.moves_selection.set(false);
+        self
+    }
+
+    /// The app refuses every request to move its selection, as a field whose selected range can't
+    /// be set does.
+    pub fn refusing_selection_changes(self) -> Self {
+        self.refuses_selection.set(true);
         self
     }
 
@@ -626,6 +636,9 @@ impl Field for Ui<'_> {
     fn select(&self, start: usize, length: usize) -> bool {
         let world = self.world;
         let units = world.field_text().encode_utf16().count();
+        if world.refuses_selection.get() {
+            return false;
+        }
         if self.is_field() && world.moves_selection.get() && start + length <= units {
             world.selection.set((start, length));
         }

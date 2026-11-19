@@ -486,9 +486,19 @@ pub(crate) async fn activate(state: &AppState, servers: &impl Servers, profile_i
     if !result.ready && !result.models.is_empty() {
         let mut config = state.config();
         if let Some(p) = config.providers.iter_mut().find(|p| p.id == profile_id) {
-            p.model = preferred_model(p.kind, &result.models);
+            let switched = preferred_model(p.kind, &result.models);
+            let previous = std::mem::replace(&mut p.model, switched.clone());
             state.save_config(config).map_err(|e| e.to_string())?;
             result = check_with(state, servers, &profile_id).await;
+            if !result.ready {
+                // A failed activation changes nothing: the model goes back, unless it was changed
+                // again meanwhile.
+                let mut config = state.config();
+                if let Some(p) = config.providers.iter_mut().find(|p| p.id == profile_id && p.model == switched) {
+                    p.model = previous;
+                    state.save_config(config).map_err(|e| e.to_string())?;
+                }
+            }
         }
     }
     if !result.ready {

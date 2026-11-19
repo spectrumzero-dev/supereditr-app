@@ -107,14 +107,14 @@ fn end_glide(how: &str) {
         },
     }
     let driver = if matches!(glide.driver, GlideDriver::Link(_)) { "display link" } else { "timer" };
-    // Each step as "frame time|time made|distance": milliseconds from the start, then points.
-    let steps: Vec<String> =
-        glide.steps.iter().map(|(frame, made, pt)| format!("{frame:.1}|{made:.1}|{pt:.2}")).collect();
     trace(format_args!(
-        "follow: glide {how} by {driver}, {:.1} pt in {} steps: {}",
-        (glide.to.0 - glide.from.0).hypot(glide.to.1 - glide.from.1),
-        glide.steps.len(),
-        steps.join(", ")
+        "{}",
+        crate::platform::log_lines::Glide {
+            how,
+            driver,
+            distance: (glide.to.0 - glide.from.0).hypot(glide.to.1 - glide.from.1),
+            steps: &glide.steps,
+        }
     ));
 }
 

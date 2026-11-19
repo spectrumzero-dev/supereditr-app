@@ -79,7 +79,10 @@ impl HyprlandShortcuts {
                             *self.pressed.lock().unwrap() = Some(Instant::now());
                             let on_fire = self.state.lock().unwrap().on_fire.clone();
                             if let (Some(action), Some(on_fire)) = (Action::from_id(activated.shortcut_id()), on_fire) {
-                                crate::platform::trace(format_args!("shortcut {} from the portal", action.id()));
+                                crate::platform::trace(format_args!(
+                                    "{}",
+                                    crate::platform::log_lines::ShortcutFromPortal { action: action.id() }
+                                ));
                                 on_fire(action);
                             }
                         }

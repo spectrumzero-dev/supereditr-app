@@ -11,7 +11,7 @@ use super::log::TRACE_ON;
 use super::seam::{App, Clock, Desktop, Field, Pasteboard, Services, System};
 use super::text::{code_ranges, visible_before};
 use super::{Capture, trace};
-use crate::platform::{PlatformError, Rect};
+use crate::platform::{PlatformError, Rect, log_lines};
 use core_foundation::base::{CFType, TCFType};
 use core_foundation::string::{CFString, CFStringRef};
 use std::ffi::c_void;
@@ -104,7 +104,7 @@ pub(super) fn capture_with<'a, D: Desktop, P: Pasteboard>(
     if !desktop.trusted() {
         return Err(PlatformError::NotTrusted);
     }
-    let source = if allow_clipboard { "shortcut" } else { "automatic" };
+    let source = log_lines::how(allow_clipboard);
     let Some((app, pid)) = desktop.focused_app() else {
         trace(format_args!("{source}: no app in front"));
         return Err(PlatformError::NoSelection);
@@ -138,22 +138,32 @@ pub(super) fn capture_with<'a, D: Desktop, P: Pasteboard>(
         Ok(read) if TRACE_ON.load(Ordering::Relaxed) => {
             let capture = &read.capture;
             // The field's whole length shows a stale read: a selection made with ⌘A should match it.
-            let field = read.field.as_ref().and_then(|e| e.character_count());
+            let of_field = read.field.as_ref().and_then(|e| e.character_count());
+            let took = clock.now().duration_since(started);
+            let access = if capture.editable {
+                "replacing allowed".to_string()
+            } else {
+                why_copy_only(desktop, &app, read, pid)
+            };
             trace(format_args!(
-                "{source} {bundle_id}: read {} characters{} via {} in {:?}; {}",
-                capture.text.chars().count(),
-                field.map(|n| format!(" of {n} in the field")).unwrap_or_default(),
-                if read.field.is_some() { "Accessibility" } else { "⌘C" },
-                clock.now().duration_since(started),
-                if capture.editable {
-                    "replacing allowed".to_string()
-                } else {
-                    why_copy_only(desktop, &app, read, pid)
+                "{}",
+                log_lines::Read {
+                    how: source,
+                    app: &bundle_id,
+                    chars: capture.text.chars().count(),
+                    of_field,
+                    via: if read.field.is_some() { "Accessibility" } else { "⌘C" },
+                    element: "",
+                    took,
+                    access: &access,
                 }
             ))
         }
         Ok(_) => {}
-        Err(error) => trace(format_args!("{source} {bundle_id}: {error} ({:?})", clock.now().duration_since(started))),
+        Err(error) => trace(format_args!(
+            "{}",
+            log_lines::ReadFailed { how: source, app: &bundle_id, error, took: clock.now().duration_since(started) }
+        )),
     }
     result
 }

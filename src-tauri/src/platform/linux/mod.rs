@@ -450,14 +450,7 @@ pub const OVERLAY_TITLE: &str = desktop::lua::OVERLAY_TITLE;
 
 /// Where the panel goes: where it opens next, or, while it shows, where it moves.
 pub fn place_overlay(at: Rect, shown: bool) {
-    trace(format_args!(
-        "panel {} at {:.0},{:.0}, {:.0}×{:.0}",
-        if shown { "moves" } else { "opens" },
-        at.x,
-        at.y,
-        at.width,
-        at.height
-    ));
+    trace(format_args!("{}", super::log_lines::PanelPlaced { shown, at }));
     if let Err(error) = desktop().place_overlay(at, shown) {
         trace(format_args!("panel placement: {error}"));
     }
@@ -475,7 +468,7 @@ pub fn focus_overlay() {
     tauri::async_runtime::spawn(async move {
         let started = std::time::Instant::now();
         match desktop.focus_overlay().await {
-            Ok(()) => trace(format_args!("panel focused after {:?}", started.elapsed())),
+            Ok(()) => trace(format_args!("{}", super::log_lines::PanelFocused { took: started.elapsed() })),
             Err(error) => trace(format_args!("panel focus: {error}")),
         }
     });

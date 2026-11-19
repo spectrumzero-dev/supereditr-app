@@ -166,8 +166,8 @@ impl HyprlandDesktop {
                     let _ = self.eval(lua);
                 }
                 super::super::trace(format_args!(
-                    "Hyprland reloaded its config; added {} binds and the panel rule again",
-                    binds.len()
+                    "{}",
+                    crate::platform::log_lines::HyprlandReloaded { binds: binds.len() }
                 ));
             }
             "activewindowv2" => {

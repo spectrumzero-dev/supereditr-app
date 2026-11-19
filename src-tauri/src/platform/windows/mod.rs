@@ -286,7 +286,7 @@ pub fn return_to_field(capture: &Capture) -> bool {
         (Some(window), Some(field)) if capture.editable => {
             let started = std::time::Instant::now();
             let back = replace::hand_back(&services(), window, field);
-            trace(format_args!("focus {} in {:?}", if back { "back" } else { "not back" }, started.elapsed()));
+            trace(format_args!("{}", super::log_lines::FocusReturned { back, took: started.elapsed() }));
             back
         }
         _ => {

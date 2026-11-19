@@ -1,0 +1,391 @@
+{
+  "comment": "capture.log lines the end-to-end UI drivers read. `text` is a line as the type `writer` in src-tauri/src/platform/log_lines.rs writes it, without the timestamp that `platform::trace` puts before it (`timestamp` under `drivers` is an example of that platform's). Each of `matched_by` is a pattern a driver matches on the line, written exactly as it appears in `file`; `vars` are the driver's variables in it and the values they take for this line. `kind` is how the driver matches: `substring` for a plain contains (Swift `contains`, `grep -F`), `regex` for a case-sensitive regular expression (Swift `.regularExpression`, `grep`, `grep -E`, awk, sed -E), `regex-ignore-case` for PowerShell's `-match`. Each pattern is matched against the timestamp, a space and `text`. Read by src-tauri/src/platform/log_lines/tests.rs.",
+  "drivers": {
+    "macos": { "timestamp": "1763500000" },
+    "linux": { "timestamp": "1763500000.123" },
+    "windows": { "timestamp": "1763500000.123" }
+  },
+  "lines": [
+    {
+      "id": "read-accessibility",
+      "writer": "Read",
+      "text": "shortcut com.google.Chrome: read 42 characters of 42 in the field via Accessibility in 12ms; replacing allowed",
+      "matched_by": [
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "com.google.Chrome: read" },
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "via Accessibility" },
+        {
+          "driver": "macos",
+          "file": "tests/ui/smoke.swift",
+          "kind": "substring",
+          "pattern": "read \\(paragraphText.count) characters",
+          "vars": { "\\(paragraphText.count)": "42" }
+        }
+      ]
+    },
+    {
+      "id": "read-at-spi",
+      "writer": "Read",
+      "text": "shortcut org.gnome.TextEditor: read 1234 characters via AT-SPI in 40ms; pasting allowed",
+      "matched_by": [
+        {
+          "driver": "linux",
+          "file": "scripts/ui-smoke-linux.sh",
+          "kind": "regex",
+          "pattern": "shortcut $app: ",
+          "vars": { "$app": "org.gnome.TextEditor" }
+        },
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "via AT-SPI.*pasting allowed" },
+        {
+          "driver": "linux",
+          "file": "tests/ui/linux/hard-cases.sh",
+          "kind": "regex",
+          "pattern": "read $length characters via AT-SPI.*pasting allowed",
+          "vars": { "$length": "1234" }
+        }
+      ]
+    },
+    {
+      "id": "read-guarded-copy-linux",
+      "writer": "Read",
+      "text": "shortcut foot: read 15 characters via a guarded copy in 220ms; copy-only",
+      "matched_by": [
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "shortcut foot: " },
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "guarded copy.*copy-only" }
+      ]
+    },
+    {
+      "id": "read-ui-automation",
+      "writer": "Read",
+      "text": "shortcut notepad.exe: read 27 characters via UI Automation (UIA RichEditD2DPT element of process 4321, type 50030) in 30ms; KnownSafe",
+      "matched_by": [
+        {
+          "driver": "windows",
+          "file": "tests/ui/windows/driver.ps1",
+          "kind": "regex-ignore-case",
+          "pattern": " shortcut ${img}: ",
+          "vars": { "${img}": "notepad\\.exe" }
+        },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": "via UI Automation.*KnownSafe" },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": "KnownSafe" }
+      ]
+    },
+    {
+      "id": "read-guarded-copy-windows",
+      "writer": "Read",
+      "text": "shortcut WindowsTerminal.exe: read 15 characters via a guarded copy in 240ms; copy-only",
+      "matched_by": [
+        {
+          "driver": "windows",
+          "file": "tests/ui/windows/driver.ps1",
+          "kind": "regex-ignore-case",
+          "pattern": " shortcut ${img}: ",
+          "vars": { "${img}": "WindowsTerminal\\.exe" }
+        },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": "read \\d+ characters" },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": "copy-only|CopyOnly" }
+      ]
+    },
+    {
+      "id": "read-failed-not-responding",
+      "writer": "ReadFailed + not_responding",
+      "text": "shortcut org.gnome.TextEditor: Text Editor isn’t responding, so SuperEditr couldn’t read the selection. (2.5s)",
+      "matched_by": [
+        { "driver": "linux", "file": "tests/ui/linux/hard-cases.sh", "kind": "regex", "pattern": "shortcut org.gnome.TextEditor: " },
+        { "driver": "linux", "file": "tests/ui/linux/hard-cases.sh", "kind": "regex", "pattern": "isn’t responding" }
+      ]
+    },
+    {
+      "id": "read-failed-password",
+      "writer": "ReadFailed",
+      "text": "shortcut quillpoint.exe: SuperEditr doesn’t read password fields. (20ms)",
+      "matched_by": [
+        {
+          "driver": "windows",
+          "file": "tests/ui/windows/driver.ps1",
+          "kind": "regex-ignore-case",
+          "pattern": " shortcut $([regex]::Escape($image)): ",
+          "vars": { "$([regex]::Escape($image))": "quillpoint\\.exe" }
+        },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": "password" }
+      ]
+    },
+    {
+      "id": "replace-applied-linux",
+      "writer": "Replaced",
+      "text": "replace org.gnome.TextEditor: applied in 180ms",
+      "matched_by": [
+        {
+          "driver": "linux",
+          "file": "scripts/ui-smoke-linux.sh",
+          "kind": "regex",
+          "pattern": "replace $app: ",
+          "vars": { "$app": "org.gnome.TextEditor" }
+        },
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "replace org.gnome.TextEditor: " },
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": ": applied" }
+      ]
+    },
+    {
+      "id": "replace-applied-windows",
+      "writer": "Replaced",
+      "text": "replace notepad.exe: applied in 250ms",
+      "matched_by": [
+        {
+          "driver": "windows",
+          "file": "tests/ui/windows/driver.ps1",
+          "kind": "regex-ignore-case",
+          "pattern": " replace ${img}: |^\\d+\\.\\d+ focus not back",
+          "vars": { "${img}": "notepad\\.exe" }
+        },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": ": applied in " },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": ": applied" },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": " shortcut 0x1| replace " }
+      ]
+    },
+    {
+      "id": "replace-uncertain",
+      "writer": "Replaced",
+      "text": "replace racepad.exe: uncertain (SuperEditr couldn’t confirm the change. Check the text before copying the suggestion.) in 1.2s",
+      "matched_by": [
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": ": uncertain " },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": " replace racepad\\.exe" }
+      ]
+    },
+    {
+      "id": "replace-clipboard-kept",
+      "writer": "Replaced",
+      "text": "replace notepad.exe: clipboard kept (The clipboard couldn’t be put aside.) in 90ms",
+      "matched_by": [
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": ": clipboard kept " }
+      ]
+    },
+    {
+      "id": "replace-stale",
+      "writer": "Replaced",
+      "text": "replace notepad.exe: copy-only (The text changed since it was checked. Select it again.) in 40ms",
+      "matched_by": [
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": ": copy-only |focus not back" },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": "changed since" }
+      ]
+    },
+    {
+      "id": "replace-in-a-terminal",
+      "writer": "Replaced",
+      "text": "replace WindowsTerminal.exe: applied in 300ms",
+      "matched_by": [
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": " replace WindowsTerminal\\.exe" }
+      ]
+    },
+    {
+      "id": "focus-not-back",
+      "writer": "FocusReturned",
+      "text": "focus not back in 1.5s",
+      "matched_by": [
+        {
+          "driver": "windows",
+          "file": "tests/ui/windows/driver.ps1",
+          "kind": "regex-ignore-case",
+          "pattern": " replace ${img}: |^\\d+\\.\\d+ focus not back",
+          "vars": { "${img}": "notepad\\.exe" }
+        },
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": ": copy-only |focus not back" }
+      ]
+    },
+    {
+      "id": "applied-in-place",
+      "writer": "AppliedInPlace",
+      "text": "com.google.Chrome: applied in place: 2 edits in 35 ms by typing; verified; 2 of 2 code spans still code",
+      "matched_by": [
+        {
+          "driver": "macos",
+          "file": "tests/ui/smoke.swift",
+          "kind": "substring",
+          "pattern": "\\(bundleID): appl",
+          "vars": { "\\(bundleID)": "com.google.Chrome" }
+        },
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "applied in place: 2 edits" },
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "applied in place:" }
+      ]
+    },
+    {
+      "id": "applied-partly",
+      "writer": "AppliedPartly",
+      "text": "com.apple.TextEdit: applied in place partly: 1 of 2 edits, then focus left the field",
+      "matched_by": [
+        {
+          "driver": "macos",
+          "file": "tests/ui/smoke.swift",
+          "kind": "substring",
+          "pattern": "\\(bundleID): appl",
+          "vars": { "\\(bundleID)": "com.apple.TextEdit" }
+        }
+      ]
+    },
+    {
+      "id": "applying-whole",
+      "writer": "ApplyingWhole",
+      "text": "com.google.Chrome: applying the whole selection: the field has no formatting to keep",
+      "matched_by": [
+        {
+          "driver": "macos",
+          "file": "tests/ui/smoke.swift",
+          "kind": "substring",
+          "pattern": "\\(bundleID): appl",
+          "vars": { "\\(bundleID)": "com.google.Chrome" }
+        }
+      ]
+    },
+    {
+      "id": "glide",
+      "writer": "Glide",
+      "text": "follow: glide done by display link, 130.0 pt in 2 steps: 16.7|17.1|40.25, 33.3|33.9|89.75",
+      "matched_by": [
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "follow: glide done" },
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "regex", "pattern": ", [0-9.]+ pt in" },
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "steps: " }
+      ]
+    },
+    {
+      "id": "code-in-the-field",
+      "writer": "CodeInField",
+      "text": "code in the field: 2 pieces in 3ms; subroles AXCodeStyleGroup",
+      "matched_by": [
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "code in the field" },
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "2 pieces" }
+      ]
+    },
+    {
+      "id": "over-the-maximum",
+      "writer": "Automatic + OverMaximum",
+      "text": "automatic com.apple.TextEdit: after ⌘A, skipped: 3000 characters, over the maximum of 2000",
+      "matched_by": [
+        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "over the maximum of 2000" }
+      ]
+    },
+    {
+      "id": "pasted-in-place",
+      "writer": "PastedInPlace",
+      "text": "paste chromium: applied in place: 2 changes in 2 writes in 310 ms",
+      "matched_by": [
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "paste chromium: " },
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "applied in place: 2 changes in 2 writes" }
+      ]
+    },
+    {
+      "id": "pasted-in-place-in-steps",
+      "writer": "PastedInPlace",
+      "text": "paste chromium: applied in place: 5 changes in 4 writes in 640 ms",
+      "matched_by": [
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "paste chromium: " },
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "applied in place: 5 changes in 4 writes" }
+      ]
+    },
+    {
+      "id": "pasted-whole-too-many-writes",
+      "writer": "PastedWhole + TooManyWrites",
+      "text": "paste chromium: the whole selection: 6 changes take 5 writes, more than 4",
+      "matched_by": [
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "paste chromium: " },
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "take [0-9]+ writes, more than 4" }
+      ]
+    },
+    {
+      "id": "pasted-whole-too-many-changes",
+      "writer": "PastedWhole",
+      "text": "paste chromium: the whole selection: 9 changes, more than 8",
+      "matched_by": [
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "paste chromium: " },
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "the whole selection: " },
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "more than 8" }
+      ]
+    },
+    {
+      "id": "pasted-formatting",
+      "writer": "PastedFormatting",
+      "text": "paste chromium: the formatting goes as HTML",
+      "matched_by": [
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "paste chromium: " },
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "goes as HTML" }
+      ]
+    },
+    {
+      "id": "panel-opens",
+      "writer": "PanelPlaced",
+      "text": "panel opens at 412,230, 548×186",
+      "matched_by": [
+        { "driver": "linux", "file": "tests/ui/linux/vm.sh", "kind": "regex", "pattern": " panel (opens|moves) at " },
+        { "driver": "linux", "file": "tests/ui/linux/vm.sh", "kind": "regex", "pattern": ".*×([0-9]+).*" }
+      ]
+    },
+    {
+      "id": "panel-moves",
+      "writer": "PanelPlaced",
+      "text": "panel moves at 420,237, 548×190",
+      "matched_by": [
+        { "driver": "linux", "file": "tests/ui/linux/vm.sh", "kind": "regex", "pattern": " panel (opens|moves) at " },
+        { "driver": "linux", "file": "tests/ui/linux/vm.sh", "kind": "regex", "pattern": ".*×([0-9]+).*" }
+      ]
+    },
+    {
+      "id": "panel-focused",
+      "writer": "PanelFocused",
+      "text": "panel focused after 85ms",
+      "matched_by": [
+        { "driver": "linux", "file": "tests/ui/linux/hard-cases.sh", "kind": "regex", "pattern": "panel focused" }
+      ]
+    },
+    {
+      "id": "shortcut-from-the-portal",
+      "writer": "ShortcutFromPortal",
+      "text": "shortcut review from the portal",
+      "matched_by": [
+        { "driver": "linux", "file": "tests/ui/linux/hard-cases.sh", "kind": "regex", "pattern": "shortcut review from" }
+      ]
+    },
+    {
+      "id": "main-thread-silent",
+      "writer": "MainThreadSilent",
+      "text": "main thread hasn’t answered in 5.2 s: in no SuperEditr command; thread unknown",
+      "matched_by": [
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "substring", "pattern": "main thread hasn’t answered" }
+      ]
+    },
+    {
+      "id": "hyprland-reloaded",
+      "writer": "HyprlandReloaded",
+      "text": "Hyprland reloaded its config; added 2 binds and the panel rule again",
+      "matched_by": [
+        { "driver": "linux", "file": "scripts/ui-smoke-linux.sh", "kind": "regex", "pattern": "reloaded its config" }
+      ]
+    },
+    {
+      "id": "webview-stopped",
+      "writer": "WebviewStopped",
+      "text": "webview: the overlay window's Renderer process stopped",
+      "matched_by": [
+        {
+          "driver": "windows",
+          "file": "tests/ui/windows/driver.ps1",
+          "kind": "regex-ignore-case",
+          "pattern": "webview: the overlay window.s Renderer process stopped"
+        }
+      ]
+    },
+    {
+      "id": "webview-made-again",
+      "writer": "WebviewMadeAgain",
+      "text": "webview: made the overlay window again in 850ms",
+      "matched_by": [
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": "webview: made the overlay window again" }
+      ]
+    },
+    {
+      "id": "hotkey-pressed",
+      "writer": "HotkeyPressed",
+      "text": "shortcut 0x1: Some(Review)",
+      "matched_by": [
+        { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "regex-ignore-case", "pattern": " shortcut 0x1| replace " }
+      ]
+    }
+  ]
+}

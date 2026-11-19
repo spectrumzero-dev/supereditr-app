@@ -55,14 +55,15 @@ pub enum Clip {
 pub fn replace<R: Raw>(services: &Services<'_, R>, capture: &Capture, text: &str, clip: Clip) -> ReplaceOutcome {
     let started = Instant::now();
     let outcome = attempt(services, capture, text, clip);
-    let said = match &outcome {
-        ReplaceOutcome::Applied => "applied".to_string(),
-        ReplaceOutcome::CopyOnly(why) => format!("copy-only ({why})"),
-        ReplaceOutcome::Uncertain(why) => format!("uncertain ({why})"),
-        ReplaceOutcome::ClipboardKept(why) => format!("clipboard kept ({why})"),
-    };
-    let anyway = if clip == Clip::Leave { " anyway, without putting the clipboard aside" } else { "" };
-    trace(format_args!("replace {}{anyway}: {said} in {:?}", capture.bundle_id, started.elapsed()));
+    trace(format_args!(
+        "{}",
+        crate::platform::log_lines::Replaced {
+            app: &capture.bundle_id,
+            anyway: clip == Clip::Leave,
+            outcome: &outcome,
+            took: started.elapsed(),
+        }
+    ));
     outcome
 }
 

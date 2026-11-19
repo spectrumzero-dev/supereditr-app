@@ -118,8 +118,8 @@ pub fn start(app: &AppHandle) {
                     let tid = main_tid.load(Ordering::Relaxed) as u32;
                     let wait = if tid == 0 { "thread unknown".into() } else { kernel_wait(tid) };
                     trace(format_args!(
-                        "main thread hasn’t answered in {:.1} s: {command}; {wait}",
-                        silent.as_secs_f64()
+                        "{}",
+                        crate::platform::log_lines::MainThreadSilent { silent, command: &command, wait: &wait }
                     ));
                 }
                 Some(Event::Answered(silent)) => {

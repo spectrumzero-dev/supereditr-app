@@ -243,10 +243,15 @@ async fn in_place(
                 return InPlace::Stopped(stopped("the words to fix couldn’t be selected"));
             }
             // Nothing is written yet. An app that refused still has the selection as captured, and
-            // all of it can be replaced. One that didn't answer in time may move its selection
-            // yet, so nothing more is written.
-            let captured =
-                |now: &super::atspi::Field| now.id == field.id && (now.start, now.end) == (field.start, field.end);
+            // all of it can be replaced, as long as it still holds the captured text. One that
+            // didn't answer in time may move its selection yet, so nothing more is written.
+            let captured = |now: &super::atspi::Field| {
+                policy::selection_unchanged(
+                    now.id == field.id && (now.start, now.end) == (field.start, field.end),
+                    Selection::text(field.selected.as_str()),
+                    Selection::text(now.selected.as_str()),
+                )
+            };
             let kept = moved == Moved::Refused
                 && services.fields.focused(window.pid).await.ok().flatten().is_some_and(|now| captured(&now));
             return match kept {
@@ -577,6 +582,21 @@ mod tests {
         assert!(matches!(world.proofread(&capture, fixed), ReplaceOutcome::Applied));
         assert_eq!(world.keys_sent(), ["CTRL V"], "one paste of everything");
         assert!(world.field_text().starts_with(fixed), "{}", world.field_text());
+    }
+
+    #[test]
+    fn a_selection_edited_before_the_app_refuses_is_never_pasted_over() {
+        // The app refuses to move its selection, and the selected text changed in the same place
+        // since it was last checked: the fix was made for other words, so nothing is pasted.
+        let world = World::new("chromium")
+            .with_field(formatted("Their going realy soon", "npm ci"))
+            .pasting()
+            .answering_a_selection(Moved::Refused)
+            .edited_when_asked_to_select("Kyndal is going very soon\nnpm ci");
+        let capture = captured(&world);
+        let outcome = world.proofread(&capture, "They’re going really soon\nnpm ci");
+        assert!(matches!(outcome, ReplaceOutcome::CopyOnly(PlatformError::Stale)), "{outcome:?}");
+        assert!(world.keys_sent().is_empty());
     }
 
     #[test]

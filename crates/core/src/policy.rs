@@ -61,7 +61,7 @@ pub const PASSWORD_MANAGERS: &[App] = &[
     app(Some("com.bitwarden.desktop"), Some("Bitwarden"), Some("Bitwarden.exe")),
     app(Some("org.keepassxc.keepassxc"), Some("org.keepassxc.KeePassXC"), Some("KeePassXC.exe")),
     app(None, None, Some("KeePass.exe")),
-    app(Some("com.nordsec.nordpass"), None, Some("NordPass.exe")),
+    app(Some("com.nordsec.nordpass"), Some("NordPass"), Some("NordPass.exe")),
     app(Some("com.apple.keychainaccess"), None, None),
     app(Some("com.apple.Passwords"), None, None),
     app(None, Some("org.gnome.seahorse.Application"), None),
@@ -153,6 +153,7 @@ mod tests {
         assert!(is_password_manager(Os::MacOs, "com.apple.Passwords"));
         assert!(is_password_manager(Os::Linux, "org.keepassxc.KeePassXC"));
         assert!(is_password_manager(Os::Linux, "bitwarden"), "Linux app IDs ignore case");
+        assert!(is_password_manager(Os::Linux, "nordpass"));
         assert!(is_password_manager(Os::Windows, "keepassxc.EXE"), "Windows file names ignore case");
         assert!(is_password_manager(Os::Windows, "NordPass.exe"));
         assert!(!is_password_manager(Os::Linux, "1Password.exe"), "another system's ID");

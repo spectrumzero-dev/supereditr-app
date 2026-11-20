@@ -63,6 +63,7 @@ const DEFAULT_EXCLUSIONS: &[&str] = &[
     "org.wezfurlong.wezterm",
     "org.gnome.Ptyxis",
     "org.kde.konsole",
+    "NordPass",
 ];
 
 #[cfg(target_os = "linux")]

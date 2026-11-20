@@ -692,7 +692,9 @@ mod tests {
 
     #[test]
     fn a_password_manager_is_never_read_or_copied() {
-        for app in ["com.1password.1password", "com.apple.Passwords", "com.bitwarden.desktop"] {
+        for app in
+            ["com.1password.1password", "com.agilebits.onepassword7", "com.apple.Passwords", "com.bitwarden.desktop"]
+        {
             let world = World::new(app);
             assert!(matches!(world.read_by_shortcut(), Err(PlatformError::SecureField)), "{app}");
             assert!(matches!(world.read_automatically(), Err(PlatformError::SecureField)), "{app}");

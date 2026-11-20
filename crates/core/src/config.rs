@@ -34,6 +34,7 @@ const DEFAULT_EXCLUSIONS: &[&str] = &[
     "com.github.wez.wezterm",
     "com.apple.Passwords",
     "org.keepassxc.keepassxc",
+    "com.agilebits.onepassword7",
 ];
 
 /// The terminals among the default exclusions.

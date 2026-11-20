@@ -54,8 +54,8 @@ const fn app(macos: Option<&'static str>, linux: Option<&'static str>, windows: 
     App { macos, linux, windows }
 }
 
-/// Password managers. On Linux and Windows nothing is ever read from one, not even on a shortcut
-/// press; macOS relies on its default exclusions, which the user can turn off.
+/// Password managers. Nothing is ever read from one, not even on a shortcut press, whatever the
+/// excluded apps say.
 pub const PASSWORD_MANAGERS: &[App] = &[
     app(Some("com.1password.1password"), Some("1Password"), Some("1Password.exe")),
     // 1Password 7 from the Mac App Store.

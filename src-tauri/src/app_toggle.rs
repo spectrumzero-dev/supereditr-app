@@ -10,6 +10,7 @@ use crate::state::AppState;
 use std::sync::Mutex;
 use supereditr_core::Config;
 use supereditr_core::config::is_terminal;
+use supereditr_core::policy::{Os, is_password_manager};
 #[cfg(not(target_os = "linux"))]
 use tauri::Wry;
 #[cfg(not(target_os = "linux"))]
@@ -29,9 +30,12 @@ struct TargetApp {
 
 /// Whether the menu offers to turn SuperEditr off or on in this app. An app without a bundle ID
 /// can't be listed, and an excluded terminal stays off: there, pasting a revision would run it as
-/// input. Settings → Privacy can still turn a terminal on.
+/// input. Settings → Privacy can still turn a terminal on. A password manager is never offered:
+/// nothing is read from one, whatever the excluded apps say, so turning it on would do nothing.
 pub fn offered(config: &Config, bundle_id: &str) -> bool {
-    !bundle_id.is_empty() && !(is_terminal(bundle_id) && config.is_excluded(bundle_id))
+    !bundle_id.is_empty()
+        && !(is_terminal(bundle_id) && config.is_excluded(bundle_id))
+        && !is_password_manager(Os::CURRENT, bundle_id)
 }
 
 /// What the item says for `app`, or None when it's hidden.
@@ -183,8 +187,17 @@ mod tests {
         let mut config = Config::default();
         config.set_excluded("com.apple.TextEdit", true);
         assert_eq!(label(&config, &app("com.apple.TextEdit", "TextEdit")).as_deref(), Some("Turn on in TextEdit"));
+    }
+
+    #[test]
+    fn hides_for_a_password_manager() {
+        let mut config = Config::default();
         let password_manager = app(PASSWORD_MANAGER, "1Password");
-        assert_eq!(label(&config, &password_manager).as_deref(), Some("Turn on in 1Password"));
+        assert!(config.is_excluded(PASSWORD_MANAGER), "excluded by default");
+        assert_eq!(label(&config, &password_manager), None, "turning it on would read nothing");
+        // Taken off the excluded apps in Settings, it still can't be read, so there is nothing to turn off.
+        config.set_excluded(PASSWORD_MANAGER, false);
+        assert_eq!(label(&config, &password_manager), None);
     }
 
     #[test]

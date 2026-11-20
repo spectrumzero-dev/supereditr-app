@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 use supereditr_core::Config;
 use supereditr_core::detect::{self, Candidate};
+use supereditr_core::policy::{Os, is_password_manager};
 use supereditr_core::provider::{
     ChatRequest, CheckCode, CheckProblem, ProviderKind, ProviderProfile, Providers, preferred_model,
 };
@@ -189,13 +190,17 @@ pub fn save_settings(
 /// and what the change needs done, or None when the save was refused.
 pub(crate) fn save_from_settings(
     state: &AppState,
-    config: Config,
+    mut config: Config,
     revision: Option<u64>,
 ) -> CmdResult<Option<(u64, SettingsEffects)>> {
     if config.presets.is_empty() {
         return Err("Keep at least one style.".into());
     }
     let previous = state.config();
+    // A password manager is never read, so it stays on the excluded apps it was on.
+    for id in previous.excluded_apps.iter().filter(|id| is_password_manager(Os::CURRENT, id)) {
+        config.set_excluded(id, true);
+    }
     let effects = settings_effects(&previous, &config);
     let saved = state.save_config_based_on(config, revision).map_err(|e| e.to_string())?;
     Ok(saved.map(|revision| (revision, effects)))
@@ -892,6 +897,13 @@ pub fn accessibility_status(prompt: bool) -> bool {
 #[tauri::command]
 pub fn app_info(bundle_ids: Vec<String>) -> HashMap<String, apps::AppInfo> {
     bundle_ids.into_iter().filter_map(|id| Some((id.clone(), apps::find(&id)?))).collect()
+}
+
+/// The password managers among `bundle_ids`: Settings → Privacy offers no Remove for them, since
+/// nothing is read from one whatever the excluded apps say.
+#[tauri::command]
+pub fn password_managers(bundle_ids: Vec<String>) -> Vec<String> {
+    bundle_ids.into_iter().filter(|id| is_password_manager(Os::CURRENT, id)).collect()
 }
 
 /// Opens a panel on /Applications as a sheet on the calling window and returns the apps the user

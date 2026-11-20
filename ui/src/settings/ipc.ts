@@ -70,6 +70,7 @@ async function invoke<T>(cmd: Command, args?: Record<string, unknown>): Promise<
       const ids = (args?.bundleIds as string[]).filter((id) => id in names);
       return Object.fromEntries(ids.map((id) => [id, { bundleId: id, name: names[id], icon: null }]));
     },
+    password_managers: () => (args?.bundleIds as string[]).filter((id) => id === "com.1password.1password"),
     pick_apps: () => ({ apps: [{ bundleId: "com.apple.Notes", name: "Notes", icon: null }], skipped: [] }),
     linux_setup: () => ({
       desktop: "Omarchy 4.0.6 on Hyprland 0.56.2",
@@ -129,6 +130,8 @@ export const api = {
   removeOmarchySetup: () => invoke<string[]>("remove_omarchy_setup"),
   /** Names and icons of the installed apps among `bundleIds`, by bundle ID. */
   appInfo: (bundleIds: string[]) => invoke<Record<string, AppInfo>>("app_info", { bundleIds }),
+  /** The password managers among `bundleIds`, which stay excluded. */
+  passwordManagers: (bundleIds: string[]) => invoke<string[]>("password_managers", { bundleIds }),
   /** Opens a panel on /Applications and returns the apps chosen there. */
   pickApps: () => invoke<PickedApps>("pick_apps"),
   /** Opens System Settings → Accessibility with the drag-and-drop guide beside it. */

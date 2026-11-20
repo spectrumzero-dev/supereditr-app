@@ -12,6 +12,7 @@ use crate::state::{AppState, Dismissal, Session};
 use serde::Serialize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use supereditr_core::policy::{Os, is_password_manager};
 use supereditr_core::prompts::Preset;
 use supereditr_core::provider::ProviderProfile;
 use supereditr_core::{Config, Event, Job, sensitive};
@@ -116,8 +117,13 @@ enum Target {
 
 const NOT_TRUSTED: &str = "Allow SuperEditr in System Settings first: open SuperEditr Settings → Get Started.";
 
+/// Whether SuperEditr never reads text in this app: it's excluded, or it's a password manager,
+/// which is never read whatever the excluded apps say.
+fn never_read(config: &Config, bundle_id: &str) -> bool {
+    config.is_excluded(bundle_id) || is_password_manager(Os::CURRENT, bundle_id)
+}
+
 fn excluded_message(config: &Config, bundle_id: &str, name: &str) -> String {
-    use supereditr_core::policy::{Os, is_password_manager};
     if is_password_manager(Os::CURRENT, bundle_id) {
         // Taking it off the excluded apps wouldn't make SuperEditr read it, so no setting is named.
         format!("SuperEditr never reads text in {name}, because it’s a password manager.")
@@ -174,7 +180,7 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
         let config = self.state.config();
         match self.host.focused_app() {
             Some((pid, _, _)) if pid == self.host.own_pid() => Target::Ignored,
-            Some((_, bundle_id, name)) if config.is_excluded(&bundle_id) => {
+            Some((_, bundle_id, name)) if never_read(&config, &bundle_id) => {
                 Target::Excluded(excluded_message(&config, &bundle_id, &name))
             }
             _ => Target::Allowed,
@@ -288,7 +294,7 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
             }
             return Err(AutoOutcome::ReadFailed(PlatformError::NoSelection));
         }
-        if config.is_excluded(&captured.bundle_id) {
+        if never_read(&config, &captured.bundle_id) {
             if !auto {
                 self.show_error(excluded_message(&config, &captured.bundle_id, &captured.app_name));
             }
@@ -611,7 +617,7 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
             Err(error) => return self.show_capture_error(error),
         };
         let config = state.config();
-        if captured.pid == self.host.own_pid() || config.is_excluded(&captured.bundle_id) {
+        if captured.pid == self.host.own_pid() || never_read(&config, &captured.bundle_id) {
             return;
         }
         if !captured.editable {

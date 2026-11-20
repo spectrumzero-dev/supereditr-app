@@ -662,6 +662,7 @@ pub fn run() {
             commands::set_launch_at_login,
             commands::accessibility_status,
             commands::app_info,
+            commands::password_managers,
             commands::pick_apps,
             commands::guide_accessibility,
             commands::close_guide,

@@ -58,6 +58,8 @@ pub struct FakeFields {
     selection_moves_back: Mutex<bool>,
     /// What the app says to every request to move its selection, when it doesn't move it.
     selection_answer: Mutex<Option<Moved>>,
+    /// What the selection holds, in the same place, once the app has been asked to move it.
+    edited_when_asked: Mutex<Option<String>>,
 }
 
 #[async_trait]
@@ -79,6 +81,11 @@ impl Fields for FakeFields {
 
     async fn select(&self, id: &FieldId, start: i32, end: i32) -> Result<Moved, ReadError> {
         if let Some(answer) = *self.selection_answer.lock().unwrap() {
+            if let (Some(text), Some(field)) =
+                (self.edited_when_asked.lock().unwrap().clone(), self.field.lock().unwrap().as_mut())
+            {
+                field.selected = text;
+            }
             return Ok(answer);
         }
         let content = self.content.lock().unwrap().clone();
@@ -287,6 +294,13 @@ impl World {
     /// The app doesn't move its selection when asked, and answers `answer`.
     pub fn answering_a_selection(self, answer: Moved) -> Self {
         *self.fields.selection_answer.lock().unwrap() = Some(answer);
+        self
+    }
+
+    /// The selection's text changes to `text`, in the same place, by the time the app answers a
+    /// request to move it.
+    pub fn edited_when_asked_to_select(self, text: &str) -> Self {
+        *self.fields.edited_when_asked.lock().unwrap() = Some(text.into());
         self
     }
 

@@ -111,12 +111,17 @@ pub(super) fn replace_with<D: Desktop, P: Pasteboard>(
     paste(services, capture, field, text)
 }
 
-/// True while the captured selection is still exactly what the user selected. Accessibility reads
-/// the selected text alone, without the text around it, and the range is checked separately where
-/// one is needed.
+/// True while the captured selection is still exactly what the user selected, in the same place.
+/// Accessibility reads the selected text alone, without the text around it, so the same words
+/// selected somewhere else in the field would read the same: where the app reported a range when
+/// the selection was read, the field must report that same range now. Both ranges come from the
+/// same element through the same attribute, so they count positions alike, even in a web field
+/// whose positions don't match the text SuperEditr read. An app that reported no range is checked
+/// by its text alone.
 fn selection_unchanged(capture: &Capture, field: &dyn Field) -> bool {
+    let same_place = capture.range.is_none_or(|range| field.selected_range() == Some(range));
     field.selection().is_some_and(|now| {
-        policy::selection_unchanged(true, Selection::text(capture.text.as_str()), Selection::text(now.as_str()))
+        policy::selection_unchanged(same_place, Selection::text(capture.text.as_str()), Selection::text(now.as_str()))
     })
 }
 
@@ -790,6 +795,69 @@ mod tests {
         assert!(world.writes().is_empty());
         assert!(world.keys_sent().is_empty());
         assert!(world.put_on_clipboard().is_empty());
+    }
+
+    /// A field where "teh" is written twice, with the first one selected, and where the second is.
+    fn twice() -> (World, usize) {
+        let text = "Kyndal sent teh notes and teh KPI table.";
+        let second = text[..text.rfind("teh").unwrap()].encode_utf16().count();
+        (World::new("com.example.QuillPoint").with_text(text, "teh"), second)
+    }
+
+    #[test]
+    fn the_same_words_selected_somewhere_else_are_stale_and_nothing_is_written() {
+        let (world, second) = twice();
+        let capture = world.capture();
+        world.select_now(second, 3);
+        assert!(matches!(world.replace(&capture, "the"), Err(PlatformError::Stale)));
+        assert!(world.writes().is_empty());
+        assert_eq!(world.field_text(), "Kyndal sent teh notes and teh KPI table.");
+
+        // A web field, which would be pasted into.
+        let (world, second) = twice();
+        let world = world.web().chromium();
+        let capture = world.capture();
+        world.select_now(second, 3);
+        assert!(matches!(world.proofread(&capture, "the"), Err(PlatformError::Stale)));
+        assert!(world.keys_sent().is_empty());
+        assert!(world.put_on_clipboard().is_empty());
+        assert_eq!(world.field_text(), "Kyndal sent teh notes and teh KPI table.");
+    }
+
+    #[test]
+    fn a_selection_made_again_in_the_same_place_is_written() {
+        let (world, _) = twice();
+        let capture = world.capture();
+        world.select_now(0, 0);
+        world.select_now(12, 3);
+        assert!(matches!(world.replace(&capture, "the"), Ok(ReplaceMethod::Accessibility)));
+        assert_eq!(world.field_text(), "Kyndal sent the notes and teh KPI table.");
+    }
+
+    #[test]
+    fn an_app_that_reports_no_range_is_checked_by_its_text() {
+        let world = notes();
+        let mut capture = world.capture();
+        capture.range = None;
+        assert!(matches!(world.replace(&capture, "they’re going to"), Ok(ReplaceMethod::Accessibility)));
+        assert_eq!(world.field_text(), "Rhyan said they’re going to the store.");
+
+        let world = notes();
+        let mut capture = world.capture();
+        capture.range = None;
+        world.select_now(0, 5);
+        assert!(matches!(world.replace(&capture, "they’re going to"), Err(PlatformError::Stale)));
+        assert!(world.writes().is_empty());
+    }
+
+    #[test]
+    fn a_selection_moved_to_the_same_words_during_an_unconfirmed_paste_stops_a_second_one() {
+        let (world, second) = twice();
+        let world = world.web().chromium().pastes(Pastes::Never);
+        let capture = world.capture();
+        world.after_paste(move |world| world.select_now(second, 3));
+        assert!(matches!(world.replace(&capture, "the"), Err(PlatformError::Unverified)));
+        assert_eq!(world.keys_sent(), ["⌘V"], "a second paste would land on the other words");
     }
 
     #[test]

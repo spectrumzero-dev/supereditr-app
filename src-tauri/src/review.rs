@@ -117,7 +117,11 @@ enum Target {
 const NOT_TRUSTED: &str = "Allow SuperEditr in System Settings first: open SuperEditr Settings → Get Started.";
 
 fn excluded_message(config: &Config, bundle_id: &str, name: &str) -> String {
-    if app_toggle::offered(config, bundle_id) {
+    use supereditr_core::policy::{Os, is_password_manager};
+    if is_password_manager(Os::CURRENT, bundle_id) {
+        // Taking it off the excluded apps wouldn't make SuperEditr read it, so no setting is named.
+        format!("SuperEditr never reads text in {name}, because it’s a password manager.")
+    } else if app_toggle::offered(config, bundle_id) {
         let tray = if cfg!(windows) { "notification area" } else { "menu bar" };
         format!(
             "SuperEditr is turned off in {name}. Turn it on from the pen icon in the {tray}, or in Settings → Privacy."
@@ -1022,6 +1026,17 @@ mod tests {
             excluded_message(&config, terminal, "Terminal"),
             "SuperEditr is turned off in Terminal. Change this in Settings → Privacy.",
             "the menu doesn't offer to turn a terminal on"
+        );
+        #[cfg(not(any(target_os = "linux", windows)))]
+        let password_manager = "com.1password.1password";
+        #[cfg(windows)]
+        let password_manager = "1Password.exe";
+        #[cfg(target_os = "linux")]
+        let password_manager = "1Password";
+        assert_eq!(
+            excluded_message(&config, password_manager, "1Password"),
+            "SuperEditr never reads text in 1Password, because it’s a password manager.",
+            "no setting turns a password manager on"
         );
     }
 

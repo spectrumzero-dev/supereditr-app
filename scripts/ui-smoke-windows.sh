@@ -126,7 +126,8 @@ copy_to() { retry_ssh scp -q "${SSH_OPTS[@]}" "$@"; }
 
 SNAPSHOT="" ROLLED_BACK=0
 console_open() {
-  px "pvesh get /nodes/\$(hostname)/tasks --vmid $VMID --source active --output-format json" |
+  # "localhost" is the Proxmox host itself, so nothing is left for its shell to work out.
+  px "pvesh get /nodes/localhost/tasks --vmid $VMID --source active --output-format json" |
     python3 -I -c 'import json, sys; print(sum(t.get("type") in ("vncproxy", "vncshell", "spiceproxy", "termproxy") for t in json.load(sys.stdin)))'
 }
 # Nobody at the console, and no backup holding the machine.
@@ -239,12 +240,15 @@ mkdir -p "$OUT/shots"
 # The virtual machine's console, as anyone in front of it would see it: the lock screen included.
 console_shot() {
   [[ -n "$PROXMOX" && -n "$VMID" ]] || return 0
-  local tmp="/tmp/smoke-console-$VMID.ppm"
-  px "qm monitor $VMID <<< 'screendump $tmp' > /dev/null" || return 0
-  if copy_to "$PROXMOX:$tmp" "$OUT/shots/$1.ppm"; then
-    command -v sips > /dev/null && sips -s format png "$OUT/shots/$1.ppm" --out "$OUT/shots/$1.png" > /dev/null && rm -f "$OUT/shots/$1.ppm"
-  fi
-  px "rm -f $tmp"
+  local tmp="/tmp/smoke-console-$VMID.ppm" shot="$OUT/shots/$1.ppm"
+  # One command whose text depends only on the virtual machine's ID, with the image on its standard
+  # output: no file copy and no second command, so the Proxmox host can allow this key a short
+  # list of exact commands and nothing else.
+  px "qm monitor $VMID <<< 'screendump $tmp' > /dev/null && cat $tmp && rm -f $tmp" > "$shot"
+  # A PPM image starts with "P6"; anything else is a failed command's leftovers.
+  [[ "$(head -c 2 "$shot" 2> /dev/null)" == P6 ]] || { rm -f "$shot"; return 0; }
+  command -v sips > /dev/null && sips -s format png "$shot" --out "$OUT/shots/$1.png" > /dev/null && rm -f "$shot"
+  return 0
 }
 # Does what the driver asked for, and answers it.
 answer() {

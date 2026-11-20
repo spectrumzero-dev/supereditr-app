@@ -227,6 +227,31 @@ fn a_config_without_styles_is_not_saved() {
     assert!(!state.config().presets.is_empty());
 }
 
+#[cfg(not(any(target_os = "linux", windows)))]
+const PASSWORD_MANAGER: &str = "com.1password.1password";
+#[cfg(windows)]
+const PASSWORD_MANAGER: &str = "1Password.exe";
+#[cfg(target_os = "linux")]
+const PASSWORD_MANAGER: &str = "1Password";
+
+#[test]
+fn a_save_from_settings_keeps_a_password_manager_excluded() {
+    let state = test_state();
+    let mut config = state.config();
+    assert!(config.is_excluded(PASSWORD_MANAGER), "excluded by default");
+    config.set_excluded(PASSWORD_MANAGER, false);
+    config.set_excluded("com.quillpoint.notes", true);
+    assert!(save_from_settings(&state, config, None).unwrap().is_some());
+    assert!(state.config().is_excluded(PASSWORD_MANAGER));
+    assert!(state.config().is_excluded("com.quillpoint.notes"), "the rest of the change is saved");
+}
+
+#[test]
+fn password_managers_are_picked_out_of_the_excluded_apps() {
+    let ids = vec!["com.quillpoint.notes".to_string(), PASSWORD_MANAGER.to_string()];
+    assert_eq!(password_managers(ids), [PASSWORD_MANAGER]);
+}
+
 // --- set_api_key ---------------------------------------------------------------------------
 
 #[test]

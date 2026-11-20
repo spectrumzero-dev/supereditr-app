@@ -16,6 +16,10 @@
   let known = $state<Record<string, AppInfo | null>>({});
   /** Bundle IDs already looked up or being looked up. */
   const asked = new Set<string>();
+  /** Excluded bundle IDs that are password managers, which are never read whatever this list says. */
+  let passwordManagers = $state<string[]>([]);
+  /** Bundle IDs already asked about, or being asked about. */
+  const checked = new Set<string>();
   let picking = $state(false);
   let skipped = $state<string[]>([]);
   const rows = $derived(excludedRows(config.excluded_apps, known));
@@ -29,6 +33,18 @@
       .catch(() => ({}) as Record<string, AppInfo>)
       .then((found) => {
         known = { ...known, ...Object.fromEntries(ids.map((id) => [id, found?.[id] ?? null])) };
+      });
+  });
+
+  $effect(() => {
+    const ids = config.excluded_apps.filter((id) => !checked.has(id));
+    if (!ids.length) return;
+    ids.forEach((id) => checked.add(id));
+    api
+      .passwordManagers(ids)
+      .catch(() => [] as string[])
+      .then((found) => {
+        passwordManagers = [...passwordManagers, ...found];
       });
   });
 
@@ -104,7 +120,11 @@
             <code>{id}</code><span class="muted">Not installed</span>
           {/if}
         </div>
-        <button class="btn small" onclick={() => remove(id)}>Remove</button>
+        {#if passwordManagers.includes(id)}
+          <span class="muted">Password manager</span>
+        {:else}
+          <button class="btn small" onclick={() => remove(id)}>Remove</button>
+        {/if}
       </div>
     {/each}
   </div>

@@ -318,6 +318,39 @@ fn the_shortcut_in_an_excluded_app_says_how_to_turn_it_on_and_reads_nothing() {
     assert_eq!(fake.take(), notice_shown(id, &message, None, true));
 }
 
+#[cfg(not(any(target_os = "linux", windows)))]
+const PASSWORD_MANAGER: &str = "com.1password.1password";
+#[cfg(windows)]
+const PASSWORD_MANAGER: &str = "1Password.exe";
+#[cfg(target_os = "linux")]
+const PASSWORD_MANAGER: &str = "1Password";
+
+#[test]
+fn the_shortcut_in_a_password_manager_taken_off_the_excluded_apps_still_reads_nothing() {
+    let state = test_state();
+    let mut fake = Fake::new(&state);
+    fake.front = Some((REVIEWED, PASSWORD_MANAGER.into(), "1Password".into()));
+    state.config.write().unwrap().set_excluded(PASSWORD_MANAGER, false);
+    let message = excluded_message(&state.config(), PASSWORD_MANAGER, "1Password");
+    let id = state.next_id.load(Ordering::Relaxed);
+    block_on(fake.controller().start_manual(None));
+    assert_eq!(fake.take(), notice_shown(id, &message, None, true), "no connection warmed, nothing read");
+}
+
+#[test]
+fn a_selection_in_a_password_manager_taken_off_the_excluded_apps_opens_no_review() {
+    let state = test_state();
+    let fake = Fake::new(&state);
+    state.config.write().unwrap().set_excluded(PASSWORD_MANAGER, false);
+    let mut captured = capture(TEXT, false);
+    captured.bundle_id = PASSWORD_MANAGER.into();
+    captured.app_name = "1Password".into();
+    let message = excluded_message(&state.config(), PASSWORD_MANAGER, "1Password");
+    let id = state.next_id.load(Ordering::Relaxed);
+    assert!(matches!(fake.controller().open(captured, false, None), Err(AutoOutcome::Excluded)));
+    assert_eq!(fake.take(), notice_shown(id, &message, None, true));
+}
+
 #[test]
 fn the_shortcut_without_accessibility_says_where_to_allow_it() {
     let state = test_state();

@@ -32,6 +32,7 @@ export const commands = [
   "open_apple_intelligence_settings",
   "open_settings",
   "overlay_typing",
+  "password_managers",
   "pause_shortcuts",
   "pick_apps",
   "pull_ollama_model",

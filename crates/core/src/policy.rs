@@ -58,6 +58,8 @@ const fn app(macos: Option<&'static str>, linux: Option<&'static str>, windows: 
 /// press; macOS relies on its default exclusions, which the user can turn off.
 pub const PASSWORD_MANAGERS: &[App] = &[
     app(Some("com.1password.1password"), Some("1Password"), Some("1Password.exe")),
+    // 1Password 7 from the Mac App Store.
+    app(Some("com.agilebits.onepassword7"), None, None),
     app(Some("com.bitwarden.desktop"), Some("Bitwarden"), Some("Bitwarden.exe")),
     app(Some("org.keepassxc.keepassxc"), Some("org.keepassxc.KeePassXC"), Some("KeePassXC.exe")),
     app(None, None, Some("KeePass.exe")),

@@ -110,6 +110,12 @@ pub(super) fn capture_with<'a, D: Desktop, P: Pasteboard>(
         return Err(PlatformError::NoSelection);
     };
     let (bundle_id, app_name) = desktop.app_identity(pid);
+    // Nothing is ever read from a password manager, whatever the excluded apps say: not through
+    // Accessibility, and not by copying.
+    if supereditr_core::policy::is_password_manager(supereditr_core::policy::Os::MacOs, &bundle_id) {
+        trace(format_args!("{source} {bundle_id}: not read: a password manager"));
+        return Err(PlatformError::SecureField);
+    }
     let started = clock.now();
     let mut first = capture_ax(desktop, clock, &app, pid, &bundle_id, &app_name);
     if select_sentence && matches!(first, Err(PlatformError::NoSelection)) {
@@ -682,6 +688,18 @@ mod tests {
         let world = notes().with_nothing_in_front();
         assert!(matches!(world.read_by_shortcut(), Err(PlatformError::NoSelection)));
         assert!(world.keys_sent().is_empty());
+    }
+
+    #[test]
+    fn a_password_manager_is_never_read_or_copied() {
+        for app in
+            ["com.1password.1password", "com.agilebits.onepassword7", "com.apple.Passwords", "com.bitwarden.desktop"]
+        {
+            let world = World::new(app);
+            assert!(matches!(world.read_by_shortcut(), Err(PlatformError::SecureField)), "{app}");
+            assert!(matches!(world.read_automatically(), Err(PlatformError::SecureField)), "{app}");
+            assert!(world.keys_sent().is_empty(), "{app}: nothing is copied either");
+        }
     }
 
     #[test]

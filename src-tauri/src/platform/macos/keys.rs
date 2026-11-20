@@ -344,12 +344,62 @@ fn replay(chord: &Chord, proxy: Option<core_graphics::event::CGEventTapProxy>) {
         let Ok(event) = CGEvent::new_keyboard_event(source.clone(), code, down) else { continue };
         event.set_flags(flags);
         event.set_integer_value_field(core_graphics::event::EventField::EVENT_SOURCE_USER_DATA, REPLAY_MARK);
-        if !accessibility_trusted(false) {
+        // On the tap's thread, asking the system would hold up every key; use the last answer.
+        let trusted = if proxy.is_some() { tap_trusted() } else { accessibility_trusted(false) };
+        if !trusted {
             return;
         }
         match proxy {
             Some(proxy) => event.post_from_tap(proxy),
             None => event.post(CGEventTapLocation::Session),
+        }
+    }
+}
+
+/// The last answer to whether SuperEditr has Accessibility access, for the tap's thread, which
+/// must not ask the system itself: until `AXIsProcessTrusted` returns, no key reaches any app.
+static TAP_TRUSTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// When `TAP_TRUSTED` was last answered, in milliseconds since `trust_clock`'s start.
+static TRUST_CHECKED_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// The installed tap's run loop, which `watch_trust` stops when access is lost.
+static TAP_RUN_LOOP: Mutex<Option<core_foundation::runloop::CFRunLoop>> = Mutex::new(None);
+/// How often `watch_trust` asks.
+const TRUST_EVERY: Duration = Duration::from_secs(1);
+/// An answer this old is no answer: the tap comes out until the system answers again.
+const TRUST_STALE: Duration = Duration::from_secs(5);
+
+fn trust_clock() -> u64 {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
+/// Asks the system, and records the answer for `tap_trusted`. Never call this on the tap's thread
+/// while the tap is on.
+fn check_trust() -> bool {
+    let trusted = accessibility_trusted(false);
+    TAP_TRUSTED.store(trusted, Ordering::Relaxed);
+    TRUST_CHECKED_AT.store(trust_clock(), Ordering::Relaxed);
+    trusted
+}
+
+/// The last recorded answer, if it's recent. Doesn't ask the system.
+fn tap_trusted() -> bool {
+    trusted_now(TAP_TRUSTED.load(Ordering::Relaxed), TRUST_CHECKED_AT.load(Ordering::Relaxed), trust_clock())
+}
+
+fn trusted_now(trusted: bool, checked_at: u64, now: u64) -> bool {
+    trusted && now.saturating_sub(checked_at) < TRUST_STALE.as_millis() as u64
+}
+
+/// Asks about Accessibility access once a second, off the tap's thread. When access is gone, it
+/// wakes the tap's thread to remove the tap. If an answer is slow, only this thread waits for it.
+fn watch_trust() {
+    loop {
+        std::thread::sleep(TRUST_EVERY);
+        if !check_trust()
+            && let Some(run_loop) = crate::platform::lock(&TAP_RUN_LOOP).as_ref()
+        {
+            run_loop.stop();
         }
     }
 }
@@ -370,16 +420,22 @@ pub fn start_double_press_tap(
 
     let on_fire = Arc::new(on_fire);
     let on_review_key = Arc::new(on_review_key);
+    std::thread::Builder::new().name("tap-trust".into()).spawn(watch_trust).expect("thread spawns");
     std::thread::Builder::new()
         .name("double-press".into())
         .spawn(move || {
             loop {
-                if !accessibility_trusted(false) {
+                // No tap is installed here, so asking holds up no key.
+                if !check_trust() {
                     std::thread::sleep(Duration::from_secs(2));
                     continue;
                 }
                 let detector = Arc::new(double_press::Shared::default());
                 let callback_detector = detector.clone();
+                // Set when macOS turns the tap off, the one stop after which the tap is known to be
+                // off. Any other stop may come while it's on, even from a stop meant for the last tap.
+                let turned_off = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let callback_turned_off = turned_off.clone();
                 let on_fire = on_fire.clone();
                 let on_review_key = on_review_key.clone();
                 let tap = CGEventTap::new(
@@ -390,6 +446,13 @@ pub fn start_double_press_tap(
                     move |proxy, kind, event| {
                         if matches!(kind, CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput) {
                             // Return to the owner loop to recheck trust before enabling the tap.
+                            // macOS has turned the tap off, so that check holds up no key.
+                            callback_turned_off.store(true, Ordering::Relaxed);
+                            CFRunLoop::get_current().stop();
+                            return CallbackResult::Keep;
+                        }
+                        if !tap_trusted() {
+                            // No recent answer: take nothing, and have the owner remove the tap.
                             CFRunLoop::get_current().stop();
                             return CallbackResult::Keep;
                         }
@@ -459,24 +522,56 @@ pub fn start_double_press_tap(
                 let run_loop = CFRunLoop::get_current();
                 let mode = unsafe { kCFRunLoopDefaultMode };
                 run_loop.add_source(&source, mode);
+                *crate::platform::lock(&TAP_RUN_LOOP) = Some(CFRunLoop::get_current());
                 REVIEW_KEYS.store(TAKE_NONE, Ordering::Relaxed);
+                // While the tap is on, this thread only reads `watch_trust`'s answers.
                 let mut enable = true;
-                while accessibility_trusted(false) {
+                while tap_trusted() {
                     if enable {
                         tap.enable();
                     }
                     match CFRunLoop::run_in_mode(mode, Duration::from_secs(1), false) {
-                        CFRunLoopRunResult::Stopped => enable = true,
-                        CFRunLoopRunResult::TimedOut => enable = false,
+                        // Only when macOS turned the tap off, so that no key can wait on it, ask
+                        // afresh before turning it back on; on a no, remove the tap that's off
+                        // rather than keep it. Any other stop rereads the last answer.
+                        CFRunLoopRunResult::Stopped if turned_off.swap(false, Ordering::Relaxed) => {
+                            if !(tap_trusted() && check_trust()) {
+                                break;
+                            }
+                            enable = true;
+                        }
+                        CFRunLoopRunResult::Stopped | CFRunLoopRunResult::TimedOut => enable = false,
                         _ => break,
                     }
                 }
+                *crate::platform::lock(&TAP_RUN_LOOP) = None;
                 REVIEW_KEYS.store(TAP_OFFLINE, Ordering::Relaxed);
                 run_loop.remove_source(&source, mode);
                 drop(tap); // Invalidates its Mach port.
-                // A pending timeout belongs to this tap. Cancel it before installing another one.
-                detector.retire();
+                // A pending timeout belongs to this tap. Cancel it before installing another one,
+                // and pass a press it still held on to the app now. `replay` asks first, and with
+                // no tap installed, asking holds up no key.
+                let held = detector.retire();
+                let chord = held.and_then(|i| crate::platform::lock(&DOUBLE_CHORDS).get(i).cloned());
+                if let Some(chord) = chord {
+                    replay(&chord, None);
+                }
             }
         })
         .expect("thread spawns");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_tap_trusts_only_a_recent_yes() {
+        let stale = TRUST_STALE.as_millis() as u64;
+        assert!(trusted_now(true, 10_000, 10_000 + TRUST_EVERY.as_millis() as u64));
+        assert!(!trusted_now(false, 10_000, 10_000), "access was revoked");
+        // `watch_trust` is stuck waiting for the system: the tap comes out rather than outlive a
+        // revocation nobody could see.
+        assert!(!trusted_now(true, 10_000, 10_000 + stale));
+    }
 }

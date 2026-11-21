@@ -65,16 +65,13 @@ switch ($Action) {
     function Hold($what, [scriptblock]$do) {
       try { & $do; $held.Add($what) } catch { $missed.Add("$what ($($_.Exception.Message.Trim()))") }
     }
-    Hold 'automatic updates' {
-      $k = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
-      New-Item -Force $k | Out-Null
-      Set-ItemProperty $k NoAutoUpdate 1 -Type DWord
+    # New-Item -Force would empty a key that exists, so it only makes a missing one.
+    function Set-Policy($key, $name, $value) {
+      if (-not (Test-Path $key)) { New-Item -Force $key | Out-Null }
+      Set-ItemProperty $key $name $value -Type DWord
     }
-    Hold 'Store updates' {
-      $k = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsStore'
-      New-Item -Force $k | Out-Null
-      Set-ItemProperty $k AutoDownload 2 -Type DWord
-    }
+    Hold 'automatic updates' { Set-Policy 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' NoAutoUpdate 1 }
+    Hold 'Store updates' { Set-Policy 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsStore' AutoDownload 2 }
     Hold 'automatic maintenance' {
       Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\Maintenance' MaintenanceDisabled 1 -Type DWord
     }
@@ -83,17 +80,21 @@ switch ($Action) {
         -SignatureUpdateCatchupInterval 0 -SignatureUpdateInterval 0
     }
     # Windows protects its Update Orchestrator tasks; with their service stopped they do nothing.
-    $tasks = @(Get-ScheduledTask | Where-Object {
-        $_.State -ne 'Disabled' -and (
-          ($_.TaskPath -eq '\Microsoft\Windows\WindowsUpdate\' -and $_.TaskName -eq 'Scheduled Start') -or
-          $_.TaskPath -in '\Microsoft\Windows\InstallService\', '\Microsoft\Windows\Windows Defender\' -or
-          $_.TaskPath -like '\GoogleSystem\*' -or $_.TaskName -like 'MicrosoftEdgeUpdate*') })
+    $tasks = @()
+    Hold 'listing the updater tasks' {
+      $script:tasks = @(Get-ScheduledTask | Where-Object {
+          $_.State -ne 'Disabled' -and (
+            ($_.TaskPath -eq '\Microsoft\Windows\WindowsUpdate\' -and $_.TaskName -eq 'Scheduled Start') -or
+            $_.TaskPath -in '\Microsoft\Windows\InstallService\', '\Microsoft\Windows\Windows Defender\' -or
+            $_.TaskPath -like '\GoogleSystem\*' -or $_.TaskName -like 'MicrosoftEdgeUpdate*') })
+    }
     foreach ($t in $tasks) { Hold "task $($t.TaskName)" { $t | Disable-ScheduledTask | Out-Null } }
     $services = @('wuauserv', 'UsoSvc', 'BITS', 'InstallService', 'edgeupdate', 'edgeupdatem', 'WSearch') +
       @(Get-Service 'GoogleUpdater*' -ErrorAction SilentlyContinue | ForEach-Object Name)
     foreach ($s in $services) {
       if (-not (Get-Service $s -ErrorAction SilentlyContinue)) { continue }
-      Hold "service $s" { Set-Service $s -StartupType Disabled; Stop-Service $s -Force }
+      # -NoWait: a service slow to stop doesn't hold up the run; disabled, it can't start again.
+      Hold "service $s" { Set-Service $s -StartupType Disabled; Stop-Service $s -Force -NoWait }
     }
     # The network stays open: with outbound traffic blocked, Defender's cloud lookup of the
     # installer and SuperEditr's first start waited out connection timeouts (40 s against 4 s).

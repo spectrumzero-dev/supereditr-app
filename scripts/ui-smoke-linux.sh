@@ -643,9 +643,11 @@ placement_case() {
   vm 'shot 45-placement-notice'
   key esc
   vm 'wait_closed 3' || true
-  # Closed by process, not by address: a terminal left open takes half the screen from every case
-  # after this one.
-  vm 'pkill -x foot; for _ in $(seq 30); do [ "$(d_addr "^foot ")" = null ] && break; sleep 0.1; done' || true
+  # Closed by its command line, not by address: a terminal left open takes half the screen from
+  # every case after this one. The ^ keeps the pattern off the shell running pgrep.
+  vm 'for p in $(pgrep -f "^foot -T smoke-notice "); do kill "$p"
+    for _ in $(seq 30); do hyprctl clients -j | jq -e --argjson p "$p" "any(.pid == \$p)" > /dev/null || break; sleep 0.1; done
+  done' || true
   end_case
 }
 

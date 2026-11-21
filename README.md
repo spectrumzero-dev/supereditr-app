@@ -90,7 +90,7 @@ Consumer Claude, ChatGPT and Gemini plans don't give other apps API access. The 
 
 ## Privacy
 
-SuperEditr has no accounts or analytics, and its only server is the update server. Official macOS and Windows release builds check for updates through `updates.supereditr.app`, which counts each check by app version, operating system and processor (Apple silicon or Intel on a Mac) and passes it on to `latest.json` on the newest GitHub Release for that system. The app sends no identifier, and the server doesn't store IP addresses. Builds from source and Linux builds never check. The text you review goes from your computer directly to the provider you chose, or nowhere if you use the offline checker or a local model. Password fields are never read, and neither is anything in a password manager: Apple's Passwords app, Keychain Access, 1Password, NordPass, Bitwarden and KeePassXC (and KeePass on Windows). Those apps and terminals are also excluded by default (Settings → Privacy), where a password manager can't be removed. Add any other app to the excluded apps there, with **Add app…** on a Mac or by its program file name on Windows. To turn SuperEditr off in the app you're using, click its menu-bar icon (on Windows, its icon in the notification area) and choose Turn off in *that app*; Turn on in *that app* undoes it. The menu doesn't offer either in a password manager. To diagnose a problem in a particular app, turn on Settings → General → Keep a diagnostic log. SuperEditr then keeps a small local log (`~/Library/Logs/SuperEditr/capture.log` on a Mac, `%LOCALAPPDATA%\SuperEditr\Logs\capture.log` on Windows) with the app, timing and length of each read and write, never the text. It's off by default, and turning it off deletes the log.
+SuperEditr has no accounts or analytics, and its only server is the update server. Official macOS and Windows release builds check for updates through `updates.supereditr.app`, which counts each check by app version, operating system and processor (Apple silicon or Intel on a Mac) and passes it on to `latest.json` on the newest GitHub Release for that system. The app sends no identifier, and the server doesn't store IP addresses. Builds from source and Linux builds never check. The text you review goes from your computer directly to the provider you chose, or nowhere if you use the offline checker or a local model. Password fields are never read, and neither is anything in a password manager: Apple's Passwords app, Keychain Access, 1Password, NordPass, Bitwarden and KeePassXC (and KeePass on Windows, and Seahorse on Linux). Those apps and terminals are also excluded by default (Settings → Privacy), where a password manager can't be removed. Add any other app to the excluded apps there, with **Add app…** on a Mac or by its program file name on Windows. To turn SuperEditr off in the app you're using, click its menu-bar icon (on Windows, its icon in the notification area) and choose Turn off in *that app*; Turn on in *that app* undoes it. The menu doesn't offer either in a password manager. To diagnose a problem in a particular app, turn on Settings → General → Keep a diagnostic log. SuperEditr then keeps a small local log (`~/Library/Logs/SuperEditr/capture.log` on a Mac, `%LOCALAPPDATA%\SuperEditr\Logs\capture.log` on Windows) with the app, timing and length of each read and write, never the text. It's off by default, and turning it off deletes the log.
 
 A selection that holds a secret SuperEditr recognizes is never reviewed: not by the offline checker, and never sent to any AI. It recognizes private keys, access tokens and API keys from common services (GitHub, AWS, OpenAI, Anthropic, Stripe, Slack and others), passwords given in settings (`DB_PASSWORD=…`), passwords in links, and random-looking keys right after words like "token" or "API key". It says what it found and on which line, never the secret itself. Detection works by pattern, so a secret in an unrecognized format, or a bare random string with no label (an AWS secret access key on its own, for example), can still get through; don't select text you wouldn't paste into the AI yourself. The rules are listed in [`crates/core/src/sensitive.rs`](crates/core/src/sensitive.rs), each naming the document that defines its format where there is one.
 
@@ -102,7 +102,7 @@ Every platform needs Rust (via `rustup`) and Node.js 22+. Each platform's page l
 ./scripts/check.sh
 ```
 
-`check.sh` runs formatting, Clippy, the Rust tests (including provider wire-format tests against a local mock server), the UI type check and UI tests.
+`check.sh` runs formatting, Clippy, the Rust tests (including provider wire-format tests against a local mock server), a check that the UI's generated IPC types match the Rust ones, the UI type check, tests and build, and the version and Omarchy widget tests. [Testing](docs/testing.md) describes the test layers and where a new test belongs.
 
 `scripts/count-lines.sh` counts the app's own lines of code, leaving out blank lines, comments, tests, build scripts, config files and dependencies.
 
@@ -126,11 +126,11 @@ This README uses the Mac as its example. Each platform runs the same engine, sty
 
 | Part | Path | Role |
 |---|---|---|
-| Engine | `crates/core` | Providers (Apple Intelligence, Anthropic, OpenAI, Gemini, Ollama, OpenAI-compatible, Claude CLI), prompts and styles, word diffing, the Harper offline checker, guardrails, settings, account detection. Platform-independent. |
+| Engine | `crates/core` | Providers (Apple Intelligence, Anthropic, OpenAI, Gemini, Ollama, OpenAI-compatible, Claude CLI), prompts and styles, word diffing, the Harper offline checker, guardrails, settings, account detection, and the rules every platform applies alike (`policy.rs`), such as which apps are password managers. Platform-independent. |
 | CLI | `crates/cli` | Terminal front end for the engine. |
 | AI edit eval | `crates/eval` | Runs the engine's AI edits over a fixed corpus, scores them and flags regressions against a baseline. See its [README](crates/eval/README.md). |
-| Desktop shell | `src-tauri` | Tauri 2 app: menu-bar item, global shortcuts, overlay panel, settings window, keychain. |
-| macOS layer | `src-tauri/src/platform/macos.rs` | Accessibility capture and replacement, clipboard transactions, keyboard-layout-aware ⌘C/⌘V, selection watcher. |
+| Desktop shell | `src-tauri` | Tauri 2 app: menu-bar item, global shortcuts, overlay panel, settings window, keychain, and the review controller (`review.rs`), which runs each review from capture to replacement. |
+| macOS layer | `src-tauri/src/platform/macos` | Accessibility capture and replacement, clipboard transactions, keyboard-layout-aware ⌘C/⌘V, selection watcher. |
 | Linux layer | `src-tauri/src/platform/linux` | AT-SPI capture and replacement, clipboard transactions, the Hyprland and portal shortcuts and panel placement, Set up Omarchy. |
 | Windows layer | `src-tauri/src/platform/windows` | UI Automation capture, the checked paste and its clipboard transaction, `RegisterHotKey` shortcuts by virtual key, the non-activating panel and its placement in physical pixels, open at login. |
 | UI | `ui` | Svelte 5 overlay and settings pages. |
@@ -144,7 +144,7 @@ A review runs like this:
 4. The model streams the edited text; SuperEditr diffs it word by word into individual changes.
 5. On ↩︎, SuperEditr confirms the same field and selection are still there, then writes the text back: an Accessibility write for native fields, a clipboard-preserving paste for web and Electron apps. ⌘Z in the app undoes it.
 
-Another platform needs only its own `src-tauri/src/platform` implementation, as Linux and Windows have; the engine, UI and settings are shared.
+Another platform needs only its own `src-tauri/src/platform` implementation, as Linux and Windows have, providing what `src-tauri/src/platform/mod.rs` lists; the engine, UI and settings are shared.
 
 ## Contributing
 

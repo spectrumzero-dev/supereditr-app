@@ -19,6 +19,8 @@
 #   admin.ps1 helpers ROOT                compiles the helper programs from ROOT into the folder where
 #                                         every run finds them (helpers.ps1), for a snapshot prepared
 #                                         for the tests
+#   admin.ps1 quiet                       holds off the updaters and maintenance that a clock set forward
+#                                         makes overdue, for a machine rolled back after the run
 #   admin.ps1 clock -Seconds N            sets the clock to N seconds after 1970 (UTC): a snapshot taken
 #                                         with its memory comes back with the clock it had then
 param([string]$Action, [string]$Root = 'C:\SmokeWin', [string]$User = '', [string]$Only = '', [long]$Seconds = 0)
@@ -50,6 +52,55 @@ switch ($Action) {
     # The display scale USER's sessions use, in percent.
     $sid = (New-Object System.Security.Principal.NTAccount($User)).Translate([System.Security.Principal.SecurityIdentifier]).Value
     [int][math]::Round((Get-ItemProperty "Registry::HKEY_USERS\$sid\Control Panel\Desktop").LogPixels * 100 / 96)
+  }
+  'quiet' {
+    # A snapshot resumes with the clock it was taken with. Once the clock is set to the present,
+    # everything scheduled since then is overdue and starts at once: a Windows Update scan, a
+    # Defender signature install, Store app updates, the Edge and Chrome updaters, missed
+    # maintenance. On a machine a day past its snapshot that kept the CPUs and disk busy for
+    # minutes, and freshly opened apps took seconds to answer. Run before the clock step, and only
+    # on a machine rolled back afterwards: nothing here is undone. Real-time protection stays on.
+    $held = New-Object System.Collections.Generic.List[string]
+    $missed = New-Object System.Collections.Generic.List[string]
+    function Hold($what, [scriptblock]$do) {
+      try { & $do; $held.Add($what) } catch { $missed.Add("$what ($($_.Exception.Message.Trim()))") }
+    }
+    # New-Item -Force would empty a key that exists, so it only makes a missing one.
+    function Set-Policy($key, $name, $value) {
+      if (-not (Test-Path $key)) { New-Item -Force $key | Out-Null }
+      Set-ItemProperty $key $name $value -Type DWord
+    }
+    Hold 'automatic updates' { Set-Policy 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' NoAutoUpdate 1 }
+    Hold 'Store updates' { Set-Policy 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsStore' AutoDownload 2 }
+    Hold 'automatic maintenance' {
+      Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\Maintenance' MaintenanceDisabled 1 -Type DWord
+    }
+    Hold 'Defender scheduled scans and updates' {
+      Set-MpPreference -ScanScheduleDay 8 -SignatureScheduleDay 8 -DisableCatchupQuickScan $true -DisableCatchupFullScan $true `
+        -SignatureUpdateCatchupInterval 0 -SignatureUpdateInterval 0
+    }
+    # Windows protects its Update Orchestrator tasks; with their service stopped they do nothing.
+    $tasks = @()
+    Hold 'listing the updater tasks' {
+      $script:tasks = @(Get-ScheduledTask | Where-Object {
+          $_.State -ne 'Disabled' -and (
+            ($_.TaskPath -eq '\Microsoft\Windows\WindowsUpdate\' -and $_.TaskName -eq 'Scheduled Start') -or
+            $_.TaskPath -in '\Microsoft\Windows\InstallService\', '\Microsoft\Windows\Windows Defender\' -or
+            $_.TaskPath -like '\GoogleSystem\*' -or $_.TaskName -like 'MicrosoftEdgeUpdate*') })
+    }
+    foreach ($t in $tasks) { Hold "task $($t.TaskName)" { $t | Disable-ScheduledTask | Out-Null } }
+    $services = @('wuauserv', 'UsoSvc', 'BITS', 'InstallService', 'edgeupdate', 'edgeupdatem', 'WSearch') +
+      @(Get-Service 'GoogleUpdater*' -ErrorAction SilentlyContinue | ForEach-Object Name)
+    foreach ($s in $services) {
+      if (-not (Get-Service $s -ErrorAction SilentlyContinue)) { continue }
+      # -NoWait: a service slow to stop doesn't hold up the run; disabled, it can't start again.
+      Hold "service $s" { Set-Service $s -StartupType Disabled; Stop-Service $s -Force -NoWait }
+    }
+    # The network stays open: with outbound traffic blocked, Defender's cloud lookup of the
+    # installer and SuperEditr's first start waited out connection timeouts (40 s against 4 s).
+    $line = "held off $($held.Count) updaters and maintenance jobs"
+    if ($missed.Count) { $line += "; couldn't hold: $($missed -join '; ')" }
+    $line
   }
   'clock' {
     Set-Date ([DateTimeOffset]::FromUnixTimeSeconds($Seconds).LocalDateTime) | Out-Null

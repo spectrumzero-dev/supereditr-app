@@ -207,7 +207,9 @@ admin_ok() {
   out="$(admin "$@")" || { say "The test machine's $1 step failed: $out"; exit 1; }
   say "$out"
 }
-# A snapshot comes back with the clock it had when it was taken.
+# A snapshot comes back with the clock it had when it was taken. Setting it to the present makes
+# every update and maintenance job scheduled since then overdue at once, so those are held off first.
+[[ -n "$FROM" ]] && admin_ok quiet
 [[ -n "$FROM" ]] && admin_ok clock -Seconds "$(date +%s)"
 [[ "$SAC_OFF" == 1 ]] && admin_ok smart-app-control-off
 [[ "$PREPARE" == 1 ]] && admin_ok helpers "$REMOTE"

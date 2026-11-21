@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "app.supereditr",
   "name": "SuperEditr",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "author": "Sandeep Ghael",
   "license": "Apache-2.0",
   "description": "SuperEditr in the Omarchy bar: its status and shortcuts, with Review, Quick Fix and Settings a click away.",

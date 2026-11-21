@@ -626,8 +626,9 @@ placement_case() {
     check "pointer at the $corner: Esc closes the panel and leaves the text selected" "$(ok both isnt "$selected" null is "$after" "$selected")" "selection $selected before, $after after"
   done
   # A notice has no selection to go by. It stays at the pointer after the panel takes focus, which
-  # can move the pointer. Nothing is selected in a new terminal, so it gets one.
-  vm "d_exec \"foot -T smoke-notice\""
+  # can move the pointer. Nothing is selected in a new terminal, so it gets one. It runs sh, as in
+  # foot_case: the login shell's prompt can retitle the window before wait_for_window sees it.
+  vm "d_exec \"foot -T smoke-notice -e sh\""
   local terminal
   terminal="$(vm 'wait_for_window "^foot \| smoke-notice" 10')"
   win="$(vm "d_focus $terminal; sleep 0.5; d_active")"
@@ -642,7 +643,9 @@ placement_case() {
   vm 'shot 45-placement-notice'
   key esc
   vm 'wait_closed 3' || true
-  vm "hyprctl dispatch 'hl.dsp.window.close({ window = \"address:$terminal\" })' > /dev/null"
+  # Closed by process, not by address: a terminal left open takes half the screen from every case
+  # after this one.
+  vm 'pkill -x foot; for _ in $(seq 30); do [ "$(d_addr "^foot ")" = null ] && break; sleep 0.1; done' || true
   end_case
 }
 

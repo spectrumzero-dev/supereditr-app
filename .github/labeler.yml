@@ -4,7 +4,7 @@
 macos:
   - changed-files:
       - any-glob-to-any-file:
-          - src-tauri/src/platform/macos.rs
+          - src-tauri/src/platform/macos/**
           - src-tauri/Info.plist
           - src-tauri/tauri.macos.conf.json
           - src-tauri/icons/icon.icns
@@ -51,7 +51,7 @@ shared:
   - changed-files:
       - all-globs-to-any-file:
           - '**'
-          - '!src-tauri/src/platform/macos.rs'
+          - '!src-tauri/src/platform/macos/**'
           - '!src-tauri/Info.plist'
           - '!src-tauri/tauri.macos.conf.json'
           - '!src-tauri/icons/icon.icns'

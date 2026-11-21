@@ -10,9 +10,9 @@ Requirements and build steps are in the [README](README.md#build-from-source). R
 ./scripts/check.sh
 ```
 
-It runs formatting, Clippy with warnings as errors, the Rust tests, and the UI type check, tests and build. CI runs the same script on every pull request.
+It runs formatting, Clippy with warnings as errors, the Rust tests, a check that the UI's generated IPC types match the Rust ones, and the UI type check, tests and build. CI runs the same script on macOS, Linux and Windows on every pull request. [Testing](docs/testing.md) describes the test layers and where a new test belongs: at the lowest layer that can catch the bug.
 
-Code that captures or replaces text in other apps lives in `src-tauri/src/platform/`. Changes there are hard to test automatically, so say in the pull request which apps you tried and on which macOS version, Windows version or Linux desktop.
+Code that captures or replaces text in other apps lives in `src-tauri/src/platform/`, with a module per system. Each has a pretend desktop (`testing.rs`) that its capture and replace decisions are tested against, but how real apps answer shows only in the apps themselves, so say in the pull request which apps you tried and on which macOS version, Windows version or Linux desktop.
 
 ### Secret rules
 

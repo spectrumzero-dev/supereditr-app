@@ -644,8 +644,9 @@ placement_case() {
   key esc
   vm 'wait_closed 3' || true
   # Closed by its command line, not by address: a terminal left open takes half the screen from
-  # every case after this one. The ^ keeps the pattern off the shell running pgrep.
-  vm 'for p in $(pgrep -f "^foot -T smoke-notice "); do kill "$p"
+  # every case after this one. uwsm starts it through systemd-run, which gives foot's full path;
+  # the ^ keeps the pattern off the shell running pgrep.
+  vm 'for p in $(pgrep -f "^([^ ]*/)?foot -T smoke-notice "); do kill "$p"
     for _ in $(seq 30); do hyprctl clients -j | jq -e --argjson p "$p" "any(.pid == \$p)" > /dev/null || break; sleep 0.1; done
   done' || true
   end_case

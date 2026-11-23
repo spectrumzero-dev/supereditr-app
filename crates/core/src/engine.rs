@@ -493,6 +493,29 @@ mod tests {
     }
 
     #[test]
+    fn a_held_shift_typo_is_not_kept() {
+        let original = "What about it ?  THis space is moving fast.";
+        let revised = "What about it? This space is moving fast.";
+        assert!(kept(original, revised, &[]).is_empty());
+        // Acronyms still are.
+        assert_eq!(kept("Check the KPI and IDs.", "Check the metric and identifiers.", &[]), vec!["KPI", "IDs"]);
+        // So are words the dictionary spells with two capitals.
+        for unit in ["GHz", "MHz", "MSc"] {
+            let original = format!("It is a {unit} thing.");
+            assert_eq!(kept(&original, "It is a different thing.", &[]), vec![unit], "{unit}");
+        }
+    }
+
+    #[test]
+    fn a_kept_term_is_never_doubled() {
+        // "THis" listed by the author: rejecting its change keeps it, with no "This" added beside it.
+        let (original, revised) = ("What?  THis space", "What? This space");
+        let mut outcome = Outcome::new(original, diff::diff(original, revised), revised.into(), String::new(), None, 0);
+        outcome.keep_authors_terms(original, &["THis".to_string()]);
+        assert_eq!(outcome.kept_text(), "What?  THis space");
+    }
+
+    #[test]
     fn a_moved_term_is_not_dropped() {
         let original = "Show a glanceable dashboard.";
         assert!(kept(original, "Show a dashboard that is glanceable.", &[]).is_empty());

@@ -5,9 +5,9 @@
 //! SuperEditr says what it found and on which line, never the secret itself. Detection is by
 //! pattern: a secret in a format with no rule, or an unlabelled random string, isn't caught.
 //!
-//! Every rule is a row in [`RULES`], so each one can be checked against the documentation of the
-//! format it matches, where the format is documented. The rules are meant to stay quiet on ordinary
-//! writing: commit hashes, UUIDs, checksums, code that only names a key (`os.environ["API_KEY"]`),
+//! Named rules come from documented formats and the generated Gitleaks import. The rules are meant
+//! to stay quiet on ordinary writing: commit hashes, UUIDs, checksums, code that only names a key
+//! (`os.environ["API_KEY"]`),
 //! and placeholders (`your-api-key`). A check that blocks harmless text gets in the way, so a rule is
 //! added only when it rarely matches anything else.
 //!
@@ -17,6 +17,8 @@
 
 use regex::Regex;
 use std::sync::LazyLock;
+
+mod gitleaks;
 
 /// One kind of secret.
 pub struct Rule {
@@ -33,6 +35,7 @@ pub struct Rule {
     pub source: &'static str,
 }
 
+/// Hand-written rules. Imported rules run before the last four entries, which are heuristics.
 pub const RULES: &[Rule] = &[
     // Known formats: a fixed prefix or header that ordinary writing doesn't contain.
     Rule {
@@ -216,21 +219,33 @@ impl Finding {
 pub fn find(text: &str) -> Option<Finding> {
     let (start, rule) = first_match(text)?;
     let line = text.contains('\n').then(|| text[..start].matches('\n').count() + 1);
-    Some(Finding { name: RULES[rule].name, line })
+    Some(Finding { name: COMPILED[rule].0.name, line })
 }
 
-static COMPILED: LazyLock<Vec<Regex>> =
-    LazyLock::new(|| RULES.iter().map(|rule| Regex::new(rule.pattern).expect(rule.pattern)).collect());
+const NAMED_RULE_COUNT: usize = RULES.len() - 4;
 
-/// Where the first accepted match starts, and the index of its rule in [`RULES`]. On a line that
-/// several rules match, the earlier rule wins, so a named format beats the general rules below it.
+fn rules() -> impl Iterator<Item = &'static Rule> {
+    let (named, heuristics) = RULES.split_at(NAMED_RULE_COUNT);
+    named.iter().chain(gitleaks::RULES).chain(heuristics)
+}
+
+static COMPILED: LazyLock<Vec<(&Rule, Regex)>> =
+    LazyLock::new(|| rules().map(|rule| (rule, Regex::new(rule.pattern).expect(rule.pattern))).collect());
+
+/// Where the first accepted match starts, and the index of its rule. On a line that several
+/// rules match, the earlier rule wins, so a named format beats the general heuristics.
 fn first_match(text: &str) -> Option<(usize, usize)> {
     let line = |start: usize| text[..start].matches('\n').count();
     COMPILED
         .iter()
-        .zip(RULES)
         .enumerate()
-        .filter_map(|(index, (regex, rule))| {
+        .filter_map(|(index, (rule, regex))| {
+            if index < NAMED_RULE_COUNT + gitleaks::RULES.len() {
+                return regex
+                    .find_iter(text)
+                    .find(|found| (rule.accept)(found.as_str()))
+                    .map(|found| (found.start(), index));
+            }
             regex
                 .captures_iter(text)
                 .find(|found| (rule.accept)(found.get(1).or(found.get(0)).map_or("", |m| m.as_str())))

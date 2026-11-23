@@ -195,6 +195,7 @@
           <p class="lede">Version {payload.version}. Fast, private, keyboard-first proofreading that works in any app, with the AI you choose.</p>
           <div class="group">
             <div class="row"><span>The rule-based checker is <button class="linklike" onclick={() => api.openUrl("https://writewithharper.com")}>Harper</button> (Apache-2.0).</span></div>
+            <div class="row"><span>The secret-detection rules include patterns from <button class="linklike" onclick={() => api.openUrl("https://github.com/gitleaks/gitleaks")}>Gitleaks</button> (MIT).</span></div>
           </div>
         </div>
       {/if}

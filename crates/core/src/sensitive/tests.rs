@@ -66,6 +66,11 @@ fn caught() -> Vec<(&'static str, String)> {
         ("a PyPI token", format!("{}{}", "pypi-AgEIcHlwaS5vcmc", random(60))),
         ("a DigitalOcean token", format!("{}{}", "dop_v1_", scrambled(HEX, 64, 5))),
         ("a SendGrid key", format!("{}.{}.{}", "SG", random(22), random(43))),
+        ("a Shopify access token", format!("{}{}", "shpat_", scrambled(HEX, 32, 8))),
+        ("a Linear API key", format!("{}{}", "lin_api_", random(40))),
+        ("a Sentry user token", format!("{}{}", "sntryu_", scrambled(HEX, 64, 9))),
+        ("a Doppler API token", format!("{}{}", "dp.pt.", random(43))),
+        ("a Frame.io API token", format!("{}{}=", "fio-u-", random(63))),
         ("a signed access token (JWT)", format!("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.{}", random(43))),
         ("a password", format!("DB_PASSWORD=hunter2-{}", random(8))),
         ("a secret setting", format!(r#"{{"client_secret": "{}"}}"#, random(32))),
@@ -131,6 +136,12 @@ fn every_rule_is_documented_and_named_for_the_message() {
 fn leaves_ordinary_writing_alone() {
     let texts = [
         "The Shopify shpat_ prefix identifies an access token.".into(),
+        "The draft mentions shpat_abc123 on the first page.".into(),
+        "Use EAAA_DEFAULT_TIMEOUT_MILLISECONDS in config.".into(),
+        "We shipped boxapp-1-v2-3-final yesterday.".into(),
+        format!("Issue ID 4b1d{} is ready for review.", scrambled(HEX, 38, 10)),
+        "Check glft-documentation-placeholder-slug in the repo.".into(),
+        format!("In Mailgun, key-{} is the cache key.", scrambled(HEX, 32, 11)),
         "We saw lin_api_ab12 and dp.pt.short in the guide.".into(),
         "The example ends with sntryu_1234 followed by a period.".into(),
         format!("An example Linear credential uses lin_api_{}example.", "Z".repeat(33)),
@@ -223,8 +234,10 @@ fn reports_the_earliest_secret() {
 #[test]
 fn a_gitleaks_rule_takes_precedence_over_a_secret_setting() {
     let token = format!("{}{}", "lin_api_", random(40));
-    let text = format!("First line\nAPI_KEY={token}");
-    assert_eq!(find(&text), Some(Finding { name: "a Linear API key", line: Some(2) }));
+    for setting in ["API_KEY", "example_API_KEY"] {
+        let text = format!("First line\n{setting}={token}");
+        assert_eq!(find(&text), Some(Finding { name: "a Linear API key", line: Some(2) }));
+    }
 }
 
 #[test]

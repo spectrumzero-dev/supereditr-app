@@ -7,9 +7,8 @@
 //!
 //! Named rules come from documented formats and the generated Gitleaks import. The rules are meant
 //! to stay quiet on ordinary writing: commit hashes, UUIDs, checksums, code that only names a key
-//! (`os.environ["API_KEY"]`),
-//! and placeholders (`your-api-key`). A check that blocks harmless text gets in the way, so a rule is
-//! added only when it rarely matches anything else.
+//! (`os.environ["API_KEY"]`), and placeholders (`your-api-key`). A check that blocks harmless text
+//! gets in the way, so a rule is added only when it rarely matches anything else.
 //!
 //! To add a format, add a row here and two cases in `sensitive/tests.rs`: a text the rule must
 //! catch, and, if the format could look like ordinary text, a text it must leave alone. The tests
@@ -25,8 +24,8 @@ pub struct Rule {
     /// What the message calls it, with its article: "a GitHub token".
     pub name: &'static str,
     /// A regular expression in Rust's `regex` syntax, which runs in time linear in the text, so no
-    /// selection can make the check slow. When the pattern has a capture group, `accept` sees the
-    /// group; otherwise it sees the whole match.
+    /// selection can make the check slow. Named patterns start at the token and pass the whole
+    /// match to `accept`. Heuristics pass capture group 1 when present, or the whole match.
     pub pattern: &'static str,
     /// A second look at the match, for formats that the pattern alone would confuse with ordinary
     /// text.
@@ -35,8 +34,7 @@ pub struct Rule {
     pub source: &'static str,
 }
 
-/// Hand-written rules. Imported rules run before the last four entries, which are heuristics.
-pub const RULES: &[Rule] = &[
+const NAMED_RULES: &[Rule] = &[
     // Known formats: a fixed prefix or header that ordinary writing doesn't contain.
     Rule {
         name: "a private key",
@@ -161,6 +159,9 @@ pub const RULES: &[Rule] = &[
         accept: not_an_example,
         source: "RFC 7519 (JWT) and RFC 7515 (JWS compact serialization)",
     },
+];
+
+const HEURISTIC_RULES: &[Rule] = &[
     // A value given to a setting whose name says it's secret: `password = …`, `API_KEY: …`,
     // `"client_secret": "…"`. The name may carry a prefix (`DB_PASSWORD`, `aws_secret_access_key`)
     // but nothing after it, so `tokenizer = …` and `token_count: …` don't count. A setting named
@@ -222,11 +223,8 @@ pub fn find(text: &str) -> Option<Finding> {
     Some(Finding { name: COMPILED[rule].0.name, line })
 }
 
-const NAMED_RULE_COUNT: usize = RULES.len() - 4;
-
 fn rules() -> impl Iterator<Item = &'static Rule> {
-    let (named, heuristics) = RULES.split_at(NAMED_RULE_COUNT);
-    named.iter().chain(gitleaks::RULES).chain(heuristics)
+    NAMED_RULES.iter().chain(gitleaks::RULES).chain(HEURISTIC_RULES)
 }
 
 static COMPILED: LazyLock<Vec<(&Rule, Regex)>> =
@@ -240,7 +238,7 @@ fn first_match(text: &str) -> Option<(usize, usize)> {
         .iter()
         .enumerate()
         .filter_map(|(index, (rule, regex))| {
-            if index < NAMED_RULE_COUNT + gitleaks::RULES.len() {
+            if index < NAMED_RULES.len() + gitleaks::RULES.len() {
                 return regex
                     .find_iter(text)
                     .find(|found| (rule.accept)(found.as_str()))

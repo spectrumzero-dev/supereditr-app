@@ -1,7 +1,7 @@
 //! Rust half of scripts/sync-gitleaks.py. Uses the same regex engine as the app.
 
 use regex::Regex;
-use regex_syntax::hir::{Class, Hir, HirKind};
+use regex_syntax::hir::{Class, Hir, HirKind, Look};
 use serde::Deserialize;
 use std::io;
 
@@ -36,6 +36,8 @@ const COVERED: &[&str] = &[
     "pypi-upload-token",
     "sendgrid-api-token",
     "slack-bot-token",
+    "slack-config-access-token",
+    "slack-config-refresh-token",
     "slack-legacy-bot-token",
     "slack-legacy-token",
     "slack-legacy-workspace-token",
@@ -46,16 +48,21 @@ const COVERED: &[&str] = &[
 
 // These formats identify public values or have a literal too broad to use by itself.
 const AMBIGUOUS: &[&str] = &[
+    "clickhouse-cloud-api-secret-key",
     "flutterwave-public-key",
+    "gitlab-session-cookie",
     "gocardless-api-token",
     "jwt-base64",
     "lob-api-key",
     "lob-pub-api-key",
     "mailgun-pub-key",
     "mapbox-api-token",
+    "microsoft-teams-webhook",
     "nuget-config-password",
     "octopus-deploy-api-key",
+    "slack-app-token",
     "sonar-api-token",
+    "square-access-token",
     "vault-service-token",
 ];
 
@@ -70,64 +77,62 @@ fn ascii_choices(class: &Class) -> Vec<u8> {
         .collect()
 }
 
-fn fixed_ascii(hir: &Hir) -> Option<Vec<u8>> {
+// HIR represents an ASCII case-insensitive literal as a two-member character class.
+fn folded_ascii(class: &Class) -> Option<u8> {
+    let ranges: Vec<_> = match class {
+        Class::Bytes(class) => class.iter().map(|r| (r.start().into(), r.end().into())).collect(),
+        Class::Unicode(class) => class.iter().map(|r| (r.start() as u32, r.end() as u32)).collect(),
+    };
+    let [(upper, upper_end), (lower, lower_end)] = ranges.as_slice() else { return None };
+    let byte = u8::try_from(*lower).ok()?;
+    (byte.is_ascii_lowercase()
+        && lower == lower_end
+        && upper == upper_end
+        && *upper == u32::from(byte.to_ascii_uppercase()))
+    .then_some(byte)
+}
+
+fn distinctive(prefix: &[u8]) -> bool {
+    prefix.len() >= 4
+        && prefix.iter().any(u8::is_ascii_alphabetic)
+        && !(prefix.len() == 4 && prefix.iter().all(u8::is_ascii_hexdigit))
+        && !prefix.iter().all(|byte| byte.eq_ignore_ascii_case(&prefix[0]))
+}
+
+fn has_distinctive_prefix(hir: &Hir, mut prefix: Vec<u8>) -> bool {
     match hir.kind() {
-        HirKind::Literal(literal) => Some(literal.0.to_vec()),
-        // The parser represents a case-insensitive literal as a class of case variants.
-        HirKind::Class(class) => {
-            let ranges: Vec<_> = match class {
-                Class::Bytes(class) => class.iter().map(|r| (r.start().into(), r.end().into())).collect(),
-                Class::Unicode(class) => class.iter().map(|r| (r.start() as u32, r.end() as u32)).collect(),
-            };
-            let [(upper, upper_end), (lower, lower_end)] = ranges.as_slice() else { return None };
-            let byte = u8::try_from(*lower).ok()?;
-            (byte.is_ascii_lowercase()
-                && lower == lower_end
-                && upper == upper_end
-                && *upper == u32::from(byte.to_ascii_uppercase()))
-            .then_some(vec![byte])
+        HirKind::Literal(literal) => {
+            prefix.extend(&*literal.0);
+            distinctive(&prefix)
         }
-        _ => None,
-    }
-}
-
-fn distinctive(literal: &[u8]) -> bool {
-    literal.len() >= 4 && literal.iter().any(u8::is_ascii_alphabetic)
-        || literal.len() == 3
-            && literal.iter().any(u8::is_ascii_alphabetic)
-            && literal.iter().any(u8::is_ascii_punctuation)
-}
-
-fn has_literal(hir: &Hir) -> bool {
-    match hir.kind() {
+        HirKind::Capture(capture) => has_distinctive_prefix(&capture.sub, prefix),
+        HirKind::Alternation(parts) => parts.iter().all(|part| has_distinctive_prefix(part, prefix.clone())),
         HirKind::Concat(parts) => {
-            let mut literal = Vec::new();
             for part in parts {
-                if let Some(bytes) = fixed_ascii(part) {
-                    literal.extend(bytes);
-                } else {
-                    if distinctive(&literal) || has_literal(part) {
-                        return true;
+                match part.kind() {
+                    HirKind::Look(Look::WordAscii) if prefix.is_empty() => {}
+                    HirKind::Literal(literal) => prefix.extend(&*literal.0),
+                    HirKind::Class(class) => {
+                        let Some(byte) = folded_ascii(class) else { return distinctive(&prefix) };
+                        prefix.push(byte);
                     }
-                    literal.clear();
+                    _ => return distinctive(&prefix) || has_distinctive_prefix(part, prefix),
                 }
             }
-            distinctive(&literal)
+            distinctive(&prefix)
         }
-        HirKind::Alternation(parts) => parts.iter().all(has_literal),
-        HirKind::Capture(capture) => has_literal(&capture.sub),
-        HirKind::Repetition(repeat) if repeat.min > 0 => has_literal(&repeat.sub),
-        _ => fixed_ascii(hir).is_some_and(|literal| distinctive(&literal)),
+        _ => distinctive(&prefix),
     }
 }
 
-// Assignment rules use this shared upstream context. Inspect their first captured value for
-// a literal so a vendor name in a setting identifier alone cannot qualify the rule.
-fn first_capture(hir: &Hir) -> Option<&Hir> {
-    if let HirKind::Capture(capture) = hir.kind() {
-        return Some(&capture.sub);
+fn is_pure_literal(hir: &Hir) -> bool {
+    match hir.kind() {
+        HirKind::Empty | HirKind::Literal(_) | HirKind::Look(_) => true,
+        HirKind::Class(class) => folded_ascii(class).is_some(),
+        HirKind::Capture(capture) => is_pure_literal(&capture.sub),
+        HirKind::Concat(parts) | HirKind::Alternation(parts) => parts.iter().all(is_pure_literal),
+        HirKind::Repetition(repeat) => is_pure_literal(&repeat.sub),
     }
-    hir.kind().subs().iter().find_map(first_capture)
 }
 
 // Build one invented match from each syntax tree. Keep bytes separate in the generated fixture.
@@ -136,8 +141,11 @@ fn sample(hir: &Hir, bytes: &mut Vec<u8>) {
         HirKind::Empty | HirKind::Look(_) => {}
         HirKind::Literal(literal) => bytes.extend(&*literal.0),
         HirKind::Class(class) => {
-            let choices = ascii_choices(class);
-            bytes.push(choices.get(bytes.len() % choices.len().max(1)).copied().unwrap_or(b' '));
+            let byte = folded_ascii(class).unwrap_or_else(|| {
+                let choices = ascii_choices(class);
+                choices.get(bytes.len() % choices.len().max(1)).copied().unwrap_or(b' ')
+            });
+            bytes.push(byte);
         }
         HirKind::Repetition(repeat) => {
             for _ in 0..repeat.min {
@@ -206,26 +214,21 @@ fn name(id: &str) -> String {
 }
 
 fn adapt(id: &str, upstream: &str) -> String {
-    let pattern = match id {
-        // A printable delimiter or the end of the selection. Use Unicode for negated classes
-        // only, so they can match a non-ASCII character without making the regex byte-oriented.
+    // RE2 uses ASCII Perl classes and word boundaries, but negated delimiter
+    // classes must accept non-ASCII separators while staying valid Rust string regexes.
+    match id {
         "sentry-org-token" => upstream.replace(r"[^a-zA-Z0-9+/]", r"(?u:[^a-zA-Z0-9+/])"),
         "openshift-user-token" => upstream.replace(r"[^\w-]", r"(?u:[^a-zA-Z0-9_-])"),
-        "flutterwave-encryption-key" | "gitlab-runner-authentication-token" => format!(r"{upstream}\b"),
-        "slack-config-access-token" => upstream.replace("xoxe.xox", r"xoxe\.xox"),
-        // These formats are bounded by the token, so a longer identifier cannot trigger them.
-        "linear-api-key"
-        | "doppler-api-token"
-        | "shopify-access-token"
-        | "shopify-custom-access-token"
-        | "shopify-private-app-access-token"
-        | "shopify-shared-secret" => {
-            format!(r"\b{upstream}\b")
-        }
         _ => upstream.to_owned(),
-    };
-    // RE2's Perl classes and word boundaries are ASCII.
-    format!("(?-u:{pattern})")
+    }
+}
+
+fn delimit(pattern: &str) -> String {
+    let start = if pattern.trim_start_matches("(?i)").starts_with(r"\b") { "" } else { r"\b" };
+    let has_end = [r"\b", "|$)", r"|\z)", r"|$|\b)"].iter().any(|suffix| pattern.ends_with(suffix));
+    // Many tokens can end in a hyphen or padding, where a trailing \b is insufficient.
+    let end = if has_end { "" } else { r"(?:\z|(?u:[^a-zA-Z0-9_]))" };
+    format!("(?-u:{start}(?:{pattern}){end})")
 }
 
 fn select(rule: &UpstreamRule) -> Result<(String, String), &'static str> {
@@ -233,35 +236,29 @@ fn select(rule: &UpstreamRule) -> Result<(String, String), &'static str> {
     if COVERED.contains(&rule.id.as_str()) {
         return Err("covered by a local rule");
     }
+    if pattern.contains("{0,50}?") {
+        return Err("requires keyword context");
+    }
     if AMBIGUOUS.contains(&rule.id.as_str()) {
         return Err("public value or ambiguous format");
     }
 
     let pattern = adapt(&rule.id, pattern);
-    let regex = Regex::new(&pattern).map_err(|_| "incompatible with Rust regex")?;
-    let hir = regex_syntax::parse(&pattern).map_err(|_| "incompatible with Rust regex")?;
-    let value = if pattern.contains("{0,50}?") {
-        // Mixed generic/distinctive alternations are excluded as a whole.
-        if matches!(hir.kind(), HirKind::Alternation(_)) {
-            return Err("includes an unprefixed alternative");
-        }
-        first_capture(&hir).unwrap_or(&hir)
-    } else {
-        &hir
-    };
-    if !has_literal(value) {
-        return Err("no distinctive literal in the value");
+    let hir = regex_syntax::parse(&format!("(?-u:{pattern})")).map_err(|_| "incompatible with Rust regex")?;
+    if !has_distinctive_prefix(&hir, Vec::new()) {
+        return Err("no distinctive leading literal");
+    }
+    if is_pure_literal(&hir) {
+        return Err("literal with no variable value");
     }
 
     let mut bytes = Vec::new();
     sample(&hir, &mut bytes);
     let example = String::from_utf8(bytes).expect("expected an ASCII synthetic match");
+    let pattern = delimit(&pattern);
+    let regex = Regex::new(&pattern).map_err(|_| "incompatible with Rust regex")?;
     if !regex.is_match(&example) {
         return Err("could not synthesize a match");
-    }
-    // A pattern made entirely of literals would also block prose mentioning its prefix.
-    if !value.kind().subs().iter().any(|sub| fixed_ascii(sub).is_none()) && fixed_ascii(value).is_some() {
-        return Err("literal with no variable value");
     }
     Ok((pattern, example))
 }

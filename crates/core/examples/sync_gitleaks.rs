@@ -168,6 +168,7 @@ fn name(id: &str) -> String {
         "flyio" => "Fly.io".into(),
         "frameio" => "Frame.io".into(),
         "gitlab" => "GitLab".into(),
+        "huggingface" => "Hugging Face".into(),
         "intra42" => "Intra42".into(),
         "npm" => "npm".into(),
         "openshift" => "OpenShift".into(),
@@ -187,6 +188,7 @@ fn name(id: &str) -> String {
             "ca" => "CA",
             "cicd" => "CI/CD",
             "id" => "ID",
+            "kubernetes" => "Kubernetes",
             "oauth" => "OAuth",
             "ptt" => "pipeline trigger token",
             "rrt" => "runner registration token",
@@ -207,28 +209,43 @@ fn name(id: &str) -> String {
     } else {
         "a"
     };
-    if id == "aws-amazon-bedrock-api-key-long-lived" {
-        return "a long-lived Amazon Bedrock API key".into();
-    }
-    format!("{article} {vendor} {suffix}")
-}
-
-fn adapt(id: &str, upstream: &str) -> String {
-    // RE2 uses ASCII Perl classes and word boundaries, but negated delimiter
-    // classes must accept non-ASCII separators while staying valid Rust string regexes.
     match id {
-        "sentry-org-token" => upstream.replace(r"[^a-zA-Z0-9+/]", r"(?u:[^a-zA-Z0-9+/])"),
-        "openshift-user-token" => upstream.replace(r"[^\w-]", r"(?u:[^a-zA-Z0-9_-])"),
-        _ => upstream.to_owned(),
+        "aws-amazon-bedrock-api-key-long-lived" => "a long-lived Amazon Bedrock API key".into(),
+        "gitlab-runner-authentication-token-routable" => "a routable GitLab runner authentication token".into(),
+        _ => format!("{article} {vendor} {suffix}"),
     }
 }
 
-fn delimit(pattern: &str) -> String {
+// The upstream delimiters suit source files. Replace them with prose boundaries.
+fn token_body(pattern: &str) -> &str {
+    [r#"(?:[\x60'"\s;]|\\[nr]|$)"#, r#"(?:[\x60'"\s;]|\\[nr]|$|\b)"#, r"\b", r"(?:[^\w-]|\z)", r"(?:[^a-zA-Z0-9+/]|\z)"]
+        .iter()
+        .find_map(|suffix| pattern.strip_suffix(suffix))
+        .unwrap_or(pattern)
+}
+
+fn ends_in_hyphen_class(hir: &Hir) -> bool {
+    match hir.kind() {
+        HirKind::Class(Class::Bytes(class)) => class.iter().any(|range| range.start() <= b'-' && b'-' <= range.end()),
+        HirKind::Capture(capture) => ends_in_hyphen_class(&capture.sub),
+        HirKind::Concat(parts) => parts.last().is_some_and(ends_in_hyphen_class),
+        HirKind::Alternation(parts) => parts.iter().any(ends_in_hyphen_class),
+        HirKind::Repetition(repeat) => ends_in_hyphen_class(&repeat.sub),
+        _ => false,
+    }
+}
+
+fn delimit(id: &str, pattern: &str, hir: &Hir) -> String {
     let start = if pattern.trim_start_matches("(?i)").starts_with(r"\b") { "" } else { r"\b" };
-    let has_end = [r"\b", "|$)", r"|\z)", r"|$|\b)"].iter().any(|suffix| pattern.ends_with(suffix));
-    // Many tokens can end in a hyphen or padding, where a trailing \b is insufficient.
-    let end = if has_end { "" } else { r"(?:\z|(?u:[^a-zA-Z0-9_]))" };
-    format!("(?-u:{start}(?:{pattern}){end})")
+    let end_alphabet = if id == "sentry-org-token" {
+        // Keep the upstream guard against a longer base64 value.
+        "a-zA-Z0-9_+/"
+    } else if ends_in_hyphen_class(hir) {
+        "a-zA-Z0-9_-"
+    } else {
+        "a-zA-Z0-9_"
+    };
+    format!(r"(?-u:{start}(?:{pattern})(?:\z|(?u:[^{end_alphabet}])))")
 }
 
 fn select(rule: &UpstreamRule) -> Result<(String, String), &'static str> {
@@ -243,7 +260,7 @@ fn select(rule: &UpstreamRule) -> Result<(String, String), &'static str> {
         return Err("public value or ambiguous format");
     }
 
-    let pattern = adapt(&rule.id, pattern);
+    let pattern = token_body(pattern);
     let hir = regex_syntax::parse(&format!("(?-u:{pattern})")).map_err(|_| "incompatible with Rust regex")?;
     if !has_distinctive_prefix(&hir, Vec::new()) {
         return Err("no distinctive leading literal");
@@ -255,7 +272,7 @@ fn select(rule: &UpstreamRule) -> Result<(String, String), &'static str> {
     let mut bytes = Vec::new();
     sample(&hir, &mut bytes);
     let example = String::from_utf8(bytes).expect("expected an ASCII synthetic match");
-    let pattern = delimit(&pattern);
+    let pattern = delimit(&rule.id, pattern, &hir);
     let regex = Regex::new(&pattern).map_err(|_| "incompatible with Rust regex")?;
     if !regex.is_match(&example) {
         return Err("could not synthesize a match");

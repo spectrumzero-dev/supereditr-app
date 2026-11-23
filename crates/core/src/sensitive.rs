@@ -223,6 +223,8 @@ pub fn find(text: &str) -> Option<Finding> {
     Some(Finding { name: COMPILED[rule].0.name, line })
 }
 
+const HEURISTIC_START: usize = NAMED_RULES.len() + gitleaks::RULES.len();
+
 fn rules() -> impl Iterator<Item = &'static Rule> {
     NAMED_RULES.iter().chain(gitleaks::RULES).chain(HEURISTIC_RULES)
 }
@@ -238,7 +240,7 @@ fn first_match(text: &str) -> Option<(usize, usize)> {
         .iter()
         .enumerate()
         .filter_map(|(index, (rule, regex))| {
-            if index < NAMED_RULES.len() + gitleaks::RULES.len() {
+            if index < HEURISTIC_START {
                 return regex
                     .find_iter(text)
                     .find(|found| (rule.accept)(found.as_str()))

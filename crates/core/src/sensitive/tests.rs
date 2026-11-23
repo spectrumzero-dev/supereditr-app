@@ -69,6 +69,10 @@ fn caught() -> Vec<(&'static str, String)> {
         ("a Shopify access token", format!("{}{}", "shpat_", scrambled(HEX, 32, 8))),
         ("a Linear API key", format!("{}{}", "lin_api_", random(40))),
         ("a Sentry user token", format!("{}{}", "sntryu_", scrambled(HEX, 64, 9))),
+        (
+            "a routable GitLab runner authentication token",
+            format!("{}{}-{}.{}", "glrt-t1_", random(17), random(9), scrambled(HEX, 9, 12)),
+        ),
         ("a Doppler API token", format!("{}{}", "dp.pt.", random(43))),
         ("a Frame.io API token", format!("{}{}=", "fio-u-", random(63))),
         ("a signed access token (JWT)", format!("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.{}", random(43))),
@@ -116,6 +120,15 @@ fn catches_each_kind_of_secret() {
 }
 
 #[test]
+fn catches_an_imported_token_before_prose_delimiters() {
+    let token = format!("{}{}", "sntryu_", scrambled(HEX, 64, 9));
+    for delimiter in ['.', ',', ')', '”', '\u{00a0}'] {
+        let text = format!("My Sentry token is {token}{delimiter} Please rotate it.");
+        assert_eq!(find(&text).map(|f| f.name), Some("a Sentry user token"), "{text}");
+    }
+}
+
+#[test]
 fn every_rule_has_a_case_that_it_catches() {
     let matched: BTreeSet<usize> = caught().iter().filter_map(|(_, text)| first_match(text)).map(|(_, i)| i).collect();
     for (index, rule) in rules().enumerate() {
@@ -141,6 +154,7 @@ fn leaves_ordinary_writing_alone() {
         "We shipped boxapp-1-v2-3-final yesterday.".into(),
         format!("Issue ID 4b1d{} is ready for review.", scrambled(HEX, 38, 10)),
         "Check glft-documentation-placeholder-slug in the repo.".into(),
+        "Check glft-documentation-places-slug in the repo.".into(),
         format!("In Mailgun, key-{} is the cache key.", scrambled(HEX, 32, 11)),
         "We saw lin_api_ab12 and dp.pt.short in the guide.".into(),
         "The example ends with sntryu_1234 followed by a period.".into(),

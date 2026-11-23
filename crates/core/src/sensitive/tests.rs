@@ -66,6 +66,8 @@ fn caught() -> Vec<(&'static str, String)> {
         ("a PyPI token", format!("{}{}", "pypi-AgEIcHlwaS5vcmc", random(60))),
         ("a DigitalOcean token", format!("{}{}", "dop_v1_", scrambled(HEX, 64, 5))),
         ("a SendGrid key", format!("{}.{}.{}", "SG", random(22), random(43))),
+        ("a Shopify access token", format!("{}{}", "shpat_", scrambled(HEX, 32, 8))),
+        ("a Linear API key", format!("{}{}", "lin_api_", random(40))),
         ("a signed access token (JWT)", format!("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.{}", random(43))),
         ("a password", format!("DB_PASSWORD=hunter2-{}", random(8))),
         ("a secret setting", format!(r#"{{"client_secret": "{}"}}"#, random(32))),
@@ -128,6 +130,11 @@ fn leaves_ordinary_writing_alone() {
         "Secret Santa is on the 12th, and the token exchange is at 3.".into(),
         "The tokenizer splits text into tokens: about 4 characters each.".into(),
         "Password requirements: 8+ characters, one digit.".into(),
+        "Shopify Admin API access tokens start with shpat_.".into(),
+        "Linear personal API keys start with lin_api_.".into(),
+        // Prefix lookalikes with short suffixes.
+        format!("{}{}", "shpat_", scrambled(HEX, 31, 9)),
+        format!("{}{}", "lin_api_", random(39)),
         // Settings that aren't secrets.
         "max_tokens: 4096".into(),
         "tokenizer = cl100k_base".into(),

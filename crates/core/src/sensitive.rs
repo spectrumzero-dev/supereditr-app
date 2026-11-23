@@ -152,6 +152,18 @@ pub const RULES: &[Rule] = &[
         source: "Twilio SendGrid Docs: API keys",
     },
     Rule {
+        name: "a Shopify access token",
+        pattern: r"\bshpat_[a-fA-F0-9]{32,}\b",
+        accept: not_an_example,
+        source: "Shopify developer docs: Access tokens",
+    },
+    Rule {
+        name: "a Linear API key",
+        pattern: r"\blin_api_[A-Za-z0-9]{40,}\b",
+        accept: not_an_example,
+        source: "Linear changelog: GitHub Secret Scanning",
+    },
+    Rule {
         name: "a signed access token (JWT)",
         // A JSON header and payload both start `{"`, which is `eyJ` in base64url.
         pattern: r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",

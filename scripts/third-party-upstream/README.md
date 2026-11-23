@@ -1,4 +1,4 @@
-# Licence files from upstream repositories
+# Licence and notice files from upstream repositories
 
 `scripts/third-party-notices.py` uses these files offline. Each was fetched once from the place below, at the commit or release shown, and is kept unchanged.
 
@@ -23,7 +23,7 @@ objc2's `LICENSE.md` names each crate's licences without their texts, so the sta
 
 A crate whose repository has no licence file at all goes in `withoutLicence` in the manifest, with the reason; it then shows the standard SPDX text.
 
-The generator checks the manifest before using it: each project lists at least one licence file, every listed file exists, and every `withoutLicence` entry gives its reason. A crate's own notice files are shown beside those taken from its repository, and files from one repository are named by their path below the folder holding them, so no file replaces another with the same name. `tests/third_party_notices_test.py` covers these checks.
+The generator checks the manifest before using it: each project lists at least one licence file, every listed file exists, and every `withoutLicence` entry gives its reason. A crate's own notice files are shown beside those taken from its repository, and files from one repository are named by their path below the folder holding them, so no file replaces another with the same name. Settings labels each file with where it came from: the repository at that commit, or a standard SPDX text. `tests/third_party_notices_test.py` covers these checks.
 
 ## Other components
 

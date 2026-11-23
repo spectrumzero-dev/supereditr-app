@@ -4,8 +4,9 @@
 
   let { back }: { back: () => void } = $props();
   let expanded = $state<number | null>(null);
-  // `origin` says where a text came from when the package itself ships no licence file.
-  type Notice = { file: string; text: string; origin?: string };
+  // `origin` says where a text came from when it is not the package's own file: "repository" (the
+  // project's repository, at `upstream.commit`) or "spdx" (a standard licence text).
+  type Notice = { file: string; text: string; origin?: "repository" | "spdx" };
   type Package = {
     name: string;
     version: string;
@@ -15,7 +16,7 @@
     upstream?: { repository: string; commit: string };
     notices: Notice[];
   };
-  const packages: Package[] = notices.packages;
+  const packages = notices.packages as Package[];
   const texts: Record<string, string> = notices.texts;
 </script>
 
@@ -31,14 +32,15 @@
         </button>
         {#if expanded === index}
           <p class="hint">Source: <button class="linklike" onclick={() => api.openUrl(pkg.source)}>{pkg.source}</button></p>
-          {#if pkg.fallback}
-            <p class="hint">Standard SPDX text. This package ships without a licence file.</p>
-          {:else if pkg.upstream}
-            <p class="hint">This package ships without a licence file. These texts are from its repository, {pkg.upstream.repository}, at commit {pkg.upstream.commit.slice(0, 12)}.</p>
+          {#if pkg.fallback || pkg.upstream}
+            <p class="hint">This package ships without a licence file.</p>
           {/if}
           {#each pkg.notices as notice}
             <h2>{notice.file}</h2>
-            {#if notice.origin === "spdx" && !pkg.fallback}
+            <!-- Each file says where it came from; the package's own files need no label. -->
+            {#if notice.origin === "repository" && pkg.upstream}
+              <p class="hint">From its repository, {pkg.upstream.repository}, at commit {pkg.upstream.commit.slice(0, 12)}.</p>
+            {:else if notice.origin === "spdx"}
               <p class="hint">Standard SPDX text.</p>
             {/if}
             <pre>{texts[notice.text]}</pre>

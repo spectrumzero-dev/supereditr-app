@@ -46,6 +46,8 @@ development:
           - 'scripts/third-party-extra.json'
           - 'scripts/third-party-spdx/**'
           - scripts/count-lines.sh
+          - scripts/sync-gitleaks.py
+          - crates/core/examples/**
           - .markdownlint.json
           - rustfmt.toml
 
@@ -84,5 +86,7 @@ shared:
           - '!scripts/third-party-extra.json'
           - '!scripts/third-party-spdx/**'
           - '!scripts/count-lines.sh'
+          - '!scripts/sync-gitleaks.py'
+          - '!crates/core/examples/**'
           - '!.markdownlint.json'
           - '!rustfmt.toml'

@@ -66,6 +66,15 @@ fn caught() -> Vec<(&'static str, String)> {
         ("a PyPI token", format!("{}{}", "pypi-AgEIcHlwaS5vcmc", random(60))),
         ("a DigitalOcean token", format!("{}{}", "dop_v1_", scrambled(HEX, 64, 5))),
         ("a SendGrid key", format!("{}.{}.{}", "SG", random(22), random(43))),
+        ("a Shopify access token", format!("{}{}", "shpat_", scrambled(HEX, 32, 8))),
+        ("a Linear API key", format!("{}{}", "lin_api_", random(40))),
+        ("a Sentry user token", format!("{}{}", "sntryu_", scrambled(HEX, 64, 9))),
+        (
+            "a routable GitLab runner authentication token",
+            format!("{}{}-{}.{}", "glrt-t1_", random(17), random(9), scrambled(HEX, 9, 12)),
+        ),
+        ("a Doppler API token", format!("{}{}", "dp.pt.", random(43))),
+        ("a Frame.io API token", format!("{}{}=", "fio-u-", random(63))),
         ("a signed access token (JWT)", format!("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.{}", random(43))),
         ("a password", format!("DB_PASSWORD=hunter2-{}", random(8))),
         ("a secret setting", format!(r#"{{"client_secret": "{}"}}"#, random(32))),
@@ -91,7 +100,16 @@ fn caught() -> Vec<(&'static str, String)> {
         ("a key or token", format!("Here’s my API key {} — don’t share it.", random(40))),
         ("a key or token", format!("the token was \"{}\".", random(32))),
     ];
-    cases.into_iter().map(|(name, secret)| (name, format!("Can you look at this?\n{secret}\nThanks!"))).collect()
+    cases
+        .into_iter()
+        .chain(
+            gitleaks::RULES
+                .iter()
+                .zip(gitleaks::EXAMPLES)
+                .map(|(rule, (first, second))| (rule.name, format!("{first}{second}"))),
+        )
+        .map(|(name, secret)| (name, format!("Can you look at this?\n{secret}\nThanks!")))
+        .collect()
 }
 
 #[test]
@@ -102,16 +120,25 @@ fn catches_each_kind_of_secret() {
 }
 
 #[test]
+fn catches_an_imported_token_before_prose_delimiters() {
+    let token = format!("{}{}", "sntryu_", scrambled(HEX, 64, 9));
+    for delimiter in ['.', ',', ')', '”', '\u{00a0}'] {
+        let text = format!("My Sentry token is {token}{delimiter} Please rotate it.");
+        assert_eq!(find(&text).map(|f| f.name), Some("a Sentry user token"), "{text}");
+    }
+}
+
+#[test]
 fn every_rule_has_a_case_that_it_catches() {
     let matched: BTreeSet<usize> = caught().iter().filter_map(|(_, text)| first_match(text)).map(|(_, i)| i).collect();
-    for (index, rule) in RULES.iter().enumerate() {
+    for (index, rule) in rules().enumerate() {
         assert!(matched.contains(&index), "no case in caught() is found by the rule {:?}", rule.pattern);
     }
 }
 
 #[test]
 fn every_rule_is_documented_and_named_for_the_message() {
-    for rule in RULES {
+    for rule in rules() {
         assert!(!rule.source.is_empty(), "{}", rule.pattern);
         assert!(rule.name.starts_with("a ") || rule.name.starts_with("an "), "{}", rule.name);
         Regex::new(rule.pattern).unwrap();
@@ -121,6 +148,17 @@ fn every_rule_is_documented_and_named_for_the_message() {
 #[test]
 fn leaves_ordinary_writing_alone() {
     let texts = [
+        "The Shopify shpat_ prefix identifies an access token.".into(),
+        "The draft mentions shpat_abc123 on the first page.".into(),
+        "Use EAAA_DEFAULT_TIMEOUT_MILLISECONDS in config.".into(),
+        "We shipped boxapp-1-v2-3-final yesterday.".into(),
+        format!("Issue ID 4b1d{} is ready for review.", scrambled(HEX, 38, 10)),
+        "Check glft-documentation-placeholder-slug in the repo.".into(),
+        "Check glft-documentation-places-slug in the repo.".into(),
+        format!("In Mailgun, key-{} is the cache key.", scrambled(HEX, 32, 11)),
+        "We saw lin_api_ab12 and dp.pt.short in the guide.".into(),
+        "The example ends with sntryu_1234 followed by a period.".into(),
+        format!("An example Linear credential uses lin_api_{}example.", "Z".repeat(33)),
         // Prose about passwords, keys and tokens.
         "Reset your password: it needs at least 12 characters.".to_string(),
         "Pick a strong password and keep it secret.".into(),
@@ -208,11 +246,24 @@ fn reports_the_earliest_secret() {
 }
 
 #[test]
+fn a_gitleaks_rule_takes_precedence_over_a_secret_setting() {
+    let token = format!("{}{}", "lin_api_", random(40));
+    for setting in ["API_KEY", "example_API_KEY"] {
+        let text = format!("First line\n{setting}={token}");
+        assert_eq!(find(&text), Some(Finding { name: "a Linear API key", line: Some(2) }));
+    }
+}
+
+#[test]
 fn a_long_selection_is_checked_quickly() {
     let paragraph = "The token budget and the secret plan: password resets, API keys, access keys. ";
     let text = paragraph.repeat(3_000); // about 240 KB, with a keyword every few words
+    let text =
+        format!("{text}{}", "Lookalikes: shpat_deadbeef lin_api_ab12 dp.pt.short sntryu_deadbeef. ".repeat(3_000));
     let started = Instant::now();
     assert_eq!(find(&text), None);
+    let token = format!("{}{}", "shpat_", scrambled(HEX, 32, 8));
+    assert_eq!(find(&format!("{text}\n{token}")), Some(Finding { name: "a Shopify access token", line: Some(2) }));
     assert!(started.elapsed() < Duration::from_secs(2), "took {:?}", started.elapsed());
 }
 

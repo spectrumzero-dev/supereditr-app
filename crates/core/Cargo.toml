@@ -31,4 +31,5 @@ ts = ["dep:ts-rs"]
 libc = "0.2"
 
 [dev-dependencies]
+regex-syntax = "0.8"
 tokio = { workspace = true, features = ["test-util"] }

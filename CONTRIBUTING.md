@@ -20,7 +20,11 @@ After changing `Cargo.lock` or `ui/package-lock.json`, run `npm --prefix ui ci` 
 
 ### Secret rules
 
-The rules that keep secrets out of reviews are a table in [`crates/core/src/sensitive.rs`](crates/core/src/sensitive.rs), one row per format, naming the document that defines the format where there is one; the general rules for passwords and labelled keys are heuristics. To add one, add a row there and cases in `crates/core/src/sensitive/tests.rs`: a text the rule must catch, and a lookalike it must leave alone. The tests fail when a rule has no case that catches it. A rule has to stay quiet on ordinary writing (commit hashes, UUIDs, placeholders like `your-api-key`), so prefer a fixed prefix over a broad pattern. Never put a real secret in a test: assemble made-up ones from pieces, as the existing cases do, so secret scanners don't flag the source.
+The local secret check imports rules from [Gitleaks v8.30.1](https://github.com/gitleaks/gitleaks/releases/tag/v8.30.1). Imported patterns require a distinctive leading literal and token boundaries. The [generated file header](crates/core/src/sensitive/gitleaks.rs) gives the import and exclusion counts and lists the reasons for exclusions, including rules that rely on a vendor keyword in surrounding text. The hand-written rows in [sensitive.rs](crates/core/src/sensitive.rs) cover additional formats and keep precedence when both tables recognize a format. The password and labelled-key heuristics run after the named rules.
+
+Run `./scripts/sync-gitleaks.py` with Python 3.11+ and the repository Rust toolchain to regenerate the rules and their MIT license. When updating the release, update the tag and verify both upstream checksums in the script. Review the generated rules and exclusion reasons, then run `./scripts/check.sh`. The app builds from the checked-in rules without fetching Gitleaks.
+
+For a new hand-written format, add a caught case and a lookalike in `crates/core/src/sensitive/tests.rs`. Every imported rule also has a generated caught case. The tests fail when a rule has no case that it catches. Prefer a fixed prefix over a broad pattern. Assemble made-up values from pieces at runtime. The rules should stay quiet on ordinary writing such as commit hashes, UUIDs, and placeholders like `your-api-key`.
 
 ## How a pull request lands
 

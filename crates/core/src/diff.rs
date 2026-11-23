@@ -121,14 +121,16 @@ fn build_segments(old: &[&str], new: &[&str], ops: &[DiffOp]) -> Vec<Segment> {
             // Blank text between a deletion and an insertion is one replacement, not two changes:
             // "?  THis space" → "? This space" aligns on the space after the word and would
             // otherwise delete "  THis" and insert "This " apart, so rejecting only one of them
-            // leaves both words in the text.
+            // leaves both words in the text. A line break is never bridged: edits on two lines
+            // stay two changes.
             DiffOp::Equal { old_index, len, .. }
-                if old[old_index..old_index + len].iter().all(|t| t.chars().all(char::is_whitespace))
-                    && match ops.get(i + 1) {
-                        Some(DiffOp::Insert { .. }) => !pending_old.is_empty() && pending_new.is_empty(),
-                        Some(DiffOp::Delete { .. }) => pending_old.is_empty() && !pending_new.is_empty(),
-                        _ => false,
-                    } =>
+                if old[old_index..old_index + len].iter().all(|t| {
+                    t.chars().all(|c| c.is_whitespace() && !matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}'))
+                }) && match ops.get(i + 1) {
+                    Some(DiffOp::Insert { .. }) => !pending_old.is_empty() && pending_new.is_empty(),
+                    Some(DiffOp::Delete { .. }) => pending_old.is_empty() && !pending_new.is_empty(),
+                    _ => false,
+                } =>
             {
                 let text: String = old[old_index..old_index + len].concat();
                 char_pos += text.chars().count();
@@ -296,10 +298,11 @@ pub fn carry_ranges(original: &str, revised: &str, ranges: &[(usize, usize)]) ->
 
 fn classify(old: &str, new: &str) -> ChangeKind {
     let strip_ws = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
-    if strip_ws(old) == strip_ws(new) {
+    let (bare_old, bare_new) = (strip_ws(old), strip_ws(new));
+    if bare_old == bare_new {
         return ChangeKind::Spacing;
     }
-    if strip_ws(old).to_lowercase() == strip_ws(new).to_lowercase() {
+    if bare_old.to_lowercase() == bare_new.to_lowercase() {
         return ChangeKind::Capitalization;
     }
     let alnum = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
@@ -367,6 +370,11 @@ mod tests {
         // Separate edits on either side of a space stay separate.
         assert_eq!(changes(&diff("teh cat", "the cat")).len(), 1);
         assert_eq!(changes(&diff("a teh b", "a the c")).len(), 2);
+        // An insertion, a space and a deletion are one change too.
+        assert_eq!(changes(&diff("What? THis space", "What?  This space")).len(), 1);
+        // Edits on different lines stay separate.
+        assert_eq!(changes(&diff("Hey there\nwanted to ask", "Hey\nI wanted to ask")).len(), 2);
+        assert_eq!(changes(&diff("Hey there\n\nwanted to ask", "Hey\n\nI wanted to ask")).len(), 2);
     }
 
     /// The views and results in tests/contracts/diff-apply.json, which ui/src/lib/contracts.test.ts

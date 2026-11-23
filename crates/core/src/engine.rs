@@ -499,6 +499,11 @@ mod tests {
         assert!(kept(original, revised, &[]).is_empty());
         // Acronyms still are.
         assert_eq!(kept("Check the KPI and IDs.", "Check the metric and identifiers.", &[]), vec!["KPI", "IDs"]);
+        // So are words the dictionary spells with two capitals.
+        for unit in ["GHz", "MHz", "MSc"] {
+            let original = format!("It is a {unit} thing.");
+            assert_eq!(kept(&original, "It is a different thing.", &[]), vec![unit], "{unit}");
+        }
     }
 
     #[test]

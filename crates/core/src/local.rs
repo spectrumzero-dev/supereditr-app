@@ -150,7 +150,8 @@ fn unknown(text: &str, with_near_misses: bool) -> Vec<String> {
 }
 
 /// Whether a word is a known one typed with Shift held a letter too long ("THis", "THe"): two
-/// capitals, then lower case. A plural acronym ("IDs", "TVs") is not one.
+/// capitals, then lower case. A plural acronym ("IDs", "TVs") is not one, and nor is a word the
+/// dictionary spells that way ("GHz").
 fn held_shift(word: &str, dictionary: &FstDictionary) -> bool {
     let mut chars = word.chars();
     let (Some(a), Some(b)) = (chars.next(), chars.next()) else { return false };
@@ -160,7 +161,8 @@ fn held_shift(word: &str, dictionary: &FstDictionary) -> bool {
         && !rest.is_empty()
         && rest != "s"
         && rest.chars().all(char::is_lowercase)
-        && dictionary.contains_word_str(&word.to_lowercase())
+        && !dictionary.contains_exact_word_str(word)
+        && dictionary.contains_word_str(word)
 }
 
 /// Whether an unknown word is one or two letters from a real one ("tomorow"), so a typo rather

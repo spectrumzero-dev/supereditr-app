@@ -1,8 +1,21 @@
 <script lang="ts">
   import notices from "./third-party-notices.json";
+  import { api } from "./ipc";
 
   let { back }: { back: () => void } = $props();
   let expanded = $state<number | null>(null);
+  // `origin` says where a text came from when the package itself ships no licence file.
+  type Notice = { file: string; text: string; origin?: string };
+  type Package = {
+    name: string;
+    version: string;
+    licence: string;
+    source: string;
+    fallback: boolean;
+    upstream?: { repository: string; commit: string };
+    notices: Notice[];
+  };
+  const packages: Package[] = notices.packages;
   const texts: Record<string, string> = notices.texts;
 </script>
 
@@ -10,18 +23,24 @@
   <button class="btn small" onclick={back}>Back to About</button>
   <h1>Third-party licences</h1>
   <ul class="group">
-    {#each notices.packages as pkg, index}
+    {#each packages as pkg, index}
       <li class="row">
         <button class="package" aria-expanded={expanded === index} onclick={() => (expanded = expanded === index ? null : index)}>
           <span class="label">{pkg.name} {pkg.version}</span>
           <span class="hint">{pkg.licence}</span>
         </button>
         {#if expanded === index}
+          <p class="hint">Source: <button class="linklike" onclick={() => api.openUrl(pkg.source)}>{pkg.source}</button></p>
           {#if pkg.fallback}
             <p class="hint">Standard SPDX text. This package ships without a licence file.</p>
+          {:else if pkg.upstream}
+            <p class="hint">This package ships without a licence file. These texts are from its repository, {pkg.upstream.repository}, at commit {pkg.upstream.commit.slice(0, 12)}.</p>
           {/if}
           {#each pkg.notices as notice}
             <h2>{notice.file}</h2>
+            {#if notice.origin === "spdx" && !pkg.fallback}
+              <p class="hint">Standard SPDX text.</p>
+            {/if}
             <pre>{texts[notice.text]}</pre>
           {/each}
         {/if}
@@ -59,6 +78,10 @@
   }
   .package:focus-visible {
     outline-offset: -2px;
+  }
+  .linklike {
+    overflow-wrap: anywhere;
+    text-align: left;
   }
   p, h2, pre {
     margin: 0 14px 12px;

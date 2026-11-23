@@ -1,1 +1,1 @@
-These standard fallback texts come from the [SPDX License List Data v3.27.0](https://github.com/spdx/license-list-data/tree/v3.27.0/text). The generator uses them when a crate archive has no licence files.
+These standard texts come from the [SPDX License List Data v3.27.0](https://github.com/spdx/license-list-data/tree/v3.27.0/text). The generator shows them for a crate listed in `withoutLicence` in `scripts/third-party-upstream.json`, and after a repository licence file that names licences without their texts.

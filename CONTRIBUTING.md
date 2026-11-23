@@ -16,7 +16,9 @@ Code that captures or replaces text in other apps lives in `src-tauri/src/platfo
 
 ### Third-party licences
 
-After changing `Cargo.lock` or `ui/package-lock.json`, run `npm --prefix ui ci` and `python3 -I scripts/third-party-notices.py`, then commit the generated notices. Settings → About shows them offline and `scripts/check.sh` checks they are current. To credit vendored code, add an object to `scripts/third-party-extra.json` with `name`, `version`, `licence` (the SPDX expression) and `files` (a list of licence or notice paths relative to the repository root).
+After changing `Cargo.lock`, `ui/package-lock.json` or `rust-toolchain.toml`, run `npm --prefix ui ci` and `python3 -I scripts/third-party-notices.py`, then commit the generated notices. Settings → About shows them offline, with a link to each package's source, and `scripts/check.sh` checks they are current. To credit vendored code, add an object to `scripts/third-party-extra.json` with `name`, `version`, `licence` (the SPDX expression), `source` (a link to that release) and `files` (a list of licence or notice paths relative to the repository root).
+
+The generator fails when a shipped crate's archive has no licence file and `scripts/third-party-upstream.json` has none checked in for it from the commit it was published from; `scripts/third-party-upstream/README.md` says how those files are kept. It also fails when the Rust standard library's version in `scripts/third-party-extra.json` differs from `rust-toolchain.toml`. `vite build` fails when the bundle loads a module from a package missing from the notices; a package the Svelte runtime imports goes in `BUNDLED_JS` in the generator.
 
 ### Secret rules
 

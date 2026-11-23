@@ -9,7 +9,7 @@
 | Folder | Repository | Files |
 |---|---|---|
 | `alloc-no-stdlib` | https://github.com/dropbox/rust-alloc-no-stdlib | `LICENSE` |
-| `burn` | https://github.com/tracel-ai/burn | `LICENSE-APACHE`, `LICENSE-MIT` |
+| `burn` | https://github.com/tracel-ai/burn | `LICENSE-APACHE`, `LICENSE-MIT`, `NOTICES.md` |
 | `cubecl` | https://github.com/tracel-ai/cubecl | `LICENSE-APACHE`, `LICENSE-MIT` |
 | `dlopen2` | https://github.com/OpenByteDev/dlopen2 | `LICENSE` |
 | `embassy` | https://github.com/embassy-rs/embassy | `LICENSE-APACHE`, `LICENSE-MIT` |

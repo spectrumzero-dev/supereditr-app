@@ -43,7 +43,8 @@
       "repository": "https://github.com/tracel-ai/burn",
       "files": [
         "scripts/third-party-upstream/burn/LICENSE-APACHE",
-        "scripts/third-party-upstream/burn/LICENSE-MIT"
+        "scripts/third-party-upstream/burn/LICENSE-MIT",
+        "scripts/third-party-upstream/burn/NOTICES.md"
       ],
       "crates": {
         "burn-ir 0.19.1": "a6da424feacf6d82d6a0e81db197310796267c2b",

@@ -11,6 +11,22 @@ elif [[ -n "${REQUIRE_SHELLCHECK:-}" ]]; then
   echo "shellcheck isn't installed." >&2
   exit 1
 fi
+# The Windows runner exposes Python as python.exe in Git Bash.
+python=python3
+if [[ "$(uname)" == MINGW* ]]; then
+  python=python
+fi
+notices=ui/src/settings/third-party-notices.json
+mkdir -p target
+fresh="$(mktemp -d target/third-party-notices.XXXXXX)"
+trap 'rm -rf "$fresh"' EXIT
+"$python" -I scripts/third-party-notices.py --output "$fresh/third-party-notices.json"
+if ! git diff --no-index --stat --exit-code -- "$notices" "$fresh/third-party-notices.json"; then
+  echo "$notices is out of date. Run $python -I scripts/third-party-notices.py." >&2
+  exit 1
+fi
+rm -rf "$fresh"
+trap - EXIT
 # The live UI tests run only on a Mac with a display (scripts/ui-smoke.sh); here they must compile.
 if [[ "$(uname)" == Darwin ]]; then xcrun swiftc -typecheck tests/ui/smoke.swift; fi
 cargo fmt --all --check
@@ -21,7 +37,6 @@ cargo clippy --workspace --all-targets -- -D warnings
 # any more shows as a difference too. `git diff --no-index` needs no repository, and the files are
 # checked out with LF line endings everywhere (.gitattributes).
 generated=ui/src/lib/generated
-mkdir -p target
 fresh="$(mktemp -d target/ipc-types.XXXXXX)"
 trap 'rm -rf "$fresh"' EXIT
 # An absolute path, in Windows form under Git Bash: each crate's tests run in its own directory.

@@ -14,6 +14,10 @@ It runs formatting, Clippy with warnings as errors, the Rust tests, a check that
 
 Code that captures or replaces text in other apps lives in `src-tauri/src/platform/`, with a module per system. Each has a pretend desktop (`testing.rs`) that its capture and replace decisions are tested against, but how real apps answer shows only in the apps themselves, so say in the pull request which apps you tried and on which macOS version, Windows version or Linux desktop.
 
+### Third-party licences
+
+After changing `Cargo.lock` or `ui/package-lock.json`, run `npm --prefix ui ci` and `python3 -I scripts/third-party-notices.py`, then commit the generated notices. Settings → About shows them offline and `scripts/check.sh` checks they are current. To credit vendored code, add an object to `scripts/third-party-extra.json` with `name`, `version`, `licence` (the SPDX expression) and `files` (a list of licence or notice paths relative to the repository root).
+
 ### Secret rules
 
 The rules that keep secrets out of reviews are a table in [`crates/core/src/sensitive.rs`](crates/core/src/sensitive.rs), one row per format, naming the document that defines the format where there is one; the general rules for passwords and labelled keys are heuristics. To add one, add a row there and cases in `crates/core/src/sensitive/tests.rs`: a text the rule must catch, and a lookalike it must leave alone. The tests fail when a rule has no case that catches it. A rule has to stay quiet on ordinary writing (commit hashes, UUIDs, placeholders like `your-api-key`), so prefer a fixed prefix over a broad pattern. Never put a real secret in a test: assemble made-up ones from pieces, as the existing cases do, so secret scanners don't flag the source.

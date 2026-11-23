@@ -13,7 +13,7 @@
   import { mergeUnsaved, saveUntilCurrent } from "./merge";
   import { isLinux, isMac, isWindows, setKeyLabels, setPlatform } from "../lib/platform";
 
-  type Section = "welcome" | "setup" | "models" | "styles" | "dictionary" | "general" | "shortcuts" | "privacy" | "about";
+  type Section = "welcome" | "setup" | "models" | "styles" | "dictionary" | "general" | "shortcuts" | "privacy" | "about" | "licences";
   // The pages about the writing, then a gap, then the app's own.
   const nav: { id: Section; name: string; icon: string; gap?: boolean }[] = [
     { id: "welcome", name: "Get Started", icon: "✦" },
@@ -150,7 +150,7 @@
     </div>
     <nav>
       {#each nav as item (item.id)}
-        <button class:active={section === item.id} class:gap={item.gap} onclick={() => (section = item.id)}>
+        <button class:active={section === item.id || (section === "licences" && item.id === "about")} class:gap={item.gap} onclick={() => (section = item.id)}>
           <span class="icon" aria-hidden="true">{item.icon}</span>{item.name}
         </button>
       {/each}
@@ -189,12 +189,17 @@
         <LinuxSetup />
       {:else if section === "privacy"}
         <Privacy bind:config accessibility={payload.accessibility} {onchange} />
+      {:else if section === "licences"}
+        {#await import("./ThirdPartyLicences.svelte") then { default: ThirdPartyLicences }}
+          <ThirdPartyLicences back={() => (section = "about")} />
+        {/await}
       {:else}
         <div class="page">
           <h1>About SuperEditr</h1>
           <p class="lede">Version {payload.version}. Fast, private, keyboard-first proofreading that works in any app, with the AI you choose.</p>
           <div class="group">
             <div class="row"><span>The rule-based checker is <button class="linklike" onclick={() => api.openUrl("https://writewithharper.com")}>Harper</button> (Apache-2.0).</span></div>
+            <div class="row"><button class="btn" onclick={() => (section = "licences")}>Third-party licences</button></div>
           </div>
         </div>
       {/if}

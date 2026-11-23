@@ -101,6 +101,8 @@ def entry(kind, name, version, licence, source, files, fallback=False, upstream=
     """`files` lists (shown name, path, origin): origin None for the package's own file, "repository"
     for one taken from the project's repository, "spdx" for a standard text. Files with one name but
     different origins are all kept."""
+    if upstream is None and any(origin == "repository" for _, _, origin in files):
+        raise ValueError(f"{name} {version} has a file from its repository but no repository to credit")
     seen = set()
     for filename, _, origin in files:
         if (filename, origin) in seen:
@@ -114,6 +116,38 @@ def entry(kind, name, version, licence, source, files, fallback=False, upstream=
 
 def blank(value):
     return not isinstance(value, str) or not value.strip()
+
+
+DRIVE = re.compile(r"[A-Za-z]:")
+
+
+def listed_files(files, owner, manifest, root=ROOT):
+    """Check the `files` listed for `owner` in `manifest` before any is used: a list of plain relative
+    paths with forward slashes, each a file inside `root` that is not blank. Returns their paths."""
+    if not isinstance(files, list):
+        raise ValueError(f"files for {owner} in {manifest} must be a list of paths")
+    root = root.resolve()
+    paths = []
+    for path in files:
+        if blank(path):
+            raise ValueError(f"files for {owner} in {manifest} has an empty or non-text path: {path!r}")
+        if (
+            path.startswith("/") or DRIVE.match(path) or "\\" in path
+            or any(part in ("", ".", "..") for part in path.split("/"))
+        ):
+            raise ValueError(
+                f"{path}, listed for {owner} in {manifest}, must be a relative path with forward slashes"
+                " and no . or .. parts"
+            )
+        resolved = (root / path).resolve()
+        if not resolved.is_relative_to(root):
+            raise ValueError(f"{path}, listed for {owner} in {manifest}, is outside the repository")
+        if not resolved.is_file():
+            raise ValueError(f"{path}, listed for {owner} in {manifest}, does not exist")
+        if not resolved.read_text(encoding="utf-8").strip():
+            raise ValueError(f"{path}, listed for {owner} in {manifest}, is blank")
+        paths.append(path)
+    return paths
 
 
 def upstream_licences(manifest, root=ROOT):
@@ -130,13 +164,11 @@ def upstream_licences(manifest, root=ROOT):
             raise ValueError(f"A project in {UPSTREAM.name} has no repository")
         if not project.get("crates"):
             raise ValueError(f"{repository} in {UPSTREAM.name} lists no crates")
-        if not any(is_licence(path) for path in project.get("files", [])):
+        files = listed_files(project.get("files", []), repository, UPSTREAM.name, root)
+        if not any(is_licence(path) for path in files):
             raise ValueError(f"{repository} in {UPSTREAM.name} lists no licence file")
-        if len(set(project["files"])) != len(project["files"]):
+        if len(set(files)) != len(files):
             raise ValueError(f"{repository} in {UPSTREAM.name} lists a file twice")
-        for path in project["files"]:
-            if not (root / path).is_file():
-                raise ValueError(f"{path}, listed for {repository} in {UPSTREAM.name}, does not exist")
         if "standardTexts" in project and blank(project["standardTexts"]):
             raise ValueError(f"standardTexts for {repository} in {UPSTREAM.name} gives no reason")
         for crate, commit in project["crates"].items():
@@ -247,7 +279,8 @@ def collect_packages(lock):
                 " shipped. Check which version it now ships and update its entry."
             )
         # Shown by their full path, which keeps files with one name apart.
-        files = [(Path(path).as_posix(), ROOT / path, None) for path in package["files"]]
+        paths = listed_files(package.get("files"), package["name"], "third-party-extra.json")
+        files = [(path, ROOT / path, None) for path in paths]
         yield entry("vendored", package["name"], package["version"], package["licence"], package["source"], files)
 
 

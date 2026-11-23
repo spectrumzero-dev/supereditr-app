@@ -86,9 +86,63 @@ class ManifestTest(Fixture):
 
     def test_the_checked_in_manifest_is_valid(self):
         manifest = notices.read_json(notices.UPSTREAM)
-        upstream, without_licence = notices.upstream_licences(manifest)
+        upstream, _ = notices.upstream_licences(manifest)
         self.assertTrue(upstream)
-        self.assertEqual(without_licence, {})
+
+    def test_a_blank_licence_file_fails(self):
+        self.write("up/LICENSE", " \n\t\n")
+        with self.assertRaisesRegex(ValueError, "up/LICENSE, listed for https://example.com/demo .* is blank"):
+            notices.upstream_licences(self.manifest(["up/LICENSE"]), self.root)
+
+    def test_a_path_out_of_the_repository_fails(self):
+        self.write("LICENSE")
+        root = self.root / "repo"
+        root.mkdir()
+        with self.assertRaisesRegex(ValueError, r"\.\./LICENSE, listed for https://example.com/demo .* no \. or \.\. parts"):
+            notices.upstream_licences(self.manifest(["../LICENSE"]), root)
+
+    def test_files_given_as_an_object_fail(self):
+        self.write("LICENSE")
+        with self.assertRaisesRegex(ValueError, "files for https://example.com/demo .* must be a list"):
+            notices.upstream_licences(self.manifest({"LICENSE": False}), self.root)
+
+    def test_a_path_that_is_not_text_fails(self):
+        self.write("LICENSE")
+        for path in (1, None, "", "  "):
+            with self.subTest(path=path), self.assertRaisesRegex(
+                ValueError, "files for https://example.com/demo .* empty or non-text path"
+            ):
+                notices.upstream_licences(self.manifest(["LICENSE", path]), self.root)
+
+    def test_a_path_that_is_not_plain_and_relative_fails(self):
+        self.write("up/LICENSE")
+        for path in ("up\\LICENSE", str(self.root / "up/LICENSE"), "C:/up/LICENSE", "./up/LICENSE", "up//LICENSE"):
+            with self.subTest(path=path), self.assertRaisesRegex(
+                ValueError, "listed for https://example.com/demo .* must be a relative path"
+            ):
+                notices.upstream_licences(self.manifest([path]), self.root)
+
+    def test_a_link_out_of_the_repository_fails(self):
+        outside = self.write("LICENSE")
+        root = self.root / "repo"
+        root.mkdir()
+        try:
+            (root / "LICENSE").symlink_to(outside)
+        except OSError:
+            self.skipTest("This system cannot create symbolic links")
+        with self.assertRaisesRegex(ValueError, "LICENSE, listed for https://example.com/demo .* outside the repository"):
+            notices.upstream_licences(self.manifest(["LICENSE"]), root)
+
+    def test_vendored_files_are_checked_the_same_way(self):
+        self.write("LICENSE", "")
+        with self.assertRaisesRegex(ValueError, "LICENSE, listed for gitleaks in third-party-extra.json, is blank"):
+            notices.listed_files(["LICENSE"], "gitleaks", "third-party-extra.json", self.root)
+        with self.assertRaisesRegex(ValueError, "files for gitleaks in third-party-extra.json must be a list"):
+            notices.listed_files("LICENSE", "gitleaks", "third-party-extra.json", self.root)
+
+    def test_the_checked_in_vendored_files_are_valid(self):
+        for package in notices.read_json(notices.ROOT / "scripts/third-party-extra.json"):
+            notices.listed_files(package["files"], package["name"], "third-party-extra.json")
 
 
 class FilesTest(Fixture):
@@ -122,6 +176,11 @@ class FilesTest(Fixture):
         path = self.write("LICENSE")
         with self.assertRaisesRegex(ValueError, "LICENSE is listed twice for demo 1.0.0"):
             notices.entry("vendored", "demo", "1.0.0", "MIT", "", [("LICENSE", path, None)] * 2)
+
+    def test_a_repository_file_without_a_repository_fails(self):
+        path = self.write("LICENSE")
+        with self.assertRaisesRegex(ValueError, "demo 1.0.0 has a file from its repository but no repository"):
+            notices.entry("crate", "demo", "1.0.0", "MIT", "", [("LICENSE", path, "repository")])
 
 
 if __name__ == "__main__":

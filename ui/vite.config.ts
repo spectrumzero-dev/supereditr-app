@@ -4,10 +4,12 @@ import { svelteTesting } from "@testing-library/svelte/vite";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Plugin } from "vite";
+import { unlistedPackages, type PackageVersion } from "./src/lib/bundled-packages";
 
-// Fails the build when a module from node_modules goes into the bundle and its package is missing
-// from the third-party licences in Settings (scripts/third-party-notices.py writes that list).
-// It checks every module the build loads, including those whose code is later tree-shaken.
+// Fails the build when a module from node_modules goes into the bundle and its package, at that
+// version, is missing from the third-party licences in Settings (scripts/third-party-notices.py
+// writes that list). It checks the module graph, so a package whose code is later tree-shaken counts.
+// Virtual modules, such as Vite's own helpers, have no package and are listed in the script instead.
 function noticesListBundledPackages(): Plugin {
   return {
     name: "notices-list-bundled-packages",
@@ -15,19 +17,19 @@ function noticesListBundledPackages(): Plugin {
     buildEnd(error) {
       if (error) return;
       const notices = JSON.parse(readFileSync(resolve(import.meta.dirname, "src/settings/third-party-notices.json"), "utf8")) as {
-        packages: { kind: string; name: string }[];
+        packages: { kind: string; name: string; version: string }[];
       };
-      const listed = new Set(notices.packages.filter((p) => p.kind === "js").map((p) => p.name));
-      const missing = new Set<string>();
-      for (const id of this.getModuleIds()) {
-        const parts = id.split(/[\\/]node_modules[\\/]/);
-        if (parts.length < 2) continue;
-        const path = parts[parts.length - 1].split(/[\\/]/);
-        const name = path[0].startsWith("@") ? `${path[0]}/${path[1]}` : path[0];
-        if (!listed.has(name)) missing.add(name);
-      }
-      if (missing.size) {
-        this.error(`The bundle includes ${[...missing].sort().join(", ")}, missing from the third-party licences. List it in scripts/third-party-notices.py and run python3 -I scripts/third-party-notices.py.`);
+      const listed = notices.packages.filter((p) => p.kind === "js");
+      const missing = unlistedPackages(this.getModuleIds(), listed, (root) => {
+        const { name, version } = JSON.parse(readFileSync(`${root}/package.json`, "utf8")) as PackageVersion;
+        return { name, version };
+      });
+      if (missing.length) {
+        this.error(
+          `The build's module graph includes ${missing.join(", ")}, missing from the third-party licences at that version.` +
+            " A package whose code is tree-shaken still counts. List it in scripts/third-party-notices.py (BUNDLED_JS)" +
+            " and run python3 -I scripts/third-party-notices.py; a copy nested inside another package is not listed by the script yet.",
+        );
       }
     },
   };

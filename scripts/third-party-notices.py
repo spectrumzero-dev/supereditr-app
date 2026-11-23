@@ -12,10 +12,12 @@ ROOT = Path(__file__).resolve().parent.parent
 OUTPUT = ROOT / "ui/src/settings/third-party-notices.json"
 UPSTREAM = ROOT / "scripts/third-party-upstream.json"
 RUST_STD = "Rust standard library"
-# Svelte's package contains both the compiler and the browser runtime, and the runtime imports these.
-# Svelte's other dependencies are used only by the compiler. ui/vite.config.ts fails the build when
-# the bundle takes a module from a package missing here.
-BUNDLED_JS = ("svelte", "clsx", "esm-env")
+# Svelte's package contains both the compiler and the browser runtime, and the runtime imports clsx
+# and esm-env. Svelte's other dependencies are used only by the compiler. Vite and Rolldown add small
+# runtime helpers of their own (module preloading, the chunk runtime) as virtual modules, which the
+# check in ui/vite.config.ts cannot see, so they are listed here. That check fails the build when the
+# bundle takes a module from a package, or a version of it, missing here.
+BUNDLED_JS = ("svelte", "clsx", "esm-env", "vite", "rolldown")
 LICENCE_PREFIXES = ("LICENSE", "LICENCE", "COPYING", "UNLICENSE")
 NOTICE_PREFIXES = (*LICENCE_PREFIXES, "NOTICE", "COPYRIGHT", "THIRD_PARTY", "THIRDPARTY", "THIRD-PARTY")
 DESKTOP_TARGETS = (

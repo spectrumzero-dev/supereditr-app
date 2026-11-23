@@ -42,6 +42,9 @@ development:
           - scripts/ui-smoke*.sh
           - .github/**
           - scripts/check.sh
+          - 'scripts/third-party-notices.py'
+          - 'scripts/third-party-extra.json'
+          - 'scripts/third-party-spdx/**'
           - scripts/count-lines.sh
           - scripts/sync-gitleaks.py
           - crates/core/examples/**
@@ -79,6 +82,9 @@ shared:
           - '!scripts/ui-smoke*.sh'
           - '!.github/**'
           - '!scripts/check.sh'
+          - '!scripts/third-party-notices.py'
+          - '!scripts/third-party-extra.json'
+          - '!scripts/third-party-spdx/**'
           - '!scripts/count-lines.sh'
           - '!scripts/sync-gitleaks.py'
           - '!crates/core/examples/**'

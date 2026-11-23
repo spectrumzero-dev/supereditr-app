@@ -1,0 +1,1 @@
+These standard fallback texts come from the [SPDX License List Data v3.27.0](https://github.com/spdx/license-list-data/tree/v3.27.0/text). The generator uses them when a crate archive has no licence files.

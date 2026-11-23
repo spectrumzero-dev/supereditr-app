@@ -14,6 +14,10 @@ It runs formatting, Clippy with warnings as errors, the Rust tests, a check that
 
 Code that captures or replaces text in other apps lives in `src-tauri/src/platform/`, with a module per system. Each has a pretend desktop (`testing.rs`) that its capture and replace decisions are tested against, but how real apps answer shows only in the apps themselves, so say in the pull request which apps you tried and on which macOS version, Windows version or Linux desktop.
 
+### Third-party licences
+
+After changing `Cargo.lock` or `ui/package-lock.json`, run `npm --prefix ui ci` and `python3 -I scripts/third-party-notices.py`, then commit the generated notices. Settings → About shows them offline and `scripts/check.sh` checks they are current. To credit vendored code, add an object to `scripts/third-party-extra.json` with `name`, `version`, `licence` (the SPDX expression) and `files` (a list of licence or notice paths relative to the repository root).
+
 ### Secret rules
 
 The local secret check imports rules from [Gitleaks v8.30.1](https://github.com/gitleaks/gitleaks/releases/tag/v8.30.1). Imported patterns require a distinctive leading literal and token boundaries. The [generated file header](crates/core/src/sensitive/gitleaks.rs) gives the import and exclusion counts and lists the reasons for exclusions, including rules that rely on a vendor keyword in surrounding text. The hand-written rows in [sensitive.rs](crates/core/src/sensitive.rs) cover additional formats and keep precedence when both tables recognize a format. The password and labelled-key heuristics run after the named rules.

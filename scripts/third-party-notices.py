@@ -9,11 +9,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUTPUT = ROOT / "ui/src/settings/third-party-notices.json"
-LICENCE_PREFIXES = ("LICENSE", "LICENCE", "COPYING")
-NOTICE_PREFIXES = (*LICENCE_PREFIXES, "NOTICE", "COPYRIGHT")
-# These two packages contribute code to the production bundle. Svelte is
-# installed as a dev dependency because the same package contains its compiler.
-BUNDLED_JS = ("@tauri-apps/api", "svelte")
+LICENCE_PREFIXES = ("LICENSE", "LICENCE", "COPYING", "UNLICENSE")
+NOTICE_PREFIXES = (*LICENCE_PREFIXES, "NOTICE", "COPYRIGHT", "THIRD_PARTY", "THIRDPARTY", "THIRD-PARTY")
+DESKTOP_TARGETS = (
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-pc-windows-msvc",
+    "x86_64-pc-windows-msvc",
+)
+# Cargo can append source paths, proc-macro labels or a deduplication marker.
+TREE_PACKAGE = re.compile(r"(\S+) v(\S+)(?: .*)?")
 
 
 def read_json(path):
@@ -21,29 +28,40 @@ def read_json(path):
 
 
 def normal_dependencies():
-    # With no target filter, Cargo includes dependencies for every platform.
     metadata = json.loads(subprocess.check_output(
         ["cargo", "metadata", "--format-version", "1", "--locked"], cwd=ROOT
     ))
-    packages = {package["id"]: package for package in metadata["packages"]}
-    nodes = {node["id"]: node for node in metadata["resolve"]["nodes"]}
+    packages = {}
     workspace = set(metadata["workspace_members"])
     app = next(
-        pkg_id for pkg_id in workspace
-        if Path(packages[pkg_id]["manifest_path"]) == ROOT / "src-tauri/Cargo.toml"
+        package["name"] for package in metadata["packages"]
+        if package["id"] in workspace and package["name"] == "supereditr"
     )
-    reachable = set()
-    pending = [app]
-    while pending:
-        pkg_id = pending.pop()
-        if pkg_id in reachable:
-            continue
-        reachable.add(pkg_id)
-        pending.extend(
-            dep["pkg"] for dep in nodes[pkg_id]["deps"]
-            if any(kind["kind"] is None for kind in dep["dep_kinds"])
-        )
-    return [packages[pkg_id] for pkg_id in reachable - workspace]
+    for package in metadata["packages"]:
+        key = (package["name"], package["version"])
+        packages.setdefault(key, []).append(package)
+
+    # The metadata graph includes dependencies outside the desktop build. Use
+    # Cargo's target-specific trees to decide what to include.
+    shipped = set()
+    for target in DESKTOP_TARGETS:
+        tree = subprocess.check_output([
+            "cargo", "tree", "--locked", "-p", app, "-e", "normal",
+            "--prefix", "none", "--format", "{p}", "--target", target, "--color", "never",
+        ], cwd=ROOT, encoding="utf-8")
+        for line in tree.splitlines():
+            match = TREE_PACKAGE.fullmatch(line)
+            if not match:
+                raise ValueError(f"Unexpected cargo tree output for {target}: {line}")
+            shipped.add(match.groups())
+
+    for name, version in sorted(shipped):
+        matches = packages.get((name, version), [])
+        if len(matches) != 1:
+            raise ValueError(f"Expected one Cargo metadata entry for {name} {version}, found {len(matches)}")
+        package = matches[0]
+        if package["id"] not in workspace:
+            yield package
 
 
 def notice_files(directory, declared=None):
@@ -79,16 +97,21 @@ def collect_packages(lock):
             files.update(spdx_files(package["license"]))
         yield ("crate", package["name"], package["version"], package["license"], fallback, files)
 
-    for name in BUNDLED_JS:
+    # Svelte's package contains both the compiler and the bundled runtime.
+    dependencies = read_json(ROOT / "ui/package.json").get("dependencies", {})
+    for name in sorted(set(dependencies) | {"svelte"}):
         relative = f"node_modules/{name}"
         directory = ROOT / "ui" / relative
         package = read_json(directory / "package.json")
         if package["version"] != lock["packages"][relative]["version"]:
             raise ValueError(f"{name} does not match the lockfile. Run npm --prefix ui ci.")
-        yield ("js", name, package["version"], package["license"], False, notice_files(directory))
+        files = notice_files(directory)
+        if not any(filename.upper().startswith(LICENCE_PREFIXES) for filename in files):
+            raise ValueError(f"No licence file for {name} {package['version']}")
+        yield ("js", name, package["version"], package.get("license"), False, files)
 
     for package in read_json(ROOT / "scripts/third-party-extra.json"):
-        files = {Path(path).name: ROOT / path for path in sorted(package["files"])}
+        files = {Path(path).as_posix(): ROOT / path for path in package["files"]}
         yield ("vendored", package["name"], package["version"], package["licence"], False, files)
 
 

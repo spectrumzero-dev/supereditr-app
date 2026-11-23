@@ -18,7 +18,7 @@
         </button>
         {#if expanded === index}
           {#if pkg.fallback}
-            <p class="hint">Standard SPDX text. This crate ships without a licence file.</p>
+            <p class="hint">Standard SPDX text. This package ships without a licence file.</p>
           {/if}
           {#each pkg.notices as notice}
             <h2>{notice.file}</h2>
@@ -50,6 +50,9 @@
     width: 100%;
     padding: 10px 14px;
     text-align: left;
+    border: none;
+    background: transparent;
+    cursor: pointer;
   }
   .package:hover {
     background: var(--bg-hover);

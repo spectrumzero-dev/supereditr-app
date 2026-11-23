@@ -23,6 +23,8 @@ objc2's `LICENSE.md` names each crate's licences without their texts, so the sta
 
 A crate whose repository has no licence file at all goes in `withoutLicence` in the manifest, with the reason; it then shows the standard SPDX text.
 
+The generator checks the manifest before using it: each project lists at least one licence file, every listed file exists, and every `withoutLicence` entry gives its reason. A crate's own notice files are shown beside those taken from its repository, and files from one repository are named by their path below the folder holding them, so no file replaces another with the same name. `tests/third_party_notices_test.py` covers these checks.
+
 ## Other components
 
 - `rust`: `COPYRIGHT`, `LICENSE-APACHE` and `LICENSE-MIT` from https://github.com/rust-lang/rust at tag `1.99.1` (commit `58cf8f9c35b355199727627d07ae34a4e2846d67`), the toolchain in `rust-toolchain.toml`. The standard library is linked into every build. When the toolchain changes, fetch these from the new tag and update the version in `scripts/third-party-extra.json`; the generator fails until they match.

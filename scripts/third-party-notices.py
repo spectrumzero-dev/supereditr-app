@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -90,40 +91,83 @@ def spdx_files(expression):
     }
 
 
+def is_licence(filename):
+    return Path(filename).name.upper().startswith(LICENCE_PREFIXES)
+
+
 def entry(kind, name, version, licence, source, files, fallback=False, upstream=None):
-    """`files` maps a shown file name to (path, origin): None for the package's own file, "repository"
-    for one taken from the project's repository, "spdx" for a standard text."""
+    """`files` lists (shown name, path, origin): origin None for the package's own file, "repository"
+    for one taken from the project's repository, "spdx" for a standard text. Files with one name but
+    different origins are all kept."""
+    seen = set()
+    for filename, _, origin in files:
+        if (filename, origin) in seen:
+            raise ValueError(f"{filename} is listed twice for {name} {version}")
+        seen.add((filename, origin))
     return {
         "kind": kind, "name": name, "version": version, "licence": licence, "source": source,
         "fallback": fallback, "upstream": upstream, "files": files,
     }
 
 
-def upstream_licences():
-    """Licence files checked in from the repositories of crates whose archives ship none, by "name version"."""
-    manifest = read_json(UPSTREAM)
+def blank(value):
+    return not isinstance(value, str) or not value.strip()
+
+
+def upstream_licences(manifest, root=ROOT):
+    """Check the manifest of licence files taken from the repositories of crates whose archives ship
+    none. Returns the projects by "name version", and the crates allowed to ship without any."""
+    without_licence = manifest["withoutLicence"]
+    for crate, reason in without_licence.items():
+        if blank(reason):
+            raise ValueError(f"{crate} is in withoutLicence in {UPSTREAM.name} without a reason")
     crates = {}
     for project in manifest["projects"]:
+        repository = project.get("repository")
+        if blank(repository):
+            raise ValueError(f"A project in {UPSTREAM.name} has no repository")
+        if not project.get("crates"):
+            raise ValueError(f"{repository} in {UPSTREAM.name} lists no crates")
+        if not any(is_licence(path) for path in project.get("files", [])):
+            raise ValueError(f"{repository} in {UPSTREAM.name} lists no licence file")
+        if len(set(project["files"])) != len(project["files"]):
+            raise ValueError(f"{repository} in {UPSTREAM.name} lists a file twice")
+        for path in project["files"]:
+            if not (root / path).is_file():
+                raise ValueError(f"{path}, listed for {repository} in {UPSTREAM.name}, does not exist")
+        if "standardTexts" in project and blank(project["standardTexts"]):
+            raise ValueError(f"standardTexts for {repository} in {UPSTREAM.name} gives no reason")
         for crate, commit in project["crates"].items():
             if crate in crates:
                 raise ValueError(f"{crate} is listed twice in {UPSTREAM.name}")
+            if crate in without_licence:
+                raise ValueError(f"{crate} is in both withoutLicence and projects in {UPSTREAM.name}")
             crates[crate] = (project, commit)
-    return crates, manifest["withoutLicence"]
+    return crates, without_licence
 
 
-def crate_licences(package, upstream, without_licence):
-    """The licence files for a crate: its own, else those checked in from its repository."""
+def upstream_files(paths, root=ROOT):
+    """Name each file by its path below the folder holding all of the project's files, so two files
+    with one name in different folders stay apart."""
+    paths = [root / path for path in paths]
+    common = Path(os.path.commonpath([path.parent for path in paths]))
+    return [(path.relative_to(common).as_posix(), path) for path in paths]
+
+
+def crate_licences(package, upstream, without_licence, root=ROOT):
+    """The licence files for a crate: its own, else those checked in from its repository. A crate's
+    own notice files are kept either way."""
     directory = Path(package["manifest_path"]).parent
     own = notice_files(directory, package["license_file"])
-    files = {filename: (path, None) for filename, path in own.items()}
-    if package["license_file"] or any(filename.upper().startswith(LICENCE_PREFIXES) for filename in own):
+    files = [(filename, path, None) for filename, path in own.items()]
+    if package["license_file"] or any(is_licence(filename) for filename in own):
         return files, False, None
     crate = f"{package['name']} {package['version']}"
     if not package["license"]:
         raise ValueError(f"No licence files or SPDX expression for {crate}")
-    standard = {filename: (path, "spdx") for filename, path in spdx_files(package["license"]).items()}
+    standard = [(filename, path, "spdx") for filename, path in spdx_files(package["license"]).items()]
     if crate in without_licence:
-        return {**files, **standard}, True, None
+        return files + standard, True, None
     if crate not in upstream:
         raise ValueError(
             f"{crate} ships without a licence file. Check in the licence files from its repository and"
@@ -138,10 +182,9 @@ def crate_licences(package, upstream, without_licence):
             f"{crate} was published from commit {built_from}, but {UPSTREAM.name} records {commit}."
             " Take its licence files from the commit it was published from."
         )
-    for path in project["files"]:
-        files[Path(path).name] = (ROOT / path, "repository")
+    files += [(filename, path, "repository") for filename, path in upstream_files(project["files"], root)]
     if project.get("standardTexts"):
-        files.update(standard)
+        files += standard
     return files, False, {"repository": project["repository"], "commit": commit}
 
 
@@ -153,10 +196,7 @@ def toolchain_version():
 
 
 def collect_packages(lock):
-    upstream, without_licence = upstream_licences()
-    for crate in without_licence:
-        if crate in upstream:
-            raise ValueError(f"{crate} is in both withoutLicence and projects in {UPSTREAM.name}")
+    upstream, without_licence = upstream_licences(read_json(UPSTREAM))
     used = set()
     shipped = set()
     for package in normal_dependencies():
@@ -183,12 +223,12 @@ def collect_packages(lock):
         if package["version"] != lock["packages"][relative]["version"]:
             raise ValueError(f"{name} does not match the lockfile. Run npm --prefix ui ci.")
         files = notice_files(directory)
-        if not any(filename.upper().startswith(LICENCE_PREFIXES) for filename in files):
+        if not any(is_licence(filename) for filename in files):
             raise ValueError(f"No licence file for {name} {package['version']}")
         yield entry(
             "js", name, package["version"], package.get("license"),
             f"https://www.npmjs.com/package/{name}/v/{package['version']}",
-            {filename: (path, None) for filename, path in files.items()},
+            [(filename, path, None) for filename, path in files.items()],
         )
 
     extra = read_json(ROOT / "scripts/third-party-extra.json")
@@ -204,7 +244,8 @@ def collect_packages(lock):
                 f"{package['name']} is listed as shipped with {package['shippedWith']}, which is no longer"
                 " shipped. Check which version it now ships and update its entry."
             )
-        files = {Path(path).as_posix(): (ROOT / path, None) for path in package["files"]}
+        # Shown by their full path, which keeps files with one name apart.
+        files = [(Path(path).as_posix(), ROOT / path, None) for path in package["files"]]
         yield entry("vendored", package["name"], package["version"], package["licence"], package["source"], files)
 
 
@@ -220,10 +261,9 @@ def generate():
         if not package["files"]:
             raise ValueError(f"No licence files or SPDX fallback for {name} {version}")
         notices = []
-        # The package's own and the repository's files come before standard texts.
-        for filename, (path, origin) in sorted(
-            package["files"].items(), key=lambda item: (item[1][1] == "spdx", item[0])
-        ):
+        # The package's own files come first, then the repository's, then standard texts.
+        rank = {None: 0, "repository": 1, "spdx": 2}
+        for filename, path, origin in sorted(package["files"], key=lambda file: (rank[file[2]], file[0])):
             if not path.is_file():
                 raise ValueError(f"Missing {filename} for {name} {version}")
             # Universal newline conversion makes this independent of the checkout OS.

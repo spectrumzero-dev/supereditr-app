@@ -5,11 +5,10 @@
 //! SuperEditr says what it found and on which line, never the secret itself. Detection is by
 //! pattern: a secret in a format with no rule, or an unlabelled random string, isn't caught.
 //!
-//! Every rule is a row in [`RULES`], so each one can be checked against the documentation of the
-//! format it matches, where the format is documented. The rules are meant to stay quiet on ordinary
-//! writing: commit hashes, UUIDs, checksums, code that only names a key (`os.environ["API_KEY"]`),
-//! and placeholders (`your-api-key`). A check that blocks harmless text gets in the way, so a rule is
-//! added only when it rarely matches anything else.
+//! Named rules come from documented formats and the generated Gitleaks import. The rules are meant
+//! to stay quiet on ordinary writing: commit hashes, UUIDs, checksums, code that only names a key
+//! (`os.environ["API_KEY"]`), and placeholders (`your-api-key`). A check that blocks harmless text
+//! gets in the way, so a rule is added only when it rarely matches anything else.
 //!
 //! To add a format, add a row here and two cases in `sensitive/tests.rs`: a text the rule must
 //! catch, and, if the format could look like ordinary text, a text it must leave alone. The tests
@@ -18,13 +17,15 @@
 use regex::Regex;
 use std::sync::LazyLock;
 
+mod gitleaks;
+
 /// One kind of secret.
 pub struct Rule {
     /// What the message calls it, with its article: "a GitHub token".
     pub name: &'static str,
     /// A regular expression in Rust's `regex` syntax, which runs in time linear in the text, so no
-    /// selection can make the check slow. When the pattern has a capture group, `accept` sees the
-    /// group; otherwise it sees the whole match.
+    /// selection can make the check slow. Named patterns start at the token and pass the whole
+    /// match to `accept`. Heuristics pass capture group 1 when present, or the whole match.
     pub pattern: &'static str,
     /// A second look at the match, for formats that the pattern alone would confuse with ordinary
     /// text.
@@ -33,7 +34,7 @@ pub struct Rule {
     pub source: &'static str,
 }
 
-pub const RULES: &[Rule] = &[
+const NAMED_RULES: &[Rule] = &[
     // Known formats: a fixed prefix or header that ordinary writing doesn't contain.
     Rule {
         name: "a private key",
@@ -158,6 +159,9 @@ pub const RULES: &[Rule] = &[
         accept: not_an_example,
         source: "RFC 7519 (JWT) and RFC 7515 (JWS compact serialization)",
     },
+];
+
+const HEURISTIC_RULES: &[Rule] = &[
     // A value given to a setting whose name says it's secret: `password = …`, `API_KEY: …`,
     // `"client_secret": "…"`. The name may carry a prefix (`DB_PASSWORD`, `aws_secret_access_key`)
     // but nothing after it, so `tokenizer = …` and `token_count: …` don't count. A setting named
@@ -216,21 +220,32 @@ impl Finding {
 pub fn find(text: &str) -> Option<Finding> {
     let (start, rule) = first_match(text)?;
     let line = text.contains('\n').then(|| text[..start].matches('\n').count() + 1);
-    Some(Finding { name: RULES[rule].name, line })
+    Some(Finding { name: COMPILED[rule].0.name, line })
 }
 
-static COMPILED: LazyLock<Vec<Regex>> =
-    LazyLock::new(|| RULES.iter().map(|rule| Regex::new(rule.pattern).expect(rule.pattern)).collect());
+const HEURISTIC_START: usize = NAMED_RULES.len() + gitleaks::RULES.len();
 
-/// Where the first accepted match starts, and the index of its rule in [`RULES`]. On a line that
-/// several rules match, the earlier rule wins, so a named format beats the general rules below it.
+fn rules() -> impl Iterator<Item = &'static Rule> {
+    NAMED_RULES.iter().chain(gitleaks::RULES).chain(HEURISTIC_RULES)
+}
+
+static COMPILED: LazyLock<Vec<(&Rule, Regex)>> =
+    LazyLock::new(|| rules().map(|rule| (rule, Regex::new(rule.pattern).expect(rule.pattern))).collect());
+
+/// Where the first accepted match starts, and the index of its rule. On a line that several
+/// rules match, the earlier rule wins, so a named format beats the general heuristics.
 fn first_match(text: &str) -> Option<(usize, usize)> {
     let line = |start: usize| text[..start].matches('\n').count();
     COMPILED
         .iter()
-        .zip(RULES)
         .enumerate()
-        .filter_map(|(index, (regex, rule))| {
+        .filter_map(|(index, (rule, regex))| {
+            if index < HEURISTIC_START {
+                return regex
+                    .find_iter(text)
+                    .find(|found| (rule.accept)(found.as_str()))
+                    .map(|found| (found.start(), index));
+            }
             regex
                 .captures_iter(text)
                 .find(|found| (rule.accept)(found.get(1).or(found.get(0)).map_or("", |m| m.as_str())))

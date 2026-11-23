@@ -43,6 +43,8 @@ development:
           - .github/**
           - scripts/check.sh
           - scripts/count-lines.sh
+          - scripts/sync-gitleaks.py
+          - crates/core/examples/**
           - .markdownlint.json
           - rustfmt.toml
 
@@ -78,5 +80,7 @@ shared:
           - '!.github/**'
           - '!scripts/check.sh'
           - '!scripts/count-lines.sh'
+          - '!scripts/sync-gitleaks.py'
+          - '!crates/core/examples/**'
           - '!.markdownlint.json'
           - '!rustfmt.toml'

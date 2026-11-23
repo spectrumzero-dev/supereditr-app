@@ -42,11 +42,12 @@ def normal_dependencies():
         packages.setdefault(key, []).append(package)
 
     # The metadata graph includes dependencies outside the desktop build. Use
-    # Cargo's target-specific trees to decide what to include.
+    # Cargo's target-specific trees to decide what to include. Proc macros
+    # are built for the host and their dependencies do not ship.
     shipped = set()
     for target in DESKTOP_TARGETS:
         tree = subprocess.check_output([
-            "cargo", "tree", "--locked", "-p", app, "-e", "normal",
+            "cargo", "tree", "--locked", "-p", app, "-e", "normal,no-proc-macro",
             "--prefix", "none", "--format", "{p}", "--target", target, "--color", "never",
         ], cwd=ROOT, encoding="utf-8")
         for line in tree.splitlines():

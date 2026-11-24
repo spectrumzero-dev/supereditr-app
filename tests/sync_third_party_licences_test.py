@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -92,11 +93,14 @@ class SyncTest(unittest.TestCase):
     def text(self, path):
         return (self.root / path).read_text(encoding="utf-8")
 
-    def assertNothingWritten(self, error, *packages, toolchain="1.2.3"):
+    def assertNothingWritten(self, error, *packages, toolchain="1.2.3", fetched=None):
         before = self.tree()
+        self.fetched = []
         with self.assertRaisesRegex((ValueError, OSError), error):
             self.sync(list(packages), toolchain)
         self.assertEqual(self.tree(), before)
+        if fetched is not None:
+            self.assertEqual(self.fetched, fetched)
 
 
 class RefreshTest(SyncTest):
@@ -173,6 +177,24 @@ class FailureTest(SyncTest):
                 self.serve(f"{RAW}/{NEW}/LICENSE", content)
                 self.assertNothingWritten(f"LICENSE from {REPOSITORY} at {NEW}, for {REPOSITORY}, {error}", self.crate(commit=NEW))
 
+    def test_a_published_commit_that_is_not_a_commit_id_fails_before_any_request(self):
+        for commit in ("main", "../../other/repo/main", "A" * 40, OLD[:39]):
+            with self.subTest(commit=commit):
+                self.assertNothingWritten(
+                    f"demo 1.0.0 records '{re.escape(commit)}' .* not a 40-character commit id",
+                    self.crate(commit=commit), fetched=[],
+                )
+
+    def test_a_toolchain_that_is_not_a_release_fails_before_any_request(self):
+        for toolchain in ("stable", "1.2.3/../../x", "1.2"):
+            with self.subTest(toolchain=toolchain):
+                self.assertNothingWritten("is not a Rust release", self.crate(), toolchain=toolchain, fetched=[])
+
+    def test_a_listed_repository_outside_github_names_fails_before_any_request(self):
+        self.manifest["projects"][0]["repository"] = "https://github.com/quillpoint/de mo"
+        self.save()
+        self.assertNothingWritten("is not a GitHub repository", self.crate(), fetched=[])
+
     def test_a_crate_without_a_recorded_commit_fails(self):
         self.assertNothingWritten("demo 1.0.0 .* does not record the commit", self.crate(commit=None))
 
@@ -204,10 +226,14 @@ class NewProjectTest(SyncTest):
         self.assertNothingWritten("kyndal 1.0.0 .* none was found at the root of https://github.com/quillpoint/kyndal", self.crate(), new)
 
     def test_a_crate_without_a_github_repository_fails(self):
-        for repository in (None, "https://example.com/quillpoint/kyndal"):
+        for repository in (
+            None, "https://example.com/quillpoint/kyndal", "https://github.com/quillpoint/kyn dal",
+            "https://github.com/quillpoint/kyndal%2F..", "https://github.com/quillpoint/a\\..\\..\\x",
+            "https://github.com/quillpoint/..", "https://github.com/../kyndal",
+        ):
             with self.subTest(repository=repository):
                 new = self.crate(name="kyndal", commit=OTHER, repository=repository)
-                self.assertNothingWritten("kyndal 1.0.0 .* names no GitHub repository", self.crate(), new)
+                self.assertNothingWritten("kyndal 1.0.0 .* names no GitHub repository", self.crate(), new, fetched=[])
 
 
 if __name__ == "__main__":

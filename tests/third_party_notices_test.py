@@ -99,6 +99,20 @@ class ManifestTest(Fixture):
         with self.assertRaisesRegex(ValueError, "https://example.com/other and https://example.com/demo .* share the folder up"):
             notices.upstream_licences(manifest, self.root)
 
+    def test_a_recorded_commit_that_is_not_a_commit_id_fails(self):
+        self.write("scripts/third-party-upstream/up/LICENSE")
+        for commit in ("main", "../../other/repo/main", COMMIT.upper(), None):
+            manifest = self.manifest(["scripts/third-party-upstream/up/LICENSE"])
+            manifest["projects"][0]["crates"]["demo 1.0.0"] = commit
+            with self.subTest(commit=commit), self.assertRaisesRegex(ValueError, "demo 1.0.0 in .* not a 40-character commit id"):
+                notices.upstream_licences(manifest, self.root)
+
+    def test_an_archive_commit_that_is_not_a_commit_id_fails(self):
+        package = self.crate()
+        self.write("crate/.cargo_vcs_info.json", json.dumps({"git": {"sha1": "main"}}))
+        with self.assertRaisesRegex(ValueError, "demo 1.0.0 records 'main' as the commit .* not a 40-character commit id"):
+            notices.published_commit(package)
+
     def test_the_checked_in_manifest_is_valid(self):
         manifest = notices.read_json(notices.UPSTREAM)
         upstream, _ = notices.upstream_licences(manifest)

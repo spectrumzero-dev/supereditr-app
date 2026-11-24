@@ -14,6 +14,7 @@ runs offline.
 
 import importlib.util
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -31,11 +32,15 @@ spec.loader.exec_module(notices)
 
 RUST_REPOSITORY = "https://github.com/rust-lang/rust"
 # The files looked for at a repository's root when one of its crates first needs them.
-ROOT_FILES = tuple(
-    f"{stem}{suffix}"
-    for stem in ("LICENSE", "LICENCE", "COPYING", "UNLICENSE")
-    for suffix in ("", ".md", ".txt", "-MIT", "-MIT.md", "-MIT.txt", "-APACHE", "-APACHE.md", "-APACHE.txt")
-) + ("COPYRIGHT", "NOTICE", "NOTICE.md", "NOTICE.txt", "NOTICES.md")
+ROOT_FILES = (
+    "LICENSE", "LICENSE.md", "LICENSE.txt", "LICENSE-MIT", "LICENSE-MIT.md", "LICENSE-APACHE", "LICENSE-APACHE.md",
+    "LICENCE", "LICENCE.md", "LICENCE.txt", "COPYING", "COPYING.md", "UNLICENSE", "COPYRIGHT", "NOTICE",
+    "NOTICE.md", "NOTICE.txt", "NOTICES.md",
+)
+# What GitHub allows in an owner's or a repository's name.
+GITHUB_NAME = re.compile(r"[A-Za-z0-9._-]+")
+# A Rust release, such as 1.99.1, which is also its tag.
+RUST_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 
 
 def fetch(url):
@@ -57,7 +62,10 @@ def github(repository):
         return None
     if len(segments) < 2:
         return None
-    return f"https://github.com/{segments[0]}/{segments[1].removesuffix('.git')}"
+    owner, name = segments[0], segments[1].removesuffix(".git")
+    if not all(GITHUB_NAME.fullmatch(part) and part not in (".", "..") for part in (owner, name)):
+        return None
+    return f"https://github.com/{owner}/{name}"
 
 
 class Fetcher:
@@ -111,6 +119,11 @@ def plan(manifest, extra, packages, toolchain, fetch, root=notices.ROOT):
     """Work out the new manifests and files. Returns (files, removed, manifest, extra, report): `files`
     maps each path below `root` to its new bytes and `removed` lists paths to delete. Writes nothing."""
     notices.upstream_licences(manifest, root)
+    for project in manifest["projects"]:
+        if github(project["repository"]) is None:
+            raise ValueError(f"{project['repository']} in {notices.UPSTREAM.name} is not a GitHub repository")
+    if not RUST_VERSION.fullmatch(toolchain):
+        raise ValueError(f"The toolchain {toolchain!r} in rust-toolchain.toml is not a Rust release such as 1.99.1")
     before = {crate: commit for project in manifest["projects"] for crate, commit in project["crates"].items()}
     fetcher = Fetcher(fetch)
     report = []

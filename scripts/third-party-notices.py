@@ -35,6 +35,8 @@ DESKTOP_TARGETS = (
 )
 # Cargo can append source paths, proc-macro labels or a deduplication marker.
 TREE_PACKAGE = re.compile(r"(\S+) v(\S+)(?: .*)?")
+# A full Git commit id. Anything else, such as a branch name, could change or point elsewhere.
+COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
 def read_json(path):
@@ -192,6 +194,8 @@ def upstream_licences(manifest, root=ROOT):
         if "standardTexts" in project and blank(project["standardTexts"]):
             raise ValueError(f"standardTexts for {repository} in {UPSTREAM.name} gives no reason")
         for crate, commit in project["crates"].items():
+            if not isinstance(commit, str) or not COMMIT.fullmatch(commit):
+                raise ValueError(f"{crate} in {UPSTREAM.name} records {commit!r}, which is not a 40-character commit id")
             if crate in crates:
                 raise ValueError(f"{crate} is listed twice in {UPSTREAM.name}")
             if crate in without_licence:
@@ -218,7 +222,13 @@ def own_licences(package):
 def published_commit(package):
     """The commit a crate was published from, as recorded in its archive, or None."""
     vcs = Path(package["manifest_path"]).parent / ".cargo_vcs_info.json"
-    return read_json(vcs).get("git", {}).get("sha1") if vcs.is_file() else None
+    commit = read_json(vcs).get("git", {}).get("sha1") if vcs.is_file() else None
+    if commit is not None and (not isinstance(commit, str) or not COMMIT.fullmatch(commit)):
+        raise ValueError(
+            f"{package['name']} {package['version']} records {commit!r} as the commit it was published from,"
+            " which is not a 40-character commit id"
+        )
+    return commit
 
 
 def crate_licences(package, upstream, without_licence, root=ROOT):

@@ -24,7 +24,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check:
+  check-macos:
     if: github.repository == 'spectrumzero-dev/supereditr-app'
     runs-on: macos-15
     timeout-minutes: 45

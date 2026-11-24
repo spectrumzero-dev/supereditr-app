@@ -4,16 +4,13 @@
 
   let { back }: { back: () => void } = $props();
   let expanded = $state<number | null>(null);
-  // `origin` says where a text came from when it is not the package's own file: "repository" (the
-  // project's repository, at `upstream.commit`) or "spdx" (a standard licence text).
-  type Notice = { file: string; text: string; origin?: "repository" | "spdx" };
+  type Notice = { file: string; text: string; origin?: "spdx" };
   type Package = {
     name: string;
     version: string;
     licence: string;
     source: string;
     fallback: boolean;
-    upstream?: { repository: string; commit: string };
     notices: Notice[];
   };
   const packages = notices.packages as Package[];
@@ -27,20 +24,17 @@
     {#each packages as pkg, index}
       <li class="row">
         <button class="package" aria-expanded={expanded === index} onclick={() => (expanded = expanded === index ? null : index)}>
-          <span class="label">{pkg.name} {pkg.version}</span>
+          <span class="label">{pkg.name} {pkg.name === "WebView2 loader (Windows)" ? `(shipped with webview2-com-sys ${pkg.version})` : pkg.version}</span>
           <span class="hint">{pkg.licence}</span>
         </button>
         {#if expanded === index}
           <p class="hint">Source: <button class="linklike" onclick={() => api.openUrl(pkg.source)}>{pkg.source}</button></p>
-          {#if pkg.fallback || pkg.upstream}
+          {#if pkg.fallback}
             <p class="hint">This package ships without a licence file.</p>
           {/if}
           {#each pkg.notices as notice}
             <h2>{notice.file}</h2>
-            <!-- Each file says where it came from; the package's own files need no label. -->
-            {#if notice.origin === "repository" && pkg.upstream}
-              <p class="hint">From its repository, {pkg.upstream.repository}, at commit {pkg.upstream.commit.slice(0, 12)}.</p>
-            {:else if notice.origin === "spdx"}
+            {#if notice.origin === "spdx"}
               <p class="hint">Standard SPDX text.</p>
             {/if}
             <pre>{texts[notice.text]}</pre>

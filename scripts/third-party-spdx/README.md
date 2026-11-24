@@ -1,1 +1,1 @@
-These standard texts come from the [SPDX License List Data v3.27.0](https://github.com/spdx/license-list-data/tree/v3.27.0/text). The generator shows them for a crate listed in `withoutLicence` in `scripts/third-party-upstream.json`, and after a repository licence file that names licences without their texts.
+These standard texts come from the [SPDX License List Data v3.27.0](https://github.com/spdx/license-list-data/tree/v3.27.0/text). A package shipping no licence file is shown with the standard text for its declared licence and a link to its source.

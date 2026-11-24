@@ -1,5 +1,3 @@
 [
-  {"name": "gitleaks", "version": "8.30.1", "licence": "MIT", "source": "https://github.com/gitleaks/gitleaks/releases/tag/v8.30.1", "files": ["crates/core/src/sensitive/GITLEAKS-LICENSE"]},
-  {"name": "Rust standard library", "version": "1.99.1", "licence": "MIT OR Apache-2.0", "source": "https://github.com/rust-lang/rust/tree/1.99.1/library", "files": ["scripts/third-party-upstream/rust/COPYRIGHT", "scripts/third-party-upstream/rust/LICENSE-APACHE", "scripts/third-party-upstream/rust/LICENSE-MIT"]},
-  {"name": "WebView2 loader (Windows)", "version": "1.0.3800.47", "licence": "BSD-3-Clause", "source": "https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.3800.47", "shippedWith": "webview2-com-sys 0.39.1", "files": ["scripts/third-party-upstream/webview2-sdk/LICENSE.txt", "scripts/third-party-upstream/webview2-sdk/NOTICE.txt"]}
+  {"name": "gitleaks", "version": "8.30.1", "licence": "MIT", "source": "https://github.com/gitleaks/gitleaks/releases/tag/v8.30.1", "files": ["crates/core/src/sensitive/GITLEAKS-LICENSE"]}
 ]

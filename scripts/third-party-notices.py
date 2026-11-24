@@ -3,15 +3,13 @@
 import argparse
 import hashlib
 import json
-import os
 import re
 import subprocess
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUTPUT = ROOT / "ui/src/settings/third-party-notices.json"
-UPSTREAM = ROOT / "scripts/third-party-upstream.json"
-RUST_STD = "Rust standard library"
 # Svelte's package contains both the compiler and the browser runtime, and the runtime imports clsx
 # and esm-env. Svelte's other dependencies are used only by the compiler. Vite and Rolldown add small
 # runtime helpers of their own (module preloading, the chunk runtime) as virtual modules, which the
@@ -97,156 +95,52 @@ def is_licence(filename):
     return Path(filename).name.upper().startswith(LICENCE_PREFIXES)
 
 
-def entry(kind, name, version, licence, source, files, fallback=False, upstream=None):
-    """`files` lists (shown name, path, origin): origin None for the package's own file, "repository"
-    for one taken from the project's repository, "spdx" for a standard text. Files with one name but
-    different origins are all kept."""
-    if upstream is None and any(origin == "repository" for _, _, origin in files):
-        raise ValueError(f"{name} {version} has a file from its repository but no repository to credit")
-    seen = set()
-    for filename, _, origin in files:
-        if (filename, origin) in seen:
-            raise ValueError(f"{filename} is listed twice for {name} {version}")
-        seen.add((filename, origin))
+def entry(kind, name, version, licence, source, files, fallback=False):
     return {
         "kind": kind, "name": name, "version": version, "licence": licence, "source": source,
-        "fallback": fallback, "upstream": upstream, "files": files,
+        "fallback": fallback, "files": files,
     }
 
 
-def blank(value):
-    return not isinstance(value, str) or not value.strip()
+def standard_texts(licence):
+    return [(filename, path, "spdx") for filename, path in spdx_files(licence).items()]
 
 
-DRIVE = re.compile(r"[A-Za-z]:")
-
-
-def listed_files(files, owner, manifest, root=ROOT):
-    """Check the `files` listed for `owner` in `manifest` before any is used: a list of plain relative
-    paths with forward slashes, each a file inside `root` that is not blank. Returns their paths."""
-    if not isinstance(files, list):
-        raise ValueError(f"files for {owner} in {manifest} must be a list of paths")
-    root = root.resolve()
-    paths = []
-    for path in files:
-        if blank(path):
-            raise ValueError(f"files for {owner} in {manifest} has an empty or non-text path: {path!r}")
-        if (
-            path.startswith("/") or DRIVE.match(path) or "\\" in path
-            or any(part in ("", ".", "..") for part in path.split("/"))
-        ):
-            raise ValueError(
-                f"{path}, listed for {owner} in {manifest}, must be a relative path with forward slashes"
-                " and no . or .. parts"
-            )
-        resolved = (root / path).resolve()
-        if not resolved.is_relative_to(root):
-            raise ValueError(f"{path}, listed for {owner} in {manifest}, is outside the repository")
-        if not resolved.is_file():
-            raise ValueError(f"{path}, listed for {owner} in {manifest}, does not exist")
-        if not resolved.read_text(encoding="utf-8").strip():
-            raise ValueError(f"{path}, listed for {owner} in {manifest}, is blank")
-        paths.append(path)
-    return paths
-
-
-def upstream_licences(manifest, root=ROOT):
-    """Check the manifest of licence files taken from the repositories of crates whose archives ship
-    none. Returns the projects by "name version", and the crates allowed to ship without any."""
-    without_licence = manifest["withoutLicence"]
-    for crate, reason in without_licence.items():
-        if blank(reason):
-            raise ValueError(f"{crate} is in withoutLicence in {UPSTREAM.name} without a reason")
-    crates = {}
-    for project in manifest["projects"]:
-        repository = project.get("repository")
-        if blank(repository):
-            raise ValueError(f"A project in {UPSTREAM.name} has no repository")
-        if not project.get("crates"):
-            raise ValueError(f"{repository} in {UPSTREAM.name} lists no crates")
-        files = listed_files(project.get("files", []), repository, UPSTREAM.name, root)
-        if not any(is_licence(path) for path in files):
-            raise ValueError(f"{repository} in {UPSTREAM.name} lists no licence file")
-        if len(set(files)) != len(files):
-            raise ValueError(f"{repository} in {UPSTREAM.name} lists a file twice")
-        if "standardTexts" in project and blank(project["standardTexts"]):
-            raise ValueError(f"standardTexts for {repository} in {UPSTREAM.name} gives no reason")
-        for crate, commit in project["crates"].items():
-            if crate in crates:
-                raise ValueError(f"{crate} is listed twice in {UPSTREAM.name}")
-            if crate in without_licence:
-                raise ValueError(f"{crate} is in both withoutLicence and projects in {UPSTREAM.name}")
-            crates[crate] = (project, commit)
-    return crates, without_licence
-
-
-def upstream_files(paths, root=ROOT):
-    """Name each file by its path below the folder holding all of the project's files, so two files
-    with one name in different folders stay apart."""
-    paths = [root / path for path in paths]
-    common = Path(os.path.commonpath([path.parent for path in paths]))
-    return [(path.relative_to(common).as_posix(), path) for path in paths]
-
-
-def crate_licences(package, upstream, without_licence, root=ROOT):
-    """The licence files for a crate: its own, else those checked in from its repository. A crate's
-    own notice files are kept either way."""
+def crate_licences(package):
     directory = Path(package["manifest_path"]).parent
     own = notice_files(directory, package["license_file"])
     files = [(filename, path, None) for filename, path in own.items()]
     if package["license_file"] or any(is_licence(filename) for filename in own):
-        return files, False, None
-    crate = f"{package['name']} {package['version']}"
+        return files, False
     if not package["license"]:
-        raise ValueError(f"No licence files or SPDX expression for {crate}")
-    standard = [(filename, path, "spdx") for filename, path in spdx_files(package["license"]).items()]
-    if crate in without_licence:
-        return files + standard, True, None
-    if crate not in upstream:
-        raise ValueError(
-            f"{crate} ships without a licence file. Check in the licence files from its repository and"
-            f" list them in {UPSTREAM.relative_to(ROOT).as_posix()}, or add the crate to withoutLicence"
-            " with the reason its repository has none."
-        )
-    project, commit = upstream[crate]
-    vcs = directory / ".cargo_vcs_info.json"
-    built_from = read_json(vcs)["git"]["sha1"] if vcs.is_file() else None
-    if built_from != commit:
-        raise ValueError(
-            f"{crate} was published from commit {built_from}, but {UPSTREAM.name} records {commit}."
-            " Take its licence files from the commit it was published from."
-        )
-    files += [(filename, path, "repository") for filename, path in upstream_files(project["files"], root)]
-    if project.get("standardTexts"):
-        files += standard
-    return files, False, {"repository": project["repository"], "commit": commit}
+        raise ValueError(f"No licence files or SPDX expression for {package['name']} {package['version']}")
+    return files + standard_texts(package["license"]), True
 
 
-def toolchain_version():
-    match = re.search(r'^channel\s*=\s*"([^"]+)"', (ROOT / "rust-toolchain.toml").read_text(encoding="utf-8"), re.M)
-    if not match:
-        raise ValueError("No channel in rust-toolchain.toml")
-    return match.group(1)
+def runtime_licences(shipped):
+    with (ROOT / "rust-toolchain.toml").open("rb") as toolchain:
+        version = tomllib.load(toolchain)["toolchain"]["channel"]
+    licence = "MIT OR Apache-2.0"
+    yield entry(
+        "vendored", "Rust standard library", version, licence,
+        f"https://github.com/rust-lang/rust/tree/{version}/library", standard_texts(licence),
+    )
+    for package in shipped:
+        if package["name"] == "webview2-com-sys":
+            licence = "BSD-3-Clause"
+            yield entry(
+                "vendored", "WebView2 loader (Windows)", package["version"], licence,
+                "https://www.nuget.org/packages/Microsoft.Web.WebView2", standard_texts(licence),
+            )
 
 
 def collect_packages(lock):
-    upstream, without_licence = upstream_licences(read_json(UPSTREAM))
-    used = set()
-    shipped = set()
-    for package in normal_dependencies():
-        crate = f"{package['name']} {package['version']}"
-        shipped.add(crate)
-        files, fallback, source = crate_licences(package, upstream, without_licence)
-        if source or fallback:
-            used.add(crate)
+    shipped = list(normal_dependencies())
+    for package in shipped:
+        files, fallback = crate_licences(package)
         yield entry(
             "crate", package["name"], package["version"], package["license"],
-            f"https://crates.io/crates/{package['name']}/{package['version']}", files, fallback, source,
-        )
-    unused = sorted((set(upstream) | set(without_licence)) - used)
-    if unused:
-        raise ValueError(
-            f"{UPSTREAM.name} lists crates that are not shipped or now ship their own licence files: {', '.join(unused)}"
+            f"https://crates.io/crates/{package['name']}/{package['version']}", files, fallback,
         )
 
     dependencies = read_json(ROOT / "ui/package.json").get("dependencies", {})
@@ -265,23 +159,11 @@ def collect_packages(lock):
             [(filename, path, None) for filename, path in files.items()],
         )
 
-    extra = read_json(ROOT / "scripts/third-party-extra.json")
-    rust = [package for package in extra if package["name"] == RUST_STD]
-    if len(rust) != 1 or rust[0]["version"] != toolchain_version():
-        raise ValueError(
-            f"scripts/third-party-extra.json must list the {RUST_STD} at the version in rust-toolchain.toml"
-            f" ({toolchain_version()}), with its licence files from that release."
-        )
-    for package in extra:
-        if package.get("shippedWith") and package["shippedWith"] not in shipped:
-            raise ValueError(
-                f"{package['name']} is listed as shipped with {package['shippedWith']}, which is no longer"
-                " shipped. Check which version it now ships and update its entry."
-            )
-        # Shown by their full path, which keeps files with one name apart.
-        paths = listed_files(package.get("files"), package["name"], "third-party-extra.json")
-        files = [(path, ROOT / path, None) for path in paths]
+    for package in read_json(ROOT / "scripts/third-party-extra.json"):
+        files = [(path, ROOT / path, None) for path in package["files"]]
         yield entry("vendored", package["name"], package["version"], package["licence"], package["source"], files)
+
+    yield from runtime_licences(shipped)
 
 
 def generate():
@@ -296,9 +178,7 @@ def generate():
         if not package["files"]:
             raise ValueError(f"No licence files or SPDX fallback for {name} {version}")
         notices = []
-        # The package's own files come first, then the repository's, then standard texts.
-        rank = {None: 0, "repository": 1, "spdx": 2}
-        for filename, path, origin in sorted(package["files"], key=lambda file: (rank[file[2]], file[0])):
+        for filename, path, origin in sorted(package["files"], key=lambda file: (file[2] is not None, file[0])):
             if not path.is_file():
                 raise ValueError(f"Missing {filename} for {name} {version}")
             # Universal newline conversion makes this independent of the checkout OS.
@@ -314,8 +194,6 @@ def generate():
             "licence": package["licence"] or "See licence files", "fallback": package["fallback"],
             "source": package["source"], "notices": notices,
         }
-        if package["upstream"]:
-            listed["upstream"] = package["upstream"]
         packages.append(listed)
     locks = {
         path.relative_to(ROOT).as_posix(): hashlib.sha256(

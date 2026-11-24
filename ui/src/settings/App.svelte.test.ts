@@ -20,10 +20,8 @@ it("opens the bundled third-party licences from About and shows the Apache licen
   expect(document.querySelector("pre")).toBeNull();
   await fireEvent.click(harper);
   expect(document.querySelector("pre")?.textContent).toContain("TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION");
-  // Harper's crate archives ship no licence file; the text comes from its repository.
   expect(screen.getByText("This package ships without a licence file.")).toBeTruthy();
-  expect(screen.getByText(/^From its repository, https:\/\/github\.com\/automattic\/harper, at commit [0-9a-f]{12}\.$/)).toBeTruthy();
-  expect(screen.queryByText(/Standard SPDX text/)).toBeNull();
+  expect(screen.getByText("Standard SPDX text.")).toBeTruthy();
 
   await fireEvent.click(screen.getByRole("button", { name: "Back to About" }));
   expect(screen.getByRole("heading", { name: "About SuperEditr" })).toBeTruthy();
@@ -50,21 +48,6 @@ it("opens each third-party package's source from its expanded row", async () => 
 
   await fireEvent.click(screen.getByRole("button", { name: /^clsx [\d.]+ MIT$/ }));
   expect(screen.getByRole("button", { name: /^https:\/\/www\.npmjs\.com\/package\/clsx\/v\/[\d.]+$/ })).toBeTruthy();
-});
-
-it("labels each file of a mixed row by its own origin", async () => {
-  await openLicences();
-  await fireEvent.click(screen.getByRole("button", { name: /^objc2-app-kit [\d.]+ Zlib OR Apache-2\.0 OR MIT$/ }));
-  // Each file's heading is followed by the label of its origin.
-  const files = [...document.querySelectorAll("h2")].map((heading) => [heading.textContent, heading.nextElementSibling?.textContent]);
-  const repository = expect.stringMatching(/^From its repository, https:\/\/github\.com\/madsmtm\/objc2, at commit [0-9a-f]{12}\.$/);
-  expect(files).toEqual([
-    ["LICENSE.md", repository],
-    ["Apache-2.0.txt", "Standard SPDX text."],
-    ["MIT.txt", "Standard SPDX text."],
-    ["Zlib.txt", "Standard SPDX text."],
-  ]);
-  expect(screen.getAllByText("This package ships without a licence file.")).toHaveLength(1);
 });
 
 it("lists the Rust standard library", async () => {

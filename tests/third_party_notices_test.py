@@ -53,6 +53,10 @@ class RuntimeTest(unittest.TestCase):
                         ("Apache-2.0.txt", "spdx"), ("MIT.txt", "spdx"),
                     ])
 
+            toolchain.write_text("[toolchain]\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"^No channel in rust-toolchain\.toml$"):
+                next(notices.runtime_licences([]))
+
     def test_webview2_loader_follows_the_shipped_crate(self):
         rust, = notices.runtime_licences([{"name": "webview2-com", "version": "2.0.0"}])
         self.assertEqual(rust["name"], "Rust standard library")

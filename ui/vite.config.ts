@@ -4,7 +4,7 @@ import { svelteTesting } from "@testing-library/svelte/vite";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Plugin } from "vite";
-import { unlistedPackages, type PackageVersion } from "./src/lib/bundled-packages";
+import { unlistedPackages, type PackageVersion } from "./src/lib/bundled-packages.ts";
 
 // Fails the build when a module from node_modules goes into the bundle and its package, at that
 // version, is missing from the third-party licences in Settings (scripts/third-party-notices.py

@@ -55,3 +55,11 @@ it("lists the Rust standard library", async () => {
   await fireEvent.click(screen.getByRole("button", { name: /^Rust standard library [\d.]+ MIT OR Apache-2\.0$/ }));
   expect(screen.getByRole("button", { name: /^https:\/\/github\.com\/rust-lang\/rust\/tree\/[\d.]+\/library$/ })).toBeTruthy();
 });
+
+it("lists the WebView2 loader with the shipped crate version", async () => {
+  await openLicences();
+  await fireEvent.click(screen.getByRole("button", {
+    name: /^WebView2 loader \(Windows\) \(shipped with webview2-com-sys [\d.]+\) BSD-3-Clause$/,
+  }));
+  expect(screen.getByRole("button", { name: "https://www.nuget.org/packages/Microsoft.Web.WebView2" })).toBeTruthy();
+});

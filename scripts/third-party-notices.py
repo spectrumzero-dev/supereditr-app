@@ -5,7 +5,6 @@ import hashlib
 import json
 import re
 import subprocess
-import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -118,8 +117,11 @@ def crate_licences(package):
 
 
 def runtime_licences(shipped):
-    with (ROOT / "rust-toolchain.toml").open("rb") as toolchain:
-        version = tomllib.load(toolchain)["toolchain"]["channel"]
+    text = (ROOT / "rust-toolchain.toml").read_text(encoding="utf-8")
+    match = re.search(r'^channel\s*=\s*"([^"]+)"', text, re.M)
+    if not match:
+        raise ValueError("No channel in rust-toolchain.toml")
+    version = match.group(1)
     licence = "MIT OR Apache-2.0"
     yield entry(
         "vendored", "Rust standard library", version, licence,

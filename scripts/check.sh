@@ -17,6 +17,7 @@ if [[ "$(uname)" == MINGW* ]]; then
   python=python
 fi
 "$python" -I tests/third_party_notices_test.py
+"$python" -I tests/sync_third_party_licences_test.py
 notices=ui/src/settings/third-party-notices.json
 mkdir -p target
 fresh="$(mktemp -d target/third-party-notices.XXXXXX)"

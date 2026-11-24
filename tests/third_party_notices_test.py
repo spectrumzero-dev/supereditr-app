@@ -58,31 +58,46 @@ class ManifestTest(Fixture):
             notices.upstream_licences(self.manifest([]), self.root)
 
     def test_a_project_with_only_notice_files_fails(self):
-        self.write("up/NOTICE")
+        self.write("scripts/third-party-upstream/up/NOTICE")
         with self.assertRaisesRegex(ValueError, "lists no licence file"):
-            notices.upstream_licences(self.manifest(["up/NOTICE"]), self.root)
+            notices.upstream_licences(self.manifest(["scripts/third-party-upstream/up/NOTICE"]), self.root)
 
     def test_a_missing_file_fails(self):
-        self.write("up/LICENSE")
-        with self.assertRaisesRegex(ValueError, "up/NOTICE, listed for .* does not exist"):
-            notices.upstream_licences(self.manifest(["up/LICENSE", "up/NOTICE"]), self.root)
+        self.write("scripts/third-party-upstream/up/LICENSE")
+        with self.assertRaisesRegex(ValueError, "scripts/third-party-upstream/up/NOTICE, listed for .* does not exist"):
+            notices.upstream_licences(self.manifest(["scripts/third-party-upstream/up/LICENSE", "scripts/third-party-upstream/up/NOTICE"]), self.root)
 
     def test_a_crate_without_licence_needs_a_reason(self):
-        self.write("up/LICENSE")
+        self.write("scripts/third-party-upstream/up/LICENSE")
         for reason in ("", "  ", None):
             with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, "without a reason"):
-                notices.upstream_licences(self.manifest(["up/LICENSE"], {"other 1.0.0": reason}), self.root)
+                notices.upstream_licences(self.manifest(["scripts/third-party-upstream/up/LICENSE"], {"other 1.0.0": reason}), self.root)
 
     def test_standard_texts_need_a_reason(self):
-        self.write("up/LICENSE.md")
+        self.write("scripts/third-party-upstream/up/LICENSE.md")
         with self.assertRaisesRegex(ValueError, "standardTexts .* gives no reason"):
-            notices.upstream_licences(self.manifest(["up/LICENSE.md"], standardTexts=" "), self.root)
+            notices.upstream_licences(self.manifest(["scripts/third-party-upstream/up/LICENSE.md"], standardTexts=" "), self.root)
 
     def test_a_licence_file_and_its_notices_pass(self):
-        self.write("up/LICENSE.md")
-        self.write("up/NOTICES.md")
-        upstream, _ = notices.upstream_licences(self.manifest(["up/LICENSE.md", "up/NOTICES.md"]), self.root)
+        self.write("scripts/third-party-upstream/up/LICENSE.md")
+        self.write("scripts/third-party-upstream/up/NOTICES.md")
+        upstream, _ = notices.upstream_licences(self.manifest(["scripts/third-party-upstream/up/LICENSE.md", "scripts/third-party-upstream/up/NOTICES.md"]), self.root)
         self.assertEqual(list(upstream), ["demo 1.0.0"])
+
+    def test_files_outside_one_project_folder_fail(self):
+        self.write("scripts/third-party-upstream/up/LICENSE")
+        self.write("scripts/third-party-upstream/other/NOTICE")
+        self.write("scripts/LICENSE")
+        for files in (["scripts/LICENSE"], ["scripts/third-party-upstream/up/LICENSE", "scripts/third-party-upstream/other/NOTICE"]):
+            with self.subTest(files=files), self.assertRaisesRegex(ValueError, "must all be in one folder below scripts/third-party-upstream/"):
+                notices.upstream_licences(self.manifest(files), self.root)
+
+    def test_two_projects_in_one_folder_fail(self):
+        self.write("scripts/third-party-upstream/up/LICENSE")
+        manifest = self.manifest(["scripts/third-party-upstream/up/LICENSE"])
+        manifest["projects"].append({"repository": "https://example.com/other", "files": ["scripts/third-party-upstream/up/LICENSE"], "crates": {"other 1.0.0": COMMIT}})
+        with self.assertRaisesRegex(ValueError, "https://example.com/other and https://example.com/demo .* share the folder up"):
+            notices.upstream_licences(manifest, self.root)
 
     def test_the_checked_in_manifest_is_valid(self):
         manifest = notices.read_json(notices.UPSTREAM)
@@ -90,9 +105,9 @@ class ManifestTest(Fixture):
         self.assertTrue(upstream)
 
     def test_a_blank_licence_file_fails(self):
-        self.write("up/LICENSE", " \n\t\n")
-        with self.assertRaisesRegex(ValueError, "up/LICENSE, listed for https://example.com/demo .* is blank"):
-            notices.upstream_licences(self.manifest(["up/LICENSE"]), self.root)
+        self.write("scripts/third-party-upstream/up/LICENSE", " \n\t\n")
+        with self.assertRaisesRegex(ValueError, "scripts/third-party-upstream/up/LICENSE, listed for https://example.com/demo .* is blank"):
+            notices.upstream_licences(self.manifest(["scripts/third-party-upstream/up/LICENSE"]), self.root)
 
     def test_a_path_out_of_the_repository_fails(self):
         self.write("LICENSE")
@@ -115,8 +130,8 @@ class ManifestTest(Fixture):
                 notices.upstream_licences(self.manifest(["LICENSE", path]), self.root)
 
     def test_a_path_that_is_not_plain_and_relative_fails(self):
-        self.write("up/LICENSE")
-        for path in ("up\\LICENSE", str(self.root / "up/LICENSE"), "C:/up/LICENSE", "./up/LICENSE", "up//LICENSE"):
+        self.write("scripts/third-party-upstream/up/LICENSE")
+        for path in ("up\\LICENSE", str(self.root / "scripts/third-party-upstream/up/LICENSE"), "C:/up/LICENSE", "./up/LICENSE", "scripts/third-party-upstream/up//LICENSE"):
             with self.subTest(path=path), self.assertRaisesRegex(
                 ValueError, "listed for https://example.com/demo .* must be a relative path"
             ):
@@ -147,27 +162,27 @@ class ManifestTest(Fixture):
 
 class FilesTest(Fixture):
     def test_the_archive_notice_and_the_repository_notice_are_both_kept(self):
-        self.write("up/LICENSE")
-        self.write("up/NOTICE")
-        files = self.licences(self.manifest(["up/LICENSE", "up/NOTICE"]), self.crate(own=["NOTICE"]))
+        self.write("scripts/third-party-upstream/up/LICENSE")
+        self.write("scripts/third-party-upstream/up/NOTICE")
+        files = self.licences(self.manifest(["scripts/third-party-upstream/up/LICENSE", "scripts/third-party-upstream/up/NOTICE"]), self.crate(own=["NOTICE"]))
         self.assertEqual(files, [("LICENSE", "repository"), ("NOTICE", None), ("NOTICE", "repository")])
 
     def test_repository_files_with_one_name_are_both_kept(self):
-        self.write("up/LICENSE")
-        self.write("up/vendored/LICENSE")
-        files = self.licences(self.manifest(["up/LICENSE", "up/vendored/LICENSE"]), self.crate())
+        self.write("scripts/third-party-upstream/up/LICENSE")
+        self.write("scripts/third-party-upstream/up/vendored/LICENSE")
+        files = self.licences(self.manifest(["scripts/third-party-upstream/up/LICENSE", "scripts/third-party-upstream/up/vendored/LICENSE"]), self.crate())
         self.assertEqual(files, [("LICENSE", "repository"), ("vendored/LICENSE", "repository")])
 
     def test_a_standard_text_named_like_a_repository_file_is_kept(self):
-        self.write("up/LICENSE.md")
-        self.write("up/MIT.txt")
-        manifest = self.manifest(["up/LICENSE.md", "up/MIT.txt"], standardTexts="It names the licences only.")
+        self.write("scripts/third-party-upstream/up/LICENSE.md")
+        self.write("scripts/third-party-upstream/up/MIT.txt")
+        manifest = self.manifest(["scripts/third-party-upstream/up/LICENSE.md", "scripts/third-party-upstream/up/MIT.txt"], standardTexts="It names the licences only.")
         files = self.licences(manifest, self.crate())
         self.assertEqual(files, [("LICENSE.md", "repository"), ("MIT.txt", "repository"), ("MIT.txt", "spdx")])
 
     def test_an_allowed_crate_keeps_its_notice_beside_the_standard_text(self):
-        self.write("up/LICENSE")
-        manifest = self.manifest(["up/LICENSE"], {"demo 1.0.0": "Its repository has no licence file."})
+        self.write("scripts/third-party-upstream/up/LICENSE")
+        manifest = self.manifest(["scripts/third-party-upstream/up/LICENSE"], {"demo 1.0.0": "Its repository has no licence file."})
         manifest["projects"][0]["crates"] = {"other 1.0.0": COMMIT}
         files = self.licences(manifest, self.crate(own=["NOTICE"]))
         self.assertEqual(files, [("MIT.txt", "spdx"), ("NOTICE", None)])

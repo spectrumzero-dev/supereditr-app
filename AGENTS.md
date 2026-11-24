@@ -36,6 +36,7 @@ Each contract is a file both sides depend on, checked by a test on each side. `s
 - **Wording in a window or menu**: if `tests/contracts/ui-wording.json` lists it, change the fixture and the driver that matches it (`tests/ui/smoke.swift`, `tests/ui/linux/`, `tests/ui/windows/`) in the same change. The same goes for a `capture.log` line in `tests/contracts/log-lines.json`, whose wording lives in `src-tauri/src/platform/log_lines.rs`.
 - **A password manager**: a row in `PASSWORD_MANAGERS` in `policy.rs`, with its ID on each system, and that ID in the system's `DEFAULT_EXCLUSIONS` in `config.rs`; `every_password_manager_is_excluded_by_default` fails without it. The README's Privacy section names them.
 - **A platform behaviour**: in that platform's module, with a test against its pretend desktop (`testing.rs` in each platform folder). A function the rest of the app calls goes in every platform module and `unsupported.rs`, and in the list in `platform/mod.rs`. A new file that belongs to one platform only goes in that platform's row of `docs/versioning.md` and its label in `.github/labeler.yml`.
+- **A dependency or toolchain change** (`Cargo.lock`, `ui/package-lock.json` or `rust-toolchain.toml`): run `python3 -I scripts/sync-third-party-licences.py`, then `python3 -I scripts/third-party-notices.py`, and commit what they change; `CONTRIBUTING.md` has the details.
 
 ## Versions
 

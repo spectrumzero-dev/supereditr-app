@@ -408,11 +408,13 @@ pub(crate) async fn adopt(
         let _changes = state.provider_changes.lock().unwrap();
         require_editable_providers(state)?;
         profile.id = unique_id(state, candidate.kind);
+        // Commit the new ID before touching the keychain. A stale settings file may already
+        // have a provider with that ID and a credential of its own.
+        save_new_profile(state, ProviderProfile { api_key: None, ..profile.clone() })?;
         if let Some(key) = &candidate.api_key {
             secrets.set(profile.kind, &profile.id, key)?;
             state.set_cached_key(profile.kind, &profile.id, Some(key.clone()));
         }
-        save_new_profile(state, ProviderProfile { api_key: None, ..profile.clone() })?;
     }
     // Added either way, but in use only if it works.
     activate(state, servers, profile.id.clone()).await?;

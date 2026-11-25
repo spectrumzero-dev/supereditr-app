@@ -1,4 +1,4 @@
-import type { Config } from "../lib/types";
+import type { Config, SettingsPayload } from "../lib/types";
 import { appIdentity } from "./excluded";
 
 type Mergeable = Pick<Config, "excluded_apps" | "words" | "providers" | "active_provider">;
@@ -7,6 +7,22 @@ type Mergeable = Pick<Config, "excluded_apps" | "words" | "providers" | "active_
 export function wordIdentity(word: string): string {
   const trimmed = word.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
   return Array.from(trimmed, (char) => Array.from(char.toLowerCase())[0]).join("");
+}
+
+/** During recovery a missing entry may be unreadable, so its absence can't settle a pending edit. */
+export function needsRepairBeforeMerge(base: Config, unsaved: Config, fresh: SettingsPayload): boolean {
+  const recovery = fresh.recovery;
+  if (!recovery) return false;
+  if (!recovery.writable) return true;
+  if (!recovery.exclusionsSafe && !sameValue(base.excluded_apps, unsaved.excluded_apps)) return true;
+  if (!recovery.issues.includes("providers")) return false;
+
+  const changedChoice = unsaved.active_provider !== base.active_provider;
+  return base.providers.some((old) => {
+    const edit = unsaved.providers.find((p) => p.id === old.id);
+    const affected = !sameValue(old, edit) || (changedChoice && unsaved.active_provider === old.id);
+    return affected && !fresh.config.providers.some((p) => p.id === old.id && p.kind === old.kind);
+  });
 }
 
 /**
@@ -43,11 +59,15 @@ export function mergeUnsaved<T extends Partial<Mergeable>>(base: T, unsaved: T, 
 function mergeFields<T extends object>(base: T, unsaved: T, fresh: T): T {
   const merged = { ...fresh };
   for (const key of Object.keys({ ...base, ...unsaved }) as (keyof T)[]) {
-    if (JSON.stringify(base[key]) === JSON.stringify(unsaved[key])) continue;
+    if (sameValue(base[key], unsaved[key])) continue;
     if (key in unsaved) merged[key] = unsaved[key];
     else delete merged[key];
   }
   return merged;
+}
+
+function sameValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 /** Apply both sides' additions and removals relative to the list they started from. */
@@ -55,7 +75,7 @@ function mergeEntries<T>(
   base: T[], unsaved: T[], fresh: T[], identity: (entry: T) => string,
   merge: (old: T, edit: T, current: T) => T,
 ): T[] {
-  if (JSON.stringify(base) === JSON.stringify(unsaved)) return fresh;
+  if (sameValue(base, unsaved)) return fresh;
   const byId = (list: T[]) => new Map(list.map((entry) => [identity(entry), entry]));
   const original = byId(base);
   const edited = byId(unsaved);

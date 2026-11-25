@@ -312,6 +312,7 @@ impl AppState {
 
     /// Rereads a file the user may have repaired, invalidating saves based on the previous copy.
     pub fn retry_settings(&self, load: impl FnOnce() -> ConfigFile) -> (Config, Config) {
+        let _changes = self.provider_changes.lock().unwrap();
         let mut settings = self.settings.write().unwrap();
         let previous = settings.config.clone();
         *settings = load();

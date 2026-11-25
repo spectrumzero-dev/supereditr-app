@@ -1,5 +1,5 @@
 use super::*;
-use crate::secrets::FakeSecrets;
+use crate::secrets::{FakeSecrets, Secrets};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -432,6 +432,40 @@ fn an_account_with_a_key_is_added_with_its_key_and_used() {
     assert_eq!(config.providers.len(), 1);
     assert_eq!(config.providers[0].api_key, None, "keys stay out of the settings file");
     assert_eq!(config.active_provider, Some(profile.id));
+}
+
+#[test]
+fn an_import_refused_after_external_settings_replacement_leaves_the_existing_key() {
+    let state = test_state();
+    let secrets = FakeSecrets::default();
+    let kind = ProviderKind::Anthropic;
+    let existing = ProviderProfile::new(kind);
+    let key = fake_key("rhyan");
+    secrets.set(kind, &existing.id, &key).unwrap();
+    let restored = serde_json::to_vec(&serde_json::json!({ "providers": [existing] })).unwrap();
+    std::fs::create_dir_all(&state.dir).unwrap();
+    std::fs::write(&state.config_path, &restored).unwrap();
+
+    *state.candidates.lock().unwrap() = vec![candidate(kind, Some(fake_key("brynlee")), &[])];
+    let servers = FakeServers::offering(&["claude-sonnet-5-5"]);
+    let error = block_on(adopt(&state, &secrets, &servers, 0)).unwrap_err();
+    assert!(error.contains("changed on disk"));
+    assert_eq!(secrets.key(kind, &existing.id), Some(key));
+    assert_eq!(std::fs::read(&state.config_path).unwrap(), restored);
+    assert!(state.config().providers.is_empty());
+}
+
+#[test]
+fn an_import_whose_key_cannot_be_saved_leaves_an_inactive_profile() {
+    let state = test_state();
+    let secrets = FakeSecrets { refuse: true, ..Default::default() };
+    *state.candidates.lock().unwrap() = vec![candidate(ProviderKind::Anthropic, Some(fake_key("rhyan")), &[])];
+    let servers = FakeServers::offering(&["claude-sonnet-5-5"]);
+    assert!(block_on(adopt(&state, &secrets, &servers, 0)).is_err());
+    let config = state.config();
+    assert_eq!(config.providers.len(), 1);
+    assert_eq!(config.active_provider, None);
+    assert!(servers.checked.lock().unwrap().is_empty());
 }
 
 #[test]

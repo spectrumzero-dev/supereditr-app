@@ -10,7 +10,7 @@
   import Welcome from "./Welcome.svelte";
   import LinuxSetup from "./LinuxSetup.svelte";
   import { api } from "./ipc";
-  import { mergeUnsaved, saveUntilCurrent } from "./merge";
+  import { mergeUnsaved, needsRepairBeforeMerge, saveUntilCurrent } from "./merge";
   import { isLinux, isMac, isWindows, setKeyLabels, setPlatform } from "../lib/platform";
 
   type Section = "welcome" | "setup" | "models" | "styles" | "dictionary" | "general" | "shortcuts" | "privacy" | "about" | "licences";
@@ -34,6 +34,7 @@
   let saved = $state(false);
   let failure = $state("");
   let retrying = $state(false);
+  let waitingForRepair = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   /** The config as Settings last loaded or saved it: what the user's unsaved changes are measured from. */
   let base: Config | null = null;
@@ -62,15 +63,17 @@
     const fresh = await api.get(reread);
     setPlatform(fresh.platform);
     setKeyLabels(fresh.keyLabels ?? {});
-    if (fresh.recovery?.writable === false && config && base && edits !== savedEdits) {
-      // Keep the real base while the file is unavailable, so a later retry can rebase these edits.
-      payload = fresh;
-      return;
-    }
     const latest = structuredClone(fresh.config);
+    waitingForRepair = false;
     // Changes waiting to be saved, or still being saved, survive a reload.
     if (config && base && edits !== savedEdits) {
-      fresh.config = mergeUnsaved(base, $state.snapshot(config) as Config, fresh.config);
+      const unsaved = $state.snapshot(config) as Config;
+      if (needsRepairBeforeMerge(base, unsaved, fresh)) {
+        waitingForRepair = true;
+        payload = fresh;
+        return;
+      }
+      fresh.config = mergeUnsaved(base, unsaved, fresh.config);
     }
     base = latest;
     revision = fresh.revision;
@@ -91,6 +94,11 @@
 
   function errorMessage(error: unknown) {
     return error instanceof Error ? error.message : String(error);
+  }
+
+  function settingsWriteFailed(message: string, error: unknown) {
+    saved = false;
+    failure = `${message} ${errorMessage(error)}`;
   }
 
   function onchange() {
@@ -116,7 +124,7 @@
     try {
       const done = await saveUntilCurrent(async () => {
         if (!config || edits === savedEdits) return true;
-        if (payload?.recovery?.writable === false) return false;
+        if (waitingForRepair || payload?.recovery?.writable === false) return false;
         const reached = edits;
         const snapshot = $state.snapshot(config) as Config;
         const result = await api.save(snapshot, revision);
@@ -130,10 +138,12 @@
         setTimeout(() => (saved = false), 1200);
         return true;
       }, load);
-      failure = done ? "" : "Couldn’t save your changes. Try again.";
+      failure = done ? "" : waitingForRepair
+        ? "Your changes are still pending. Repair the affected settings and select Retry."
+        : "Couldn’t save your changes. Try again.";
       return done;
     } catch (error) {
-      failure = `Couldn’t save your changes. ${errorMessage(error)}`;
+      settingsWriteFailed("Couldn’t save your changes.", error);
       return false;
     }
   }
@@ -254,6 +264,7 @@
           {onchange}
           {saveNow}
           {reload}
+          onWriteFailure={settingsWriteFailed}
           bind:scanOnOpen
           backToSetup={config.onboarded ? null : () => (section = "welcome")}
         />

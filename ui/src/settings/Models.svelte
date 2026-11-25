@@ -18,12 +18,13 @@
      * couldn't be saved. */
     saveNow: () => Promise<boolean>;
     reload: () => Promise<void>;
+    onWriteFailure: (message: string, error: unknown) => void;
     /** Scan as soon as the page opens (Get Started's "Find my AI accounts"); cleared once it starts. */
     scanOnOpen?: boolean;
     /** Shown until setup is finished: returns to Get Started. */
     backToSetup?: (() => void) | null;
   }
-  let { config = $bindable(), keys, onchange, saveNow, reload, scanOnOpen = $bindable(false), backToSetup = null }: Props = $props();
+  let { config = $bindable(), keys, onchange, saveNow, reload, onWriteFailure, scanOnOpen = $bindable(false), backToSetup = null }: Props = $props();
   /** The AI that became the one in use on this visit, for the way back to Get Started. */
   let setUp = $state("");
   /** Draws the eye to the scan row when Get Started sent the user here. */
@@ -180,22 +181,33 @@
     }
   }
 
+  async function findOrAdd(kind: ProviderKind): Promise<ProviderProfile | null> {
+    const existing = profileFor(kind);
+    if (existing) return existing;
+    try {
+      await api.addProvider(kind);
+    } catch (error) {
+      onWriteFailure("Couldn’t add the AI.", error);
+      return null;
+    }
+    await reload();
+    return profileFor(kind);
+  }
+
   async function choose(choice: Choice) {
-    opened = choice;
     if (choice === "builtin") {
+      opened = choice;
       if (builtin?.available) {
         config.active_provider = null;
         onchange();
       }
       return;
     }
-    let p = profileFor(choice);
-    if (!p) {
-      await api.addProvider(choice);
-      await reload();
-      p = profileFor(choice);
+    const p = await findOrAdd(choice);
+    if (p) {
+      opened = choice;
+      await tryActivate(p);
     }
-    if (p) await tryActivate(p);
   }
 
   /** A radio click: the button only becomes checked once the choice takes effect (an AI that
@@ -207,14 +219,11 @@
 
   /** Opens an AI's setup (adding it if needed) without making it the one in use. */
   async function openSetup(kind: ProviderKind) {
-    opened = kind;
-    let p = profileFor(kind);
-    if (!p) {
-      await api.addProvider(kind);
-      await reload();
-      p = profileFor(kind);
+    const p = await findOrAdd(kind);
+    if (p) {
+      opened = kind;
+      await recheck(p);
     }
-    if (p) await recheck(p);
   }
 
   /** Returns reviews to the built-in AI (or the rule-based checker without one), keeping this AI
@@ -230,7 +239,7 @@
   async function retry(p: ProviderProfile) {
     // Unsaved, the check would run against the address or model the app still has.
     if (!(await saveNow())) {
-      checks[p.id] = { ready: false, problem: "Couldn’t save this change. Change it again to retry", code: null, models: [] };
+      checks[p.id] = { ready: false, problem: "Couldn’t save this change. Select Retry in Settings.", code: null, models: [] };
       return;
     }
     await tryActivate(p);
@@ -244,7 +253,12 @@
   }
 
   async function remove(p: ProviderProfile) {
-    await api.removeProvider(p.id);
+    try {
+      await api.removeProvider(p.id);
+    } catch (error) {
+      onWriteFailure("Couldn’t remove the AI.", error);
+      return;
+    }
     delete checks[p.id];
     opened = "builtin";
     await reload();

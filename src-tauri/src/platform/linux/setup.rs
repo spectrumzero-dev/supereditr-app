@@ -8,7 +8,7 @@
 //! never touched: SuperEditr's binds and window rule exist only at runtime.
 
 use super::desktop::SetupCheck;
-use crate::secrets::{CredentialStore, Secrets};
+use crate::secrets::{CredentialStore, Secrets, can_store_key};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use supereditr_core::provider::ProviderKind;
@@ -397,7 +397,7 @@ fn purge_settings(dir: &Path, secrets: &dyn Secrets, done: &mut Vec<String>) -> 
     let providers = purge_profiles(&dir.join("settings.json"))
         .map_err(|error| format!("Kept {}. Couldn’t read the saved provider IDs: {error}", tilde(dir)))?;
     let mut errors = Vec::new();
-    for profile in providers {
+    for profile in providers.into_iter().filter(|profile| can_store_key(profile.kind)) {
         match secrets.delete(profile.kind, &profile.id) {
             Ok(0) => done.push(format!("No saved API key entries for {}", profile.id)),
             Ok(count) => done.push(format!("Deleted {count} saved API key entries for {}", profile.id)),
@@ -682,6 +682,24 @@ mod tests {
             assert!(errors[0].contains("Couldn’t read the saved provider IDs"));
             assert_eq!(std::fs::read_to_string(&settings).unwrap(), contents);
         }
+        std::fs::remove_dir_all(config).unwrap();
+    }
+
+    #[test]
+    fn a_purge_of_keyless_providers_needs_no_credential_store() {
+        let config = folder("purge-keyless");
+        let dir = config.join(crate::IDENTIFIER);
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(
+            dir.join("settings.json"),
+            r#"{"providers":[{"kind":"ollama","id":"ollama"},{"kind":"claude_cli","id":"claudecli"}]}"#,
+        )
+        .unwrap();
+        let store = crate::secrets::FakeSecrets { unavailable: true, ..Default::default() };
+        let (done, errors) = purge_data(&config, &store, None);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(done, [format!("Deleted {}", tilde(&dir))]);
+        assert!(!dir.exists());
         std::fs::remove_dir_all(config).unwrap();
     }
 }

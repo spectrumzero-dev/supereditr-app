@@ -439,7 +439,7 @@
               {#if !signedIn[ac.profileId]}<span class="alert">⚠︎ {problemText(ac.check)}</span>{/if}
               <!-- Signing in puts the account in use, so there's no Use to press afterwards. -->
               {#if signInHere}
-                <ClaudeSignIn profileId={ac.profileId} disabled={choosing} onsignedin={() => { signedIn[ac.profileId] = true; adopt(fc); }} />
+                <ClaudeSignIn profileId={ac.profileId} disabled={choosing} onsignedin={() => { signedIn[ac.profileId] = true; delete adoptChecks[fc.index]; adopt(fc); }} />
               {/if}
             {:else if adoptErrors[fc.index]}<span class="alert">⚠︎ {adoptErrors[fc.index]}</span>{/if}
           </span>

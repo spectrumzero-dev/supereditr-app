@@ -134,7 +134,8 @@ pub struct Saved {
 pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> SettingsPayload {
     let (config, revision) = state.config_at_revision();
     let started = std::time::Instant::now();
-    let keys = config.providers.iter().map(|p| (p.id.clone(), state.key_for(p.kind, &p.id).is_some())).collect();
+    let keys =
+        config.providers.iter().map(|p| (p.id.clone(), state.profile_key(p).is_ok_and(|key| key.is_some()))).collect();
     // A slow key read means macOS asked for the keychain password (a new build's first read).
     // Focus then returns to the previous app, so bring Settings back.
     // Settings loads hidden at launch, so only a visible window is brought back.
@@ -263,6 +264,9 @@ pub(crate) fn store_api_key(
     state.update_provider_config(None, |config| {
         let profile = config.providers.iter().find(|p| p.id == profile_id).ok_or("Unknown provider.")?;
         let key = key.map(|key| key.trim().to_string()).filter(|key| !key.is_empty());
+        if key.is_some() && !secrets::can_store_key(profile.kind) {
+            return Err("This AI doesn’t use an API key.".into());
+        }
         state.write_key(secrets, profile.kind, profile_id, key)?;
         Ok(config.active_provider.as_deref() == Some(profile_id))
     })
@@ -343,6 +347,7 @@ pub(crate) async fn adopt(
     }
     let mut profile = ProviderProfile::new(candidate.kind);
     profile.base_url = candidate.base_url.clone();
+    profile.pin_official_address();
     profile.api_key = candidate.api_key.clone();
     if let Some(models) = servers.models(&profile).await {
         if !models.is_empty() {
@@ -363,8 +368,14 @@ pub(crate) async fn adopt(
             if !config.providers.contains(&profile) {
                 return Err("This AI’s settings changed while it was being added. Try again.".into());
             }
-            state.write_key(secrets, profile.kind, &profile.id, Some(key))
-        })?;
+            let result = state.write_key(secrets, profile.kind, &profile.id, Some(key));
+            // On a refused save, discard the new profile only if the store confirms that
+            // no key was written. Otherwise its ID makes cleanup possible.
+            if result.is_err() && secrets.get(&secrets::account(profile.kind, &profile.id)) == Ok(None) {
+                config.providers.retain(|saved| saved.id != profile.id);
+            }
+            Ok(result)
+        })??;
     }
     // Added either way, but in use only if it works.
     activate_choice(state, servers, &profile.id, choice).await?;
@@ -592,7 +603,9 @@ pub fn remove_provider(app: AppHandle, state: State<'_, AppState>, profile_id: S
 fn remove(state: &AppState, secrets: &dyn secrets::Secrets, profile_id: &str) -> CmdResult<()> {
     let choice = state.begin_provider_choice();
     state.update_provider_config(Some(choice), |config| {
-        if let Some(profile) = config.providers.iter().find(|p| p.id == profile_id) {
+        if let Some(profile) = config.providers.iter().find(|p| p.id == profile_id)
+            && secrets::can_store_key(profile.kind)
+        {
             state.write_key(secrets, profile.kind, profile_id, None)?;
         }
         config.providers.retain(|p| p.id != profile_id);

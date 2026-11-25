@@ -15,6 +15,11 @@ const STORE: &str = "keychain";
 #[cfg(not(target_os = "macos"))]
 const STORE: &str = "keyring";
 
+/// Whether this provider can have a saved credential.
+pub fn can_store_key(kind: ProviderKind) -> bool {
+    kind.needs_key() || kind == ProviderKind::OpenAiCompatible
+}
+
 /// The credential store's account name for a provider's key: its kind and ID, as in
 /// `anthropic:anthropic` or `open_ai_compatible:compatible-2`.
 pub fn account(kind: ProviderKind, profile_id: &str) -> String {
@@ -23,7 +28,7 @@ pub fn account(kind: ProviderKind, profile_id: &str) -> String {
 }
 
 /// Where API keys are saved: the OS credential store in the app ([`CredentialStore`]), and a map in
-/// unit tests. Reading a key goes through `AppState::key_for`, which caches it.
+/// unit tests. Reading a key goes through the app state's credential cache.
 pub trait Secrets: Sync {
     fn get(&self, account: &str) -> Result<Option<String>, String>;
     fn set(&self, kind: ProviderKind, profile_id: &str, key: &str) -> Result<(), String>;
@@ -156,6 +161,7 @@ pub struct FakeSecrets {
     /// Refuse every save, as a locked or missing credential store does.
     pub refuse: bool,
     pub refuse_read: std::sync::atomic::AtomicBool,
+    pub unavailable: bool,
     pub refuse_delete: std::sync::Mutex<Option<String>>,
 }
 
@@ -169,14 +175,14 @@ impl FakeSecrets {
 #[cfg(test)]
 impl Secrets for FakeSecrets {
     fn get(&self, account: &str) -> Result<Option<String>, String> {
-        if self.refuse_read.load(std::sync::atomic::Ordering::Relaxed) {
+        if self.unavailable || self.refuse_read.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(format!("Couldn’t read the key from the {STORE}: it is locked"));
         }
         Ok(self.saved.lock().unwrap().get(account).cloned())
     }
 
     fn set(&self, kind: ProviderKind, profile_id: &str, key: &str) -> Result<(), String> {
-        if self.refuse {
+        if self.refuse || self.unavailable {
             return Err(format!("Couldn’t save the key to the {STORE}: it is locked"));
         }
         self.saved.lock().unwrap().insert(account(kind, profile_id), key.to_string());
@@ -184,7 +190,7 @@ impl Secrets for FakeSecrets {
     }
 
     fn delete_entry(&self, service: &str, account: &str) -> Result<bool, String> {
-        if self.refuse_delete.lock().unwrap().as_deref() == Some(account) {
+        if self.unavailable || self.refuse_delete.lock().unwrap().as_deref() == Some(account) {
             return Err(format!("Couldn’t delete a key from the {STORE}: it is locked"));
         }
         let keys = if service == SERVICE { &self.saved } else { &self.old };

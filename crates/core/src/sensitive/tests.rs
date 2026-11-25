@@ -101,6 +101,7 @@ fn caught() -> Vec<(&'static str, String)> {
         ("a key or token", format!("the token was \"{}\".", random(32))),
         ("a key or token", format!("API key:\n    {}", random(32))),
         ("a key or token", format!("Secret key:\n{}", random(32))),
+        ("a key or token", format!("Password and API key:\n{}", random(32))),
         ("a key or token", format!("The token is\r\n`{}`.", random(36))),
         ("a key or token", format!("The API key is listed in this message for the project team: {}", random(40))),
     ];

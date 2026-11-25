@@ -117,7 +117,7 @@ pub fn show_ai_status(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
-        let label = match state.active_profile() {
+        let label = match state.config().active_profile() {
             Some(profile) => {
                 let name = profile.kind.display_name();
                 let result = commands::check(&state, &profile.id).await;

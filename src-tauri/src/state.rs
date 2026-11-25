@@ -300,6 +300,7 @@ impl AppState {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
+    #[cfg(test)]
     pub fn key_for(&self, kind: ProviderKind, profile_id: &str) -> Option<String> {
         self.read_key(&CredentialStore, kind, profile_id).ok().flatten()
     }
@@ -351,23 +352,30 @@ impl AppState {
         result
     }
 
-    /// The active provider with its API key attached, ready for a request.
+    /// The active provider with its API key attached, ready for a request. If the store
+    /// refuses a read, reviews stay local and the provider status can report the failure.
     pub fn active_profile(&self) -> Option<ProviderProfile> {
-        let config = self.config.read().unwrap();
-        let mut profile = config.active_profile()?.clone();
-        profile.api_key = self.profile_key(&profile).ok()?;
+        let mut profile = self.config.read().unwrap().active_profile()?.clone();
+        let key = self.profile_key(&profile).ok()?;
+        // Reading the key can wait on the credential store. Use the profile only if its
+        // settings and selection are still current.
+        if self.config.read().unwrap().active_profile() != Some(&profile) {
+            return None;
+        }
+        profile.api_key = key;
         Some(profile)
     }
 
     pub fn profile(&self, id: &str) -> Result<Option<ProviderProfile>, String> {
-        let config = self.config.read().unwrap();
-        let Some(mut profile) = config.providers.iter().find(|p| p.id == id).cloned() else { return Ok(None) };
+        let Some(mut profile) = self.config.read().unwrap().providers.iter().find(|p| p.id == id).cloned() else {
+            return Ok(None);
+        };
         profile.api_key = self.profile_key(&profile)?;
         Ok(Some(profile))
     }
 
     pub fn profile_key(&self, profile: &ProviderProfile) -> Result<Option<String>, String> {
-        if profile.kind.needs_key() || profile.kind == ProviderKind::OpenAiCompatible {
+        if secrets::can_store_key(profile.kind) {
             self.read_key(&CredentialStore, profile.kind, &profile.id)
         } else {
             Ok(None)

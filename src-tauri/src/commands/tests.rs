@@ -326,6 +326,21 @@ fn a_refused_read_is_not_cached_as_a_missing_key() {
 }
 
 #[test]
+fn a_provider_that_uses_no_key_is_removable_without_a_credential_store() {
+    let state = test_state();
+    let store = FakeSecrets { unavailable: true, ..Default::default() };
+    let id = add(&state, ProviderKind::Ollama, "mistral");
+    assert_eq!(
+        store_api_key(&state, &store, &id, Some(fake_key("rhyan"))).unwrap_err(),
+        "This AI doesn’t use an API key."
+    );
+    block_on(activate(&state, &FakeServers::offering(&["mistral"]), id.clone())).unwrap();
+    remove(&state, &store, &id).unwrap();
+    assert!(state.active_profile().is_none());
+    assert!(Config::load(&state.config_path).providers.is_empty());
+}
+
+#[test]
 fn a_failed_alias_delete_keeps_the_provider_for_a_retry() {
     let state = test_state();
     let store = FakeSecrets::default();
@@ -590,6 +605,31 @@ fn an_account_with_a_key_is_added_with_its_key_and_used() {
     assert_eq!(config.providers.len(), 1);
     assert_eq!(config.providers[0].api_key, None, "keys stay out of the settings file");
     assert_eq!(config.active_provider, Some(profile.id));
+}
+
+#[test]
+fn a_refused_adoption_does_not_leave_an_empty_profile_if_the_key_is_absent() {
+    let state = test_state();
+    let store = FakeSecrets { refuse: true, ..Default::default() };
+    *state.candidates.lock().unwrap() = vec![candidate(ProviderKind::Anthropic, Some(fake_key("rhyan")), &[])];
+    let servers = FakeServers::offering(&["claude-sonnet-5-5"]);
+    assert!(block_on(adopt(&state, &store, &servers, 0)).is_err());
+    assert!(Config::load(&state.config_path).providers.is_empty());
+    let adopted = block_on(adopt(&state, &FakeSecrets::default(), &servers, 0)).unwrap();
+    assert_eq!(adopted.id, "anthropic");
+    assert_eq!(state.config().providers.len(), 1);
+}
+
+#[test]
+fn an_unverified_adoption_keeps_the_provider_id_for_cleanup() {
+    let state = test_state();
+    let store = FakeSecrets { unavailable: true, ..Default::default() };
+    *state.candidates.lock().unwrap() = vec![candidate(ProviderKind::Anthropic, Some(fake_key("rhyan")), &[])];
+    let servers = FakeServers::offering(&["claude-sonnet-5-5"]);
+    assert!(block_on(adopt(&state, &store, &servers, 0)).is_err());
+    let saved = Config::load(&state.config_path);
+    assert_eq!(saved.providers[0].id, "anthropic");
+    assert!(saved.active_provider.is_none());
 }
 
 #[test]

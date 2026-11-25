@@ -187,11 +187,19 @@ const HEURISTIC_RULES: &[Rule] = &[
         source: "RFC 3986 §3.2.1 (user information in a URI)",
     },
     // A random-looking string a few words after "token", "secret", "API key" and the like: "my
-    // token is …". Include a value on the next line and finish any word reached within the
-    // same-line search window, so a candidate isn't tested using only a prefix.
+    // token is …". Finish any word reached within the search window, so a candidate isn't tested
+    // using only a prefix.
     Rule {
         name: "a key or token",
-        pattern: r"(?i)\b(?:(?:api|access|secret|private)[ _-]?key|password|passphrase|secret|token)s?\b((?:[ \t]+(?:is|was))?[ \t]*[:=]?[ \t]*\r?\n[ \t]*\S+|[^\r\n]{1,60}\S*)",
+        pattern: r"(?i)\b(?:(?:api|access|secret|private)[ _-]?key|password|passphrase|secret|token)s?\b([^\r\n]{1,60}\S*)",
+        accept: has_random_string,
+        source: "credentials shared in messages and notes",
+    },
+    // Search next-line values independently, so a preceding label on the same line cannot hide
+    // the label immediately before the break.
+    Rule {
+        name: "a key or token",
+        pattern: r"(?i)\b(?:(?:api|access|secret|private)[ _-]?key|password|passphrase|secret|token)s?\b(?:[ \t]+(?:is|was))?[ \t]*[:=]?[ \t]*\r?\n[ \t]*(\S+)",
         accept: has_random_string,
         source: "credentials shared in messages and notes",
     },

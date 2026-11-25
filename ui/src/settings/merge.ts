@@ -22,7 +22,7 @@ export function mergeUnsaved<T extends Partial<Mergeable>>(base: T, unsaved: T, 
     merged.excluded_apps = mergeEntries(base.excluded_apps, unsaved.excluded_apps, fresh.excluded_apps, appIdentity, (_old, _edit, current) => current);
   }
   if (base.words && unsaved.words && fresh.words) {
-    merged.words = mergeEntries(base.words, unsaved.words, fresh.words, wordIdentity, (_old, _edit, current) => current);
+    merged.words = mergeEntries(base.words, unsaved.words, fresh.words, wordIdentity, (old, edit, current) => old === edit ? current : edit);
   }
   if (base.providers && unsaved.providers && fresh.providers) {
     merged.providers = mergeEntries(base.providers, unsaved.providers, fresh.providers, (p) => p.id, (old, edit, current) => {

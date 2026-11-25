@@ -30,7 +30,7 @@ describe("mergeUnsaved", () => {
     const original = { words: ["  İona ", "QuillPoint", "Kyndal"] };
     const unsaved = { words: ["QuillPoint", "kyndal", "Brynlee"] };
     const fresh = { words: ["iona", "Kyndal", "brynlee", "Rhyan"] };
-    expect(mergeUnsaved(original, unsaved, fresh).words).toEqual(["Kyndal", "brynlee", "Rhyan"]);
+    expect(mergeUnsaved(original, unsaved, fresh).words).toEqual(["kyndal", "brynlee", "Rhyan"]);
     expect(mergeUnsaved(base, { ...base, words: ["Rhyan", "Brynlee"] }, { ...base, words: ["Rhyan", "Kyndal"] }).words)
       .toEqual(["Rhyan", "Kyndal", "Brynlee"]);
   });

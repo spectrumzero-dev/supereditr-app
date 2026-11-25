@@ -140,8 +140,8 @@ A review runs like this:
 
 1. A selection ends (or the shortcut is pressed).
 2. SuperEditr reads it through Accessibility off the UI thread, with a 300 ms timeout per call, and warms the provider connection at the same time.
-3. The overlay appears at the selection with offline fixes, in milliseconds.
-4. The model streams the edited text; SuperEditr diffs it word by word into individual changes.
+3. The overlay appears at the selection. With no AI available, the built-in checker supplies English spelling and grammar fixes.
+4. In an AI review, SuperEditr turns the model’s streamed edits into word-by-word changes. If the review fails, the overlay shows the error and any available offline fixes.
 5. On ↩︎, SuperEditr confirms the same field and selection are still there, then writes the text back: an Accessibility write for native fields, a clipboard-preserving paste for web and Electron apps. ⌘Z in the app undoes it.
 
 Another platform needs only its own `src-tauri/src/platform` implementation, as Linux and Windows have, providing what `src-tauri/src/platform/mod.rs` lists; the engine, UI and settings are shared.

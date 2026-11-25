@@ -279,6 +279,35 @@ it("shows Retry when adding or removing a profile fails", async () => {
   expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
 });
 
+it("reloads a changed settings file before retrying a credential save", async () => {
+  const original = await api.get();
+  const profile = original.config.providers[0];
+  const fresh = { ...original, recovery: null, config: { ...original.config, onboarded: true, active_provider: profile.id } };
+  const get = vi.spyOn(api, "get").mockResolvedValue(fresh);
+  const setKey = vi.spyOn(api, "setKey")
+    .mockRejectedValueOnce("The settings file changed on disk.")
+    .mockResolvedValueOnce(undefined);
+  const activate = vi.spyOn(api, "activateProvider").mockResolvedValue({ ready: true, problem: null, models: [], code: null });
+  render(App);
+
+  async function enterAndSaveKey() {
+    await fireEvent.input(await screen.findByLabelText("API key"), { target: { value: "fixture-key" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  }
+
+  await enterAndSaveKey();
+  expect((await screen.findByRole("alert")).textContent).toContain("Couldn’t save the API key.");
+  expect(activate).not.toHaveBeenCalled();
+  await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  expect(get).toHaveBeenLastCalledWith(true);
+  expect(setKey).toHaveBeenCalledExactlyOnceWith(profile.id, "fixture-key");
+
+  await enterAndSaveKey();
+  await waitFor(() => expect(activate).toHaveBeenCalledExactlyOnceWith(profile.id));
+  expect(setKey).toHaveBeenCalledTimes(2);
+});
+
 async function openLicences() {
   render(App);
   await fireEvent.click(await screen.findByRole("button", { name: "About" }));

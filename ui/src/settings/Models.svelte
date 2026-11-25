@@ -270,7 +270,12 @@
 
   function saveKey(p: ProviderProfile) {
     return makeChoice(async () => {
-      await api.setKey(p.id, keyDrafts[p.id] ?? "");
+      try {
+        await api.setKey(p.id, keyDrafts[p.id] ?? "");
+      } catch (error) {
+        onWriteFailure("Couldn’t save the API key.", error);
+        return;
+      }
       keyDrafts[p.id] = "";
       await reload();
       await tryActivate(p);

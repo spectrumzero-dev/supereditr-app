@@ -18,7 +18,7 @@
 #   --identity FILE    the SSH key for both hosts
 #   --out DIR          where results and screenshots go (default build/ui-smoke-linux)
 #   --only "CASE ..."  run only these cases (setup always runs)
-#   --keep-install     skip installing and the first launch: test the SuperEditr already set up there
+#   --keep-install     test the existing install; restart it if needed to enable the diagnostic log
 #   --hard             also run the hard cases (more monitors, scaling, XWayland, an input method,
 #                      a large field, a frozen app, a silent program on the accessibility bus,
 #                      Hyprland restarting)
@@ -219,6 +219,7 @@ first_run() {
   local settings
   settings="$(vm 'wait_for_window "^supereditr \| SuperEditr Settings$" 15')"
   check "the first launch opens Settings" "$(ok isnt "$settings" null)"
+  check "diagnostic logs are off on first launch" "$(ok vm 'test ! -e "$LOG" && test ! -e "${LOG%.log}.old.log"')"
   local binds
   binds="$(vm 'for _ in $(seq 50); do [ "$(d_binds)" -ge 2 ] && break; sleep 0.2; done; d_binds')"
   check "SuperEditr adds its two binds" "$(ok is "$binds" 2)" "$binds binds"
@@ -241,8 +242,10 @@ first_run() {
     python3 $SMOKE/probe.py press "SuperEditr Settings" "Set up AI"')"
   check "with no AI, Get Started offers Set up AI" "$(ok has "$(sed -n 1p <<< "$no_ai")" '"pressed": true')" "$(sed -n 1p <<< "$no_ai")"
   check "with no AI, Styles offers Set up AI" "$(ok has "$(sed -n 3p <<< "$no_ai")" '"pressed": true')" "$(sed -n 3p <<< "$no_ai")"
-  # The tests need foot reviewed (copy-only) rather than skipped as an excluded app.
-  vm 'app_quit; jq ".excluded_apps -= [\"foot\"]" "$SETTINGS" > "$SETTINGS.new" && mv "$SETTINGS.new" "$SETTINGS"'
+  # The tests read the diagnostic log and need foot reviewed as a copy-only app.
+  check "enable diagnostic logging and foot reviews for smoke tests" "$(ok vm 'app_quit
+    jq ".diagnostic_log = true | .excluded_apps -= [\"foot\"]" "$SETTINGS" > "$SETTINGS.new" &&
+    mv "$SETTINGS.new" "$SETTINGS"')"
   vm 'app_start'
   local opened
   opened="$(vm 'for _ in $(seq 40); do [ "$(d_binds)" -ge 2 ] && break; sleep 0.2; done; sleep 3; d_addr "^supereditr \| SuperEditr Settings$"')"
@@ -718,9 +721,18 @@ STARTED=$(now_ms)
 log "SuperEditr Linux smoke tests, desktop $DESKTOP, $(date -u +%Y-%m-%dT%H:%MZ)" "package $PACKAGE"
 [[ -n "$SNAPSHOT" ]] && boot
 if [[ "$KEEP" == 1 ]]; then
+  begin_case fixture "use the existing install with diagnostic logging"
   COPYFILE_DISABLE=1 tar --no-xattrs -C "$ROOT/tests/ui/linux" -cf - . -C "$ROOT/tests/ui/composers" composers.bundle.js |
     "${SSH[@]}" "$VM" 'mkdir -p ~/supereditr-smoke && tar -C ~/supereditr-smoke -xf -'
-  vm 'app_running || app_start; sleep 2'
+  check "enable diagnostic logging for smoke tests" "$(ok vm '
+    if ! jq -e ".diagnostic_log == true" "$SETTINGS" > /dev/null; then
+      app_quit
+      jq ".diagnostic_log = true" "$SETTINGS" > "$SETTINGS.new" &&
+        mv "$SETTINGS.new" "$SETTINGS" || exit 1
+    fi
+    app_running || app_start')"
+  sleep 2
+  end_case
 else
   install
   first_run
@@ -737,9 +749,10 @@ if [[ "$HARD" == 1 ]]; then hard_cases; fi
 mkdir -p "$OUT/shots"
 "${SSH[@]}" "$VM" 'tar -C ~/supereditr-smoke/out -cf - .' | tar -C "$OUT/shots" -xf -
 # capture.old.log first: the log moves there when it grows past 256 KB.
-"${SSH[@]}" "$VM" 'cd ~/.local/state/supereditr && cat capture.old.log capture.log 2> /dev/null' > "$OUT/capture.log" 2> /dev/null || true
+vm 'cat "${LOG%.log}.old.log" "$LOG" 2> /dev/null' > "$OUT/capture.log" || true
 # SuperEditr's watchdog logs each time its main thread goes 5 s without answering.
 begin_case watchdog "SuperEditr's main thread kept answering"
+check "the app wrote a diagnostic log after opt-in" "$(ok test -s "$OUT/capture.log")"
 stalls="$(grep -F "main thread hasn’t answered" "$OUT/capture.log" || true)"
 check "the main thread never went 5 s without answering" "$(ok [ -z "$stalls" ])" "${stalls:0:400}"
 end_case

@@ -411,7 +411,7 @@
       "made_by": "ui",
       "file": "ui/src/settings/ShortcutInput.svelte",
       "role": "button",
-      "text": "⌘E E",
+      "text": "Review selection ⌘E E",
       "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "⌘E E" }]
     },
     {
@@ -464,14 +464,6 @@
       ]
     },
     {
-      "id": "scan",
-      "made_by": "ui",
-      "file": "ui/src/settings/Models.svelte",
-      "role": "button",
-      "text": "Scan",
-      "matched_by": [{ "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Scan" }]
-    },
-    {
       "id": "scanning",
       "made_by": "ui",
       "file": "ui/src/settings/Models.svelte",
@@ -500,7 +492,6 @@
       "file": "ui/src/settings/Welcome.svelte",
       "text": "No AI set up · spelling and grammar only · Set up AI",
       "matched_by": [
-        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "No AI set up" },
         { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "wildcard", "pattern": "*No AI set up*" },
         { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "wildcard", "pattern": "*Set up AI*" }
       ]
@@ -512,7 +503,6 @@
       "role": "button",
       "text": "Set up AI",
       "matched_by": [
-        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Set up AI" },
         { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "wildcard", "pattern": "Set up AI" }
       ]
     },
@@ -522,7 +512,6 @@
       "file": "ui/src/settings/Styles.svelte",
       "text": "Styles other than Proofread need an AI.",
       "matched_by": [
-        { "driver": "macos", "file": "tests/ui/smoke.swift", "kind": "substring", "pattern": "Styles other than Proofread need an AI" },
         { "driver": "windows", "file": "tests/ui/windows/driver.ps1", "kind": "wildcard", "pattern": "*Styles other than Proofread need an AI*" }
       ]
     },

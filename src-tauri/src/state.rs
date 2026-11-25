@@ -268,13 +268,10 @@ impl ReviewState {
     }
 }
 
-// Test builds keep the diagnostic log whatever the setting says, so a build that misbehaves on a
-// tester's Mac has left a record even when it can no longer be reached to turn the log on. Only
-// official release builds (`updater::ENABLED`) follow the setting.
 impl AppState {
     pub fn new(config_path: PathBuf) -> Self {
         let config = Config::load(&config_path);
-        crate::platform::set_trace(config.diagnostic_log || !crate::updater::ENABLED);
+        crate::platform::set_trace(config.diagnostic_log);
         let engine = Engine::new(&config.dialect);
         Self {
             config: RwLock::new(config),
@@ -442,7 +439,7 @@ impl AppState {
     fn persist_config(&self, current: &mut Config, mut config: Config) -> std::io::Result<u64> {
         config.pin_official_addresses();
         config.save(&self.config_path)?;
-        crate::platform::set_trace(config.diagnostic_log || !crate::updater::ENABLED);
+        crate::platform::set_trace(config.diagnostic_log);
         *current = config;
         // Any setting may change what a review would say: the AI, its model, the styles, the word
         // list. The next review asks afresh.

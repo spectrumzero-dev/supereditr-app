@@ -372,8 +372,8 @@
   <div class="group scan" class:highlight>
     <div class="row">
       <div>
-        <div class="label">Find AI accounts on {words().device}</div>
-        <span class="hint">
+        <div class="label" id="scan-label">Find AI accounts on {words().device}</div>
+        <span class="hint" id="scan-hint">
           {#if scanning}Looking…
           {:else if scanError}<span class="warn-text">{scanError}</span>
           {:else if candidates && foundCount}Found {foundCount === 1 ? "an account" : `${foundCount} accounts`}, marked below.
@@ -381,7 +381,7 @@
           {:else}Looks for API keys in your {isWindows() ? "environment variables" : "shell profile"} and Codex settings, a signed-in Claude Code, and Ollama or LM Studio running locally. Nothing is sent anywhere.{/if}
         </span>
       </div>
-      <button class="btn small" onclick={scan} disabled={scanning || choosing}>{scanning ? "Scanning…" : candidates ? "Scan again" : "Scan"}</button>
+      <button class="btn small" aria-describedby="scan-label scan-hint" onclick={scan} disabled={scanning || choosing}>{scanning ? "Scanning…" : candidates ? "Scan again" : "Scan"}</button>
     </div>
   </div>
 
@@ -393,15 +393,17 @@
     {#if builtin?.supported}
       <div class="choice" class:open={shown === "builtin"}>
         <label class="pick">
-          <input type="radio" name="ai" checked={activeChoice === "builtin"} disabled={!builtin.available || choosing} onclick={pick("builtin")} />
+          <input type="radio" name="ai" aria-labelledby="builtin-ai-label" aria-describedby="builtin-ai-status builtin-ai-hint" checked={activeChoice === "builtin"} disabled={!builtin.available || choosing} onclick={pick("builtin")} />
           <span>
-            <span class="label">Apple Intelligence</span>
-            <span class="pill">Built in</span>
-            <span class="pill good">Recommended</span>
-            {#if !builtin.available}<span class="pill warn">Off</span>
-            {:else if activeChoice === "builtin"}<span class="pill accent">In use</span>
-            {:else}<span class="pill backup">Backup</span>{/if}
-            <span class="hint">
+            <span class="label" id="builtin-ai-label">Apple Intelligence</span>
+            <span id="builtin-ai-status">
+              <span class="pill">Built in</span>
+              <span class="pill good">Recommended</span>
+              {#if !builtin.available}<span class="pill warn">Off</span>
+              {:else if activeChoice === "builtin"}<span class="pill accent">In use</span>
+              {:else}<span class="pill backup">Backup</span>{/if}
+            </span>
+            <span class="hint" id="builtin-ai-hint">
               {#if !builtin.available}{builtin.message}
               {:else if activeChoice === "builtin"}Runs entirely on this Mac: private, works offline, fast, and free. It’s also the backup whenever another AI can’t be reached.
               {:else}Standing by on this Mac: it answers whenever {kinds.find((k) => k.kind === activeChoice)?.name ?? "your AI"} can’t be reached, including when you’re offline.{/if}
@@ -417,12 +419,14 @@
       {@const c = p ? checks[p.id] : undefined}
       <div class="choice" class:open={shown === k.kind}>
         <label class="pick">
-          <input type="radio" name="ai" checked={activeChoice === k.kind} disabled={choosing} onclick={pick(k.kind)} />
+          <input type="radio" name="ai" aria-labelledby={`${k.kind}-label`} aria-describedby={`${k.kind}-status ${k.kind}-hint`} checked={activeChoice === k.kind} disabled={choosing} onclick={pick(k.kind)} />
           <span>
-            <span class="label">{k.name}</span>
-            {#if earlyAccess(k.kind, p)}<span class="pill early" title="Included in early access">Early access</span>{/if}
-            {#if st}<span class="pill {st.tone}">{st.label}</span>{/if}
-            <span class="hint">{k.blurb}</span>
+            <span class="label" id={`${k.kind}-label`}>{k.name}</span>
+            <span id={`${k.kind}-status`}>
+              {#if earlyAccess(k.kind, p)}<span class="pill early" title="Included in early access">Early access</span>{/if}
+              {#if st}<span class="pill {st.tone}">{st.label}</span>{/if}
+            </span>
+            <span class="hint" id={`${k.kind}-hint`}>{k.blurb}</span>
           </span>
         </label>
         {#if shown !== k.kind && !(found(k.kind).length && !p)}<button class="btn small" disabled={choosing} onclick={() => openSetup(k.kind)}>{p ? "Settings" : "Set up"}</button>{/if}
@@ -464,8 +468,8 @@
           {/if}
           {#if profilesOf(k.kind).length > 1}
             <div class="row">
-              <span class="label">Account</span>
-              <select value={p.id} disabled={choosing} onchange={(e) => { picked[k.kind] = e.currentTarget.value; const q = profileFor(k.kind); if (q) recheck(q); }}>
+              <label class="label" for={`${k.kind}-account`}>Account</label>
+              <select id={`${k.kind}-account`} value={p.id} disabled={choosing} onchange={(e) => { picked[k.kind] = e.currentTarget.value; const q = profileFor(k.kind); if (q) recheck(q); }}>
                 {#each profilesOf(k.kind) as q (q.id)}
                   <option value={q.id}>{accountLabel(q)}{q.id === config.active_provider ? " · in use" : ""}</option>
                 {/each}
@@ -474,9 +478,9 @@
           {/if}
           {#if needsKey(k.kind)}
             <div class="row">
-              <span class="label">API key</span>
+              <label class="label" for={`${k.kind}-api-key`}>API key</label>
               <span class="inline">
-                <input type="password" placeholder={keys[p.id] ? "•••••••• (saved)" : "Paste key"} bind:value={keyDrafts[p.id]} disabled={choosing} />
+                <input id={`${k.kind}-api-key`} type="password" placeholder={keys[p.id] ? "•••••••• (saved)" : "Paste key"} bind:value={keyDrafts[p.id]} disabled={choosing} />
                 <button class="btn small" onclick={() => saveKey(p)} disabled={!keyDrafts[p.id] || choosing}>Save</button>
                 {#if k.keyUrl}<button class="linklike" onclick={() => api.openUrl(k.keyUrl!)}>Get a key</button>{/if}
               </span>
@@ -484,36 +488,36 @@
           {/if}
           {#if k.kind === "ollama" || k.kind === "open_ai_compatible" || k.kind === "claude_cli"}
             <div class="row">
-              <span class="label">{k.kind === "claude_cli" ? "Claude CLI path" : "Server URL"}</span>
-              <input type="text" class="wide" title={p.base_url} bind:value={p.base_url} disabled={choosing} onchange={() => retry(p)} spellcheck="false" />
+              <label class="label" for={`${k.kind}-address`}>{k.kind === "claude_cli" ? "Claude CLI path" : "Server URL"}</label>
+              <input id={`${k.kind}-address`} type="text" class="wide" title={p.base_url} bind:value={p.base_url} disabled={choosing} onchange={() => retry(p)} spellcheck="false" />
             </div>
           {/if}
           <div class="row">
-            <span class="label">Model</span>
+            <label class="label" for={`${k.kind}-model`}>Model</label>
             <span class="inline">
               {#if c && c !== "checking" && c.models.length}
-                <select bind:value={p.model} disabled={choosing} onchange={() => retry(p)}>
+                <select id={`${k.kind}-model`} bind:value={p.model} disabled={choosing} onchange={() => retry(p)}>
                   {#if !c.models.includes(p.model)}<option value={p.model}>{p.model}</option>{/if}
                   {#each c.models as m (m)}<option value={m}>{m}</option>{/each}
                 </select>
               {:else}
-                <input type="text" bind:value={p.model} disabled={choosing} onchange={() => retry(p)} spellcheck="false" />
+                <input id={`${k.kind}-model`} type="text" bind:value={p.model} disabled={choosing} onchange={() => retry(p)} spellcheck="false" />
               {/if}
             </span>
           </div>
           {#if k.kind === "ollama"}
             <div class="row">
               <span>
-                <span class="label">Download a model</span>
-                <span class="hint">Small models (3–4B) answer fastest. Try gemma3:4b, qwen3:4b, or llama3.2:3b.</span>
+                <label class="label" for="ollama-download-model">Download a model</label>
+                <span class="hint" id="ollama-download-hint">Small models (3–4B) answer fastest. Try gemma3:4b, qwen3:4b, or llama3.2:3b.</span>
               </span>
               <span class="inline">
-                <input type="text" bind:value={pullModel} disabled={choosing} spellcheck="false" />
+                <input id="ollama-download-model" type="text" aria-describedby="ollama-download-hint" bind:value={pullModel} disabled={choosing} spellcheck="false" />
                 <button class="btn small" onclick={() => pull(p)} disabled={choosing || !pullModel.trim()}>Download</button>
               </span>
             </div>
             {#if pulling?.profileId === p.id}
-              <div class="row progress" role="status"><span>{pulling.status}</span><progress max="100" value={pulling.pct}></progress></div>
+              <div class="row progress" role="status"><span>{pulling.status}</span><progress aria-label="Model download" max="100" value={pulling.pct}></progress></div>
             {/if}
           {/if}
           <div class="row actions-row">

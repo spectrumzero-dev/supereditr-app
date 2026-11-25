@@ -7,15 +7,14 @@
 //! them against the real ones.
 
 use super::ax::{CFRange, Element};
-use super::log::TRACE_ON;
 use super::seam::{App, Clock, Desktop, Field, Pasteboard, Services, System};
 use super::text::{code_ranges, visible_before};
 use super::{Capture, trace};
+use crate::platform::diagnostic_log::trace_enabled;
 use crate::platform::{PlatformError, Rect, log_lines};
 use core_foundation::base::{CFType, TCFType};
 use core_foundation::string::{CFString, CFStringRef};
 use std::ffi::c_void;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 type CFStringTokenizerRef = *const c_void;
@@ -141,7 +140,7 @@ pub(super) fn capture_with<'a, D: Desktop, P: Pasteboard>(
     };
     match &result {
         // Only with the diagnostic log on: describing the read asks the app more questions.
-        Ok(read) if TRACE_ON.load(Ordering::Relaxed) => {
+        Ok(read) if trace_enabled() => {
             let capture = &read.capture;
             // The field's whole length shows a stale read: a selection made with ⌘A should match it.
             let of_field = read.field.as_ref().and_then(|e| e.character_count());

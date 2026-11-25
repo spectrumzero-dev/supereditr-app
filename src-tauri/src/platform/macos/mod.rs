@@ -22,6 +22,7 @@ mod text;
 mod watch;
 mod window;
 
+pub use super::diagnostic_log::{log_path, set_trace, trace};
 pub use apps::{app_identity, focused_app_identity, frontmost_pid, return_focus, return_to_field};
 pub use ax::Element;
 pub use capture::capture;
@@ -30,7 +31,7 @@ pub use keys::{
     pause_double_presses, refresh_keyboard_layout, set_double_presses, set_review_app, start_double_press_tap,
     take_escape_key, take_review_keys,
 };
-pub use log::{log_path, set_trace, trace};
+pub(in crate::platform) use log::log_dir;
 pub use replace::{copy_to_clipboard, replace};
 pub use settings_window::{SettingsWindow, own_bundle, system_settings_window};
 pub use watch::{

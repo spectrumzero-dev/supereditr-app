@@ -13,7 +13,6 @@
   interface Props {
     config: Config;
     keys: Record<string, boolean>;
-    onchange: () => void;
     /** Saves the config now, based on the settings the app last gave Settings. False when it
      * couldn't be saved. */
     saveNow: () => Promise<boolean>;
@@ -23,7 +22,7 @@
     /** Shown until setup is finished: returns to Get Started. */
     backToSetup?: (() => void) | null;
   }
-  let { config = $bindable(), keys, onchange, saveNow, reload, scanOnOpen = $bindable(false), backToSetup = null }: Props = $props();
+  let { config = $bindable(), keys, saveNow, reload, scanOnOpen = $bindable(false), backToSetup = null }: Props = $props();
   /** The AI that became the one in use on this visit, for the way back to Get Started. */
   let setUp = $state("");
   /** Draws the eye to the scan row when Get Started sent the user here. */
@@ -43,7 +42,10 @@
   let checks = $state<Record<string, ProviderCheck | "checking">>({});
   let keyDrafts = $state<Record<string, string>>({});
   let tests = $state<Record<string, { text: string; ok: boolean }>>({});
-  let pulling = $state<{ status: string; pct: number } | null>(null);
+  let choosing = $state(false);
+  let choiceError = $state("");
+  let pullRequest = $state<string | null>(null);
+  let pulling = $state<{ profileId: string; status: string; pct: number } | null>(null);
   let pullModel = $state("gemma3:4b");
   let builtin = $state<BuiltinAi | null>(null);
 
@@ -76,6 +78,7 @@
   const foundCount = $derived(kinds.reduce((n, k) => n + found(k.kind).length, 0));
 
   async function scan() {
+    if (scanning || choosing) return;
     scanning = true;
     scanError = "";
     adoptErrors = {};
@@ -88,28 +91,43 @@
     scanning = false;
   }
 
-  /** Saves a found account and makes it the AI in use if it passes its check. */
-  async function adopt(c: Candidate) {
-    adopting = c.index;
-    delete adoptErrors[c.index];
+  async function makeChoice(action: () => Promise<void>) {
+    if (choosing) return;
+    choosing = true;
+    choiceError = "";
     try {
-      const profile = await api.adopt(c.index);
-      c.profileId = profile.id;
-      picked[c.kind] = profile.id;
-      opened = c.kind;
-      await reload();
-      const p = profileFor(c.kind);
-      if (p) await recheck(p);
-      if (config.active_provider === profile.id) setUp = profile.label;
+      await action();
     } catch (e) {
-      adoptErrors[c.index] = String(e);
-      await reload();
-      // It was added either way: its own check says what's missing, in Settings' words.
-      const added = profilesOf(c.kind).find((q) => q.base_url === c.baseUrl);
-      const check = added ? await api.checkProvider(added.id).catch(() => null) : null;
-      if (added && check?.code === "claude_sign_in") adoptChecks[c.index] = { profileId: added.id, check };
+      choiceError = String(e);
+    } finally {
+      choosing = false;
     }
-    adopting = null;
+  }
+
+  /** Saves a found account and makes it the AI in use if it passes its check. */
+  function adopt(c: Candidate) {
+    return makeChoice(async () => {
+      adopting = c.index;
+      delete adoptErrors[c.index];
+      try {
+        const profile = await api.adopt(c.index);
+        c.profileId = profile.id;
+        picked[c.kind] = profile.id;
+        opened = c.kind;
+        await reload();
+        const p = profileFor(c.kind);
+        if (p) await recheck(p);
+        if (config.active_provider === profile.id) setUp = profile.label;
+      } catch (e) {
+        adoptErrors[c.index] = String(e);
+        await reload();
+        const added = profilesOf(c.kind).find((q) => q.base_url === c.baseUrl);
+        const check = added ? await api.checkProvider(added.id).catch(() => null) : null;
+        if (added && check?.code === "claude_sign_in") adoptChecks[c.index] = { profileId: added.id, check };
+      } finally {
+        adopting = null;
+      }
+    });
   }
 
   const problemLabels: Record<CheckCode, string> = {
@@ -158,8 +176,10 @@
   }
 
   async function recheck(p: ProviderProfile) {
+    const mine = nextGeneration(p.id);
     checks[p.id] = "checking";
-    checks[p.id] = await api.checkProvider(p.id);
+    const check = await api.checkProvider(p.id).catch((e) => ({ ready: false, problem: String(e), models: [] }));
+    if (generation[p.id] === mine) checks[p.id] = check;
   }
 
   /** Makes `p` the AI in use if it works; otherwise shows what's missing and keeps the current one. */
@@ -180,22 +200,21 @@
     }
   }
 
-  async function choose(choice: Choice) {
-    opened = choice;
-    if (choice === "builtin") {
-      if (builtin?.available) {
-        config.active_provider = null;
-        onchange();
+  function choose(choice: Choice) {
+    return makeChoice(async () => {
+      opened = choice;
+      if (choice === "builtin") {
+        if (builtin?.available) await useBuiltin();
+        return;
       }
-      return;
-    }
-    let p = profileFor(choice);
-    if (!p) {
-      await api.addProvider(choice);
-      await reload();
-      p = profileFor(choice);
-    }
-    if (p) await tryActivate(p);
+      let p = profileFor(choice);
+      if (!p) {
+        await api.addProvider(choice);
+        await reload();
+        p = profileFor(choice);
+      }
+      if (p) await tryActivate(p);
+    });
   }
 
   /** A radio click: the button only becomes checked once the choice takes effect (an AI that
@@ -206,48 +225,60 @@
   };
 
   /** Opens an AI's setup (adding it if needed) without making it the one in use. */
-  async function openSetup(kind: ProviderKind) {
-    opened = kind;
-    let p = profileFor(kind);
-    if (!p) {
-      await api.addProvider(kind);
-      await reload();
-      p = profileFor(kind);
-    }
-    if (p) await recheck(p);
+  function openSetup(kind: ProviderKind) {
+    return makeChoice(async () => {
+      opened = kind;
+      let p = profileFor(kind);
+      if (!p) {
+        await api.addProvider(kind);
+        await reload();
+        p = profileFor(kind);
+      }
+      if (p) await recheck(p);
+    });
   }
 
   /** Returns reviews to the built-in AI (or the rule-based checker without one), keeping this AI
    * and its key for later. Works whether or not Apple Intelligence is available. */
-  function stopUsing() {
-    config.active_provider = null;
+  async function useBuiltin() {
+    await api.useBuiltinProvider();
+    await reload();
     setUp = "";
-    opened = null;
-    onchange();
+    opened = "builtin";
   }
 
   /** After a setup field changes: try again to make it the AI in use. */
-  async function retry(p: ProviderProfile) {
-    // Unsaved, the check would run against the address or model the app still has.
-    if (!(await saveNow())) {
-      checks[p.id] = { ready: false, problem: "Couldn’t save this change. Change it again to retry", code: null, models: [] };
-      return;
-    }
-    await tryActivate(p);
+  function retry(p: ProviderProfile) {
+    return makeChoice(async () => {
+      // Unsaved, the check would run against the address or model the app still has.
+      if (!(await saveNow())) {
+        checks[p.id] = { ready: false, problem: "Couldn’t save this change. Change it again to retry", code: null, models: [] };
+        return;
+      }
+      await tryActivate(p);
+    });
   }
 
-  async function saveKey(p: ProviderProfile) {
-    await api.setKey(p.id, keyDrafts[p.id] ?? "");
-    keyDrafts[p.id] = "";
-    await reload();
-    await tryActivate(p);
+  function saveKey(p: ProviderProfile) {
+    return makeChoice(async () => {
+      await api.setKey(p.id, keyDrafts[p.id] ?? "");
+      keyDrafts[p.id] = "";
+      await reload();
+      await tryActivate(p);
+    });
   }
 
-  async function remove(p: ProviderProfile) {
-    await api.removeProvider(p.id);
-    delete checks[p.id];
-    opened = "builtin";
-    await reload();
+  function remove(p: ProviderProfile) {
+    return makeChoice(async () => {
+      try {
+        await api.removeProvider(p.id);
+        nextGeneration(p.id);
+        delete checks[p.id];
+        opened = "builtin";
+      } finally {
+        await reload();
+      }
+    });
   }
 
   async function test(p: ProviderProfile) {
@@ -260,25 +291,37 @@
     }
   }
 
-  async function pull(p: ProviderProfile) {
-    pulling = { status: "Starting download…", pct: 0 };
-    try {
-      await api.pull(p.base_url, pullModel);
-      p.model = pullModel;
-      pulling = null;
-      await retry(p);
-    } catch (e) {
-      pulling = { status: `⚠︎ ${e}`, pct: 0 };
-    }
+  function pull(p: ProviderProfile) {
+    const { id, base_url, label } = p;
+    const model = pullModel.trim();
+    return makeChoice(async () => {
+      const requestId = crypto.getRandomValues(new Uint32Array(4)).join("-");
+      pullRequest = requestId;
+      pulling = { profileId: id, status: "Starting download…", pct: 0 };
+      nextGeneration(id);
+      try {
+        checks[id] = await api.pull(requestId, id, base_url, model);
+        pulling = null;
+        await reload();
+        if (config.active_provider === id) setUp = label;
+      } catch (e) {
+        pulling = { profileId: id, status: `⚠︎ ${e}`, pct: 0 };
+      } finally {
+        pullRequest = null;
+      }
+    });
   }
 
   onMount(() => {
     let stop: (() => void) | undefined;
+    let mounted = true;
     api
-      .on("settings:pull", (p) => {
-        pulling = { status: p.status, pct: p.total ? Math.round((p.completed / p.total) * 100) : pulling?.pct ?? 0 };
+      .on("settings:pull", ({ requestId, progress }) => {
+        if (requestId !== pullRequest || !pulling) return;
+        const { status, completed, total } = progress;
+        pulling = { ...pulling, status, pct: total ? Math.round((completed / total) * 100) : pulling.pct };
       })
-      .then((s) => (stop = s));
+      .then((s) => { if (mounted) stop = s; else s(); });
     const unwatch = watchBuiltinAi(api.builtinAi, (b) => (builtin = b));
     // Catch a key that stopped working or a server that's down before the next review does.
     for (const k of kinds) {
@@ -296,6 +339,7 @@
       }, 300);
     }
     return () => {
+      mounted = false;
       stop?.();
       unwatch();
       clearTimeout(startScan);
@@ -337,17 +381,19 @@
           {:else}Looks for API keys in your {isWindows() ? "environment variables" : "shell profile"} and Codex settings, a signed-in Claude Code, and Ollama or LM Studio running locally. Nothing is sent anywhere.{/if}
         </span>
       </div>
-      <button class="btn small" onclick={scan} disabled={scanning}>{scanning ? "Scanning…" : candidates ? "Scan again" : "Scan"}</button>
+      <button class="btn small" onclick={scan} disabled={scanning || choosing}>{scanning ? "Scanning…" : candidates ? "Scan again" : "Scan"}</button>
     </div>
   </div>
 
 
   <div class="group-title">Choose an AI</div>
+  {#if choosing && !pullRequest}<p role="status">Checking…</p>{/if}
+  {#if choiceError}<p class="problem" role="alert">⚠︎ {choiceError}</p>{/if}
   <div class="group choices">
     {#if builtin?.supported}
       <div class="choice" class:open={shown === "builtin"}>
         <label class="pick">
-          <input type="radio" name="ai" checked={activeChoice === "builtin"} disabled={!builtin.available} onclick={pick("builtin")} />
+          <input type="radio" name="ai" checked={activeChoice === "builtin"} disabled={!builtin.available || choosing} onclick={pick("builtin")} />
           <span>
             <span class="label">Apple Intelligence</span>
             <span class="pill">Built in</span>
@@ -371,7 +417,7 @@
       {@const c = p ? checks[p.id] : undefined}
       <div class="choice" class:open={shown === k.kind}>
         <label class="pick">
-          <input type="radio" name="ai" checked={activeChoice === k.kind} onclick={pick(k.kind)} />
+          <input type="radio" name="ai" checked={activeChoice === k.kind} disabled={choosing} onclick={pick(k.kind)} />
           <span>
             <span class="label">{k.name}</span>
             {#if earlyAccess(k.kind, p)}<span class="pill early" title="Included in early access">Early access</span>{/if}
@@ -379,7 +425,7 @@
             <span class="hint">{k.blurb}</span>
           </span>
         </label>
-        {#if shown !== k.kind && !(found(k.kind).length && !p)}<button class="btn small" onclick={() => openSetup(k.kind)}>{p ? "Settings" : "Set up"}</button>{/if}
+        {#if shown !== k.kind && !(found(k.kind).length && !p)}<button class="btn small" disabled={choosing} onclick={() => openSetup(k.kind)}>{p ? "Settings" : "Set up"}</button>{/if}
       </div>
       {#each found(k.kind) as fc (fc.index)}
         {@const signInHere = adoptChecks[fc.index]?.check.code === "claude_sign_in" && isWindows()}
@@ -393,14 +439,14 @@
               {#if !signedIn[ac.profileId]}<span class="alert">⚠︎ {problemText(ac.check)}</span>{/if}
               <!-- Signing in puts the account in use, so there's no Use to press afterwards. -->
               {#if signInHere}
-                <ClaudeSignIn profileId={ac.profileId} onsignedin={() => { signedIn[ac.profileId] = true; adopt(fc); }} />
+                <ClaudeSignIn profileId={ac.profileId} disabled={choosing} onsignedin={() => { signedIn[ac.profileId] = true; adopt(fc); }} />
               {/if}
             {:else if adoptErrors[fc.index]}<span class="alert">⚠︎ {adoptErrors[fc.index]}</span>{/if}
           </span>
           <!-- Sign in is the only next step while it's pending; after a refusal fixed elsewhere, it's Try
                again. An account that can't be used yet (Ollama not running) has its note instead. -->
           {#if !signInHere && fc.ready}
-            <button class="btn small primary" disabled={adopting !== null} onclick={() => adopt(fc)}>
+            <button class="btn small primary" disabled={choosing || scanning} onclick={() => adopt(fc)}>
               {adopting === fc.index ? "Setting up…" : adoptErrors[fc.index] ? "Try again" : "Use"}
             </button>
           {/if}
@@ -413,13 +459,13 @@
           {/if}
           {#if c && c !== "checking" && c.code === "claude_sign_in" && isWindows()}
             <div class="signin-row">
-              <ClaudeSignIn profileId={p.id} onsignedin={() => { signedIn[p.id] = true; tryActivate(p); }} />
+              <ClaudeSignIn profileId={p.id} disabled={choosing} onsignedin={() => { signedIn[p.id] = true; makeChoice(() => tryActivate(p)); }} />
             </div>
           {/if}
           {#if profilesOf(k.kind).length > 1}
             <div class="row">
               <span class="label">Account</span>
-              <select value={p.id} onchange={(e) => { picked[k.kind] = e.currentTarget.value; const q = profileFor(k.kind); if (q) recheck(q); }}>
+              <select value={p.id} disabled={choosing} onchange={(e) => { picked[k.kind] = e.currentTarget.value; const q = profileFor(k.kind); if (q) recheck(q); }}>
                 {#each profilesOf(k.kind) as q (q.id)}
                   <option value={q.id}>{accountLabel(q)}{q.id === config.active_provider ? " · in use" : ""}</option>
                 {/each}
@@ -430,8 +476,8 @@
             <div class="row">
               <span class="label">API key</span>
               <span class="inline">
-                <input type="password" placeholder={keys[p.id] ? "•••••••• (saved)" : "Paste key"} bind:value={keyDrafts[p.id]} />
-                <button class="btn small" onclick={() => saveKey(p)} disabled={!keyDrafts[p.id]}>Save</button>
+                <input type="password" placeholder={keys[p.id] ? "•••••••• (saved)" : "Paste key"} bind:value={keyDrafts[p.id]} disabled={choosing} />
+                <button class="btn small" onclick={() => saveKey(p)} disabled={!keyDrafts[p.id] || choosing}>Save</button>
                 {#if k.keyUrl}<button class="linklike" onclick={() => api.openUrl(k.keyUrl!)}>Get a key</button>{/if}
               </span>
             </div>
@@ -439,19 +485,19 @@
           {#if k.kind === "ollama" || k.kind === "open_ai_compatible" || k.kind === "claude_cli"}
             <div class="row">
               <span class="label">{k.kind === "claude_cli" ? "Claude CLI path" : "Server URL"}</span>
-              <input type="text" class="wide" title={p.base_url} bind:value={p.base_url} onchange={() => retry(p)} spellcheck="false" />
+              <input type="text" class="wide" title={p.base_url} bind:value={p.base_url} disabled={choosing} onchange={() => retry(p)} spellcheck="false" />
             </div>
           {/if}
           <div class="row">
             <span class="label">Model</span>
             <span class="inline">
               {#if c && c !== "checking" && c.models.length}
-                <select bind:value={p.model} onchange={() => retry(p)}>
+                <select bind:value={p.model} disabled={choosing} onchange={() => retry(p)}>
                   {#if !c.models.includes(p.model)}<option value={p.model}>{p.model}</option>{/if}
                   {#each c.models as m (m)}<option value={m}>{m}</option>{/each}
                 </select>
               {:else}
-                <input type="text" bind:value={p.model} onchange={() => retry(p)} spellcheck="false" />
+                <input type="text" bind:value={p.model} disabled={choosing} onchange={() => retry(p)} spellcheck="false" />
               {/if}
             </span>
           </div>
@@ -462,17 +508,17 @@
                 <span class="hint">Small models (3–4B) answer fastest. Try gemma3:4b, qwen3:4b, or llama3.2:3b.</span>
               </span>
               <span class="inline">
-                <input type="text" bind:value={pullModel} spellcheck="false" />
-                <button class="btn small" onclick={() => pull(p)} disabled={!!pulling && pulling.pct < 100 && !pulling.status.startsWith("⚠")}>Download</button>
+                <input type="text" bind:value={pullModel} disabled={choosing} spellcheck="false" />
+                <button class="btn small" onclick={() => pull(p)} disabled={choosing || !pullModel.trim()}>Download</button>
               </span>
             </div>
-            {#if pulling}
-              <div class="row progress"><span>{pulling.status}</span><progress max="100" value={pulling.pct}></progress></div>
+            {#if pulling?.profileId === p.id}
+              <div class="row progress" role="status"><span>{pulling.status}</span><progress max="100" value={pulling.pct}></progress></div>
             {/if}
           {/if}
           <div class="row actions-row">
             <span class="inline">
-              <button class="btn small" disabled={c === "checking"} onclick={() => (setupAction(p, config.active_provider) === "check" ? checkAgain(p) : tryActivate(p))}>
+              <button class="btn small" disabled={c === "checking" || choosing} onclick={() => (setupAction(p, config.active_provider) === "check" ? checkAgain(p) : makeChoice(() => tryActivate(p)))}>
                 {c === "checking" ? "Checking…" : setupAction(p, config.active_provider) === "check" ? "Check again" : "Use this AI"}
               </button>
               <button class="btn small" onclick={() => test(p)} disabled={!c || c === "checking" || !c.ready}>Speed check</button>
@@ -482,9 +528,10 @@
                 <button
                   class="btn small"
                   title={builtin?.available ? "Apple Intelligence reviews instead. This AI and its key stay saved." : "The rule-based checker reviews instead. This AI and its key stay saved."}
-                  onclick={stopUsing}>Stop using</button>
+                  disabled={choosing}
+                  onclick={() => makeChoice(useBuiltin)}>Stop using</button>
               {/if}
-              <button class="btn small danger" onclick={() => remove(p)}>Remove</button>
+              <button class="btn small danger" disabled={choosing} onclick={() => remove(p)}>Remove</button>
             </span>
           </div>
           {#if tests[p.id]}<div class="row test" class:failed={!tests[p.id].ok}>{tests[p.id].text}</div>{/if}

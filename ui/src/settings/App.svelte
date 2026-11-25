@@ -171,7 +171,6 @@
         <Models
           bind:config
           keys={payload.keys}
-          {onchange}
           {saveNow}
           {reload}
           bind:scanOnOpen

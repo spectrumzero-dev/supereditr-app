@@ -8,7 +8,8 @@
 //! never touched: SuperEditr's binds and window rule exist only at runtime.
 
 use super::desktop::SetupCheck;
-use serde::Serialize;
+use crate::secrets::{CredentialStore, Secrets};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use supereditr_core::provider::ProviderKind;
 
@@ -358,7 +359,10 @@ pub fn uninstall_command(args: &[String]) -> i32 {
     report(remove_autostart(&config).map(|done| done.into_iter().collect()));
     reload_autostart();
     if purge {
-        report(purge_data(&config));
+        let (done, errors) = purge_data(&config, &CredentialStore, super::log_path().as_deref());
+        done.iter().for_each(|line| println!("{line}"));
+        errors.iter().for_each(|error| eprintln!("supereditr uninstall-omarchy: {error}"));
+        failed |= !errors.is_empty();
     } else {
         println!(
             "Kept SuperEditr’s settings and saved API keys. `supereditr uninstall-omarchy --purge` deletes them too."
@@ -368,38 +372,83 @@ pub fn uninstall_command(args: &[String]) -> i32 {
 }
 
 /// Deletes SuperEditr's settings folders, its log and the API keys its settings name.
-fn purge_data(config: &Path) -> std::io::Result<Vec<String>> {
+fn purge_data(config: &Path, secrets: &dyn Secrets, log: Option<&Path>) -> (Vec<String>, Vec<String>) {
     let mut done = Vec::new();
+    let mut errors = Vec::new();
     for id in [crate::IDENTIFIER, crate::OLD_IDENTIFIER] {
         let dir = config.join(id);
-        let settings = dir.join("settings.json");
-        let providers: Vec<(ProviderKind, String)> = std::fs::read_to_string(&settings)
-            .ok()
-            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-            .and_then(|json| json["providers"].as_array().cloned())
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|p| Some((serde_json::from_value(p["kind"].clone()).ok()?, p["id"].as_str()?.to_string())))
-            .collect();
-        for (kind, id) in &providers {
-            crate::secrets::delete(*kind, id);
-        }
-        let providers: Vec<String> = providers.into_iter().map(|(_, id)| id).collect();
-        if !providers.is_empty() {
-            done.push(format!("Deleted the saved API keys for {}", providers.join(", ")));
-        }
-        if dir.is_dir() {
-            std::fs::remove_dir_all(&dir)?;
-            done.push(format!("Deleted {}", tilde(&dir)));
+        if let Err(error) = purge_settings(&dir, secrets, &mut done) {
+            errors.push(error);
         }
     }
-    if let Some(log) = super::log_path().and_then(|log| log.parent().map(Path::to_path_buf))
-        && log.is_dir()
+    if let Some(log) = log {
+        purge_logs(log, &mut done, &mut errors);
+    }
+    (done, errors)
+}
+
+#[derive(Deserialize)]
+struct PurgeProfile {
+    kind: ProviderKind,
+    id: String,
+}
+
+fn purge_settings(dir: &Path, secrets: &dyn Secrets, done: &mut Vec<String>) -> Result<(), String> {
+    let providers = purge_profiles(&dir.join("settings.json"))
+        .map_err(|error| format!("Kept {}. Couldn’t read the saved provider IDs: {error}", tilde(dir)))?;
+    let mut errors = Vec::new();
+    for profile in providers {
+        match secrets.delete(profile.kind, &profile.id) {
+            Ok(0) => done.push(format!("No saved API key entries for {}", profile.id)),
+            Ok(count) => done.push(format!("Deleted {count} saved API key entries for {}", profile.id)),
+            Err(error) => errors.push(error),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(format!("Kept {} so key cleanup can be retried. {}", tilde(dir), errors.join(" ")));
+    }
+    remove_purge_dir(dir, done)
+}
+
+fn purge_profiles(settings: &Path) -> Result<Vec<PurgeProfile>, String> {
+    let bytes = match std::fs::read(settings) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let serde_json::Value::Object(mut object) = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?
+    else {
+        return Err("Expected a settings object.".into());
+    };
+    match object.remove("providers") {
+        Some(providers) => serde_json::from_value(providers).map_err(|error| error.to_string()),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn remove_purge_dir(dir: &Path, done: &mut Vec<String>) -> Result<(), String> {
+    match std::fs::remove_dir_all(dir) {
+        Ok(()) => done.push(format!("Deleted {}", tilde(dir))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(error) => return Err(format!("Couldn’t remove {}: {error}", tilde(dir))),
+    }
+    Ok(())
+}
+
+fn purge_logs(log: &Path, done: &mut Vec<String>, errors: &mut Vec<String>) {
+    for log in [log.to_path_buf(), log.with_file_name("capture.old.log")] {
+        match std::fs::remove_file(&log) {
+            Ok(()) => done.push(format!("Deleted {}", tilde(&log))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => errors.push(format!("Couldn’t remove {}: {error}", tilde(&log))),
+        }
+    }
+    if let Some(dir) = log.parent()
+        && let Err(error) = std::fs::remove_dir(dir)
+        && !matches!(error.kind(), std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::NotFound)
     {
-        std::fs::remove_dir_all(&log)?;
-        done.push(format!("Deleted {}", tilde(&log)));
+        errors.push(format!("Couldn’t remove {}: {error}", tilde(dir)));
     }
-    Ok(done)
 }
 
 #[cfg(test)]
@@ -582,5 +631,57 @@ mod tests {
     #[test]
     fn the_uninstall_command_refuses_unknown_options() {
         assert_eq!(uninstall_command(&["--purg".into()]), 2);
+    }
+
+    #[test]
+    fn a_partial_keyring_purge_keeps_settings_for_retry() {
+        let config = folder("purge-retry");
+        let dir = config.join(crate::IDENTIFIER);
+        std::fs::create_dir(&dir).unwrap();
+        let settings = dir.join("settings.json");
+        let original = r#"{"providers":[{"kind":"anthropic","id":"anthropic"}]}"#;
+        std::fs::write(&settings, original).unwrap();
+        let store = crate::secrets::FakeSecrets::default();
+        store.set(ProviderKind::Anthropic, "anthropic", "test-key").unwrap();
+        store.set(ProviderKind::Anthropic, "unrelated", "test-key").unwrap();
+        store.old.lock().unwrap().insert("anthropic".into(), "test-legacy-key".into());
+        *store.refuse_delete.lock().unwrap() = Some("anthropic".into());
+
+        let (done, errors) = purge_data(&config, &store, None);
+        assert!(done.is_empty());
+        assert!(errors[0].contains("Deleted 1 credential entries"));
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), original);
+        assert_eq!(store.key(ProviderKind::Anthropic, "anthropic"), None);
+        assert!(store.old.lock().unwrap().contains_key("anthropic"));
+
+        *store.refuse_delete.lock().unwrap() = None;
+        let (done, errors) = purge_data(&config, &store, None);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(done.iter().any(|line| line.contains("Deleted 1 saved API key entries for anthropic")));
+        assert!(store.old.lock().unwrap().is_empty());
+        assert!(store.key(ProviderKind::Anthropic, "unrelated").is_some());
+        assert!(!dir.exists());
+        std::fs::remove_dir_all(config).unwrap();
+    }
+
+    #[test]
+    fn a_purge_preserves_the_settings_when_provider_ids_cannot_be_verified() {
+        let config = folder("purge-unknown");
+        let dir = config.join(crate::OLD_IDENTIFIER);
+        std::fs::create_dir(&dir).unwrap();
+        let settings = dir.join("settings.json");
+        let store = crate::secrets::FakeSecrets::default();
+        for contents in [
+            "{",
+            r#"{"providers":[{"kind":"future_provider","id":"future-id"}]}"#,
+            r#"{"providers":[{"kind":"anthropic"}]}"#,
+        ] {
+            std::fs::write(&settings, contents).unwrap();
+            let (done, errors) = purge_data(&config, &store, None);
+            assert!(done.is_empty());
+            assert!(errors[0].contains("Couldn’t read the saved provider IDs"));
+            assert_eq!(std::fs::read_to_string(&settings).unwrap(), contents);
+        }
+        std::fs::remove_dir_all(config).unwrap();
     }
 }

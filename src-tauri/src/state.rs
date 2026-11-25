@@ -1,4 +1,5 @@
 use crate::platform::{Capture, Rect};
+use crate::secrets::{self, CredentialStore, Secrets};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -40,6 +41,9 @@ pub struct AppState {
     /// Counts saves of the settings, so Settings' save of a copy read before another save (the menu
     /// bar's "Turn off in …", the panel's "Always keep") can be refused instead of undoing it.
     revision: AtomicU64,
+    /// Records the latest provider choice, even when its check fails or it just reaffirms local review.
+    /// Updated and checked under the configuration write lock.
+    provider_choice: AtomicU64,
 }
 
 pub struct Session {
@@ -284,6 +288,7 @@ impl AppState {
             watch_generation: AtomicU64::new(0),
             last_review: Default::default(),
             revision: AtomicU64::new(0),
+            provider_choice: AtomicU64::new(0),
         }
     }
 
@@ -296,44 +301,101 @@ impl AppState {
     }
 
     pub fn key_for(&self, kind: ProviderKind, profile_id: &str) -> Option<String> {
-        let account = crate::secrets::account(kind, profile_id);
-        let mut keys = self.keys.lock().unwrap();
-        keys.entry(account.clone()).or_insert_with(|| crate::secrets::get(&account)).clone()
+        self.read_key(&CredentialStore, kind, profile_id).ok().flatten()
     }
 
+    pub fn read_key(
+        &self,
+        store: &dyn Secrets,
+        kind: ProviderKind,
+        profile_id: &str,
+    ) -> Result<Option<String>, String> {
+        let account = secrets::account(kind, profile_id);
+        let mut keys = self.keys.lock().unwrap();
+        if let Some(key) = keys.get(&account) {
+            return Ok(key.clone());
+        }
+        let key = store.get(&account)?;
+        keys.insert(account, key.clone());
+        Ok(key)
+    }
+
+    #[cfg(test)]
     pub fn set_cached_key(&self, kind: ProviderKind, profile_id: &str, key: Option<String>) {
-        self.keys.lock().unwrap().insert(crate::secrets::account(kind, profile_id), key);
+        self.keys.lock().unwrap().insert(secrets::account(kind, profile_id), key);
         self.last_review.forget();
     }
 
-    /// Saves `config` as `save_config_based_on` does, and only while `profile`'s API key is still
-    /// the one it carries. The keys are held for the save, so a key saved meanwhile either comes
-    /// first and refuses this, or comes after it.
-    pub fn save_config_for_checked(
+    /// Updates the store and cache together. Call within a provider configuration update, so
+    /// a check or removal cannot commit against a different key.
+    pub fn write_key(
         &self,
-        config: Config,
-        revision: u64,
-        profile: &ProviderProfile,
-    ) -> std::io::Result<Option<u64>> {
-        let account = crate::secrets::account(profile.kind, &profile.id);
+        store: &dyn Secrets,
+        kind: ProviderKind,
+        profile_id: &str,
+        key: Option<String>,
+    ) -> Result<(), String> {
+        let account = secrets::account(kind, profile_id);
         let mut keys = self.keys.lock().unwrap();
-        if *keys.entry(account.clone()).or_insert_with(|| crate::secrets::get(&account)) != profile.api_key {
-            return Ok(None);
+        let result = match &key {
+            Some(key) => store.set(kind, profile_id, key),
+            None => store.delete(kind, profile_id).map(|_| ()),
+        };
+        if result.is_ok() {
+            keys.insert(account, key);
+        } else {
+            // An alias deletion can fail after the current key has already been removed.
+            keys.remove(&account);
         }
-        self.save_config_based_on(config, Some(revision))
+        self.last_review.forget();
+        result
     }
 
     /// The active provider with its API key attached, ready for a request.
     pub fn active_profile(&self) -> Option<ProviderProfile> {
-        let mut profile = self.config.read().unwrap().active_profile()?.clone();
-        profile.api_key = self.key_for(profile.kind, &profile.id);
+        let config = self.config.read().unwrap();
+        let mut profile = config.active_profile()?.clone();
+        profile.api_key = self.profile_key(&profile).ok()?;
         Some(profile)
     }
 
-    pub fn profile(&self, id: &str) -> Option<ProviderProfile> {
-        let mut profile = self.config.read().unwrap().providers.iter().find(|p| p.id == id)?.clone();
-        profile.api_key = self.key_for(profile.kind, &profile.id);
-        Some(profile)
+    pub fn profile(&self, id: &str) -> Result<Option<ProviderProfile>, String> {
+        let config = self.config.read().unwrap();
+        let Some(mut profile) = config.providers.iter().find(|p| p.id == id).cloned() else { return Ok(None) };
+        profile.api_key = self.profile_key(&profile)?;
+        Ok(Some(profile))
+    }
+
+    pub fn profile_key(&self, profile: &ProviderProfile) -> Result<Option<String>, String> {
+        if profile.kind.needs_key() || profile.kind == ProviderKind::OpenAiCompatible {
+            self.read_key(&CredentialStore, profile.kind, &profile.id)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn begin_provider_choice(&self) -> u64 {
+        let _current = self.config.write().unwrap();
+        self.provider_choice.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Updates providers in the current settings. The check and the save share the lock with
+    /// new choices, credential updates and unrelated settings saves.
+    pub fn update_provider_config<T>(
+        &self,
+        choice: Option<u64>,
+        update: impl FnOnce(&mut Config) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut current = self.config.write().unwrap();
+        if choice.is_some_and(|choice| choice != self.provider_choice.load(Ordering::Relaxed)) {
+            return Err("A newer AI choice replaced this one.".into());
+        }
+        let mut config = current.clone();
+        let result = update(&mut config)?;
+        if config.providers != current.providers || config.active_provider != current.active_provider {
+            self.persist_config(&mut current, config).map_err(|e| e.to_string())?;
+        }
+        Ok(result)
     }
 
     /// The settings, and the revision they were saved at.
@@ -348,20 +410,27 @@ impl AppState {
 
     /// Saves, unless `revision` is given and the settings have been saved since then. Returns the
     /// new revision, or None when the save was refused.
-    pub fn save_config_based_on(&self, mut config: Config, revision: Option<u64>) -> std::io::Result<Option<u64>> {
-        config.pin_official_addresses();
+    pub fn save_config_based_on(&self, config: Config, revision: Option<u64>) -> std::io::Result<Option<u64>> {
         // The revision changes only under this lock, so nothing can save between check and write.
         let mut current = self.config.write().unwrap();
         if revision.is_some_and(|r| r != self.revision.load(Ordering::Relaxed)) {
             return Ok(None);
         }
+        if config.active_provider != current.active_provider {
+            self.provider_choice.fetch_add(1, Ordering::Relaxed);
+        }
+        self.persist_config(&mut current, config).map(Some)
+    }
+
+    fn persist_config(&self, current: &mut Config, mut config: Config) -> std::io::Result<u64> {
+        config.pin_official_addresses();
         config.save(&self.config_path)?;
         crate::platform::set_trace(config.diagnostic_log || !crate::updater::ENABLED);
         *current = config;
         // Any setting may change what a review would say: the AI, its model, the styles, the word
         // list. The next review asks afresh.
         self.last_review.forget();
-        Ok(Some(self.revision.fetch_add(1, Ordering::Relaxed) + 1))
+        Ok(self.revision.fetch_add(1, Ordering::Relaxed) + 1)
     }
 }
 

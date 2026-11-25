@@ -654,6 +654,7 @@ pub fn run() {
             commands::check_provider,
             commands::claude_sign_in,
             commands::activate_provider,
+            commands::use_builtin_provider,
             commands::review_playground,
             commands::fit_settings_height,
             commands::pause_shortcuts,

@@ -25,44 +25,72 @@ pub fn account(kind: ProviderKind, profile_id: &str) -> String {
 /// Where API keys are saved: the OS credential store in the app ([`CredentialStore`]), and a map in
 /// unit tests. Reading a key goes through `AppState::key_for`, which caches it.
 pub trait Secrets: Sync {
+    fn get(&self, account: &str) -> Result<Option<String>, String>;
     fn set(&self, kind: ProviderKind, profile_id: &str, key: &str) -> Result<(), String>;
-    fn delete(&self, kind: ProviderKind, profile_id: &str);
+    /// Returns true for a confirmed deletion, false when the entry was already absent.
+    fn delete_entry(&self, service: &str, account: &str) -> Result<bool, String>;
+
+    /// Removes the key and any copies earlier versions kept for this profile. Try every
+    /// entry even after a failure, so a retry only has to clean up what remains.
+    fn delete(&self, kind: ProviderKind, profile_id: &str) -> Result<usize, String> {
+        let mut deleted = 0;
+        let mut failures = Vec::new();
+        for (service, account) in entries_to_delete(kind, profile_id) {
+            match self.delete_entry(service, &account) {
+                Ok(true) => deleted += 1,
+                Ok(false) => (),
+                Err(error) => failures.push(error),
+            }
+        }
+        if failures.is_empty() {
+            Ok(deleted)
+        } else {
+            Err(format!(
+                "Couldn’t confirm key cleanup for {profile_id}. Deleted {deleted} credential entries. {}",
+                failures.join(" ")
+            ))
+        }
+    }
 }
 
 /// The OS credential store.
 pub struct CredentialStore;
 
 impl Secrets for CredentialStore {
+    fn get(&self, account: &str) -> Result<Option<String>, String> {
+        // Unit tests only use fake credentials or keys already cached in AppState.
+        if cfg!(test) {
+            return Ok(None);
+        }
+        match keyring::Entry::new(SERVICE, account).and_then(|entry| entry.get_password()) {
+            Ok(key) => Ok(Some(key).filter(|key| !key.is_empty())),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(format!("Couldn’t read the key from the {STORE}: {error}")),
+        }
+    }
+
     fn set(&self, kind: ProviderKind, profile_id: &str, key: &str) -> Result<(), String> {
-        self::set(kind, profile_id, key)
+        keyring::Entry::new(SERVICE, &account(kind, profile_id))
+            .and_then(|entry| entry.set_password(key))
+            .map_err(|e| format!("Couldn’t save the key to the {STORE}: {e}"))
     }
 
-    fn delete(&self, kind: ProviderKind, profile_id: &str) {
-        self::delete(kind, profile_id)
-    }
-}
-
-/// Reads the key saved under an `account` name. Unit tests find none, so a key a test hasn't
-/// cached in `AppState` never reaches the real credential store.
-pub fn get(account: &str) -> Option<String> {
-    if cfg!(test) {
-        return None;
-    }
-    keyring::Entry::new(SERVICE, account).ok()?.get_password().ok().filter(|k| !k.is_empty())
-}
-
-pub fn set(kind: ProviderKind, profile_id: &str, key: &str) -> Result<(), String> {
-    keyring::Entry::new(SERVICE, &account(kind, profile_id))
-        .and_then(|entry| entry.set_password(key))
-        .map_err(|e| format!("Couldn’t save the key to the {STORE}: {e}"))
-}
-
-/// Removes the key, and any copy an earlier version saved for this profile, which is never read
-/// but shouldn't outlive the provider.
-pub fn delete(kind: ProviderKind, profile_id: &str) {
-    for (service, account) in entries_to_delete(kind, profile_id) {
-        if let Ok(entry) = keyring::Entry::new(service, &account) {
-            let _ = entry.delete_credential();
+    fn delete_entry(&self, service: &str, account: &str) -> Result<bool, String> {
+        let failure = |error| format!("Couldn’t delete a key from the {STORE}: {error}");
+        let entry = keyring::Entry::new(service, account).map_err(failure)?;
+        match entry.delete_credential() {
+            Err(keyring::Error::NoEntry) => Ok(false),
+            Err(error) => Err(failure(error)),
+            Ok(()) => {
+                // The macOS backend discards the OS status from the delete itself.
+                #[cfg(target_os = "macos")]
+                match entry.get_secret() {
+                    Err(keyring::Error::NoEntry) => (),
+                    Ok(_) => return Err("A key is still in the keychain after deletion.".into()),
+                    Err(error) => return Err(format!("Couldn’t verify deletion from the {STORE}: {error}")),
+                }
+                Ok(true)
+            }
         }
     }
 }
@@ -122,10 +150,13 @@ pub fn delete_all() -> Result<usize, String> {
 #[cfg(test)]
 #[derive(Default)]
 pub struct FakeSecrets {
-    /// Saved keys by account name (see [`account`]).
+    /// Saved keys in the current service by account name (see [`account`]).
     pub saved: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    pub old: std::sync::Mutex<std::collections::HashMap<String, String>>,
     /// Refuse every save, as a locked or missing credential store does.
     pub refuse: bool,
+    pub refuse_read: std::sync::atomic::AtomicBool,
+    pub refuse_delete: std::sync::Mutex<Option<String>>,
 }
 
 #[cfg(test)]
@@ -137,6 +168,13 @@ impl FakeSecrets {
 
 #[cfg(test)]
 impl Secrets for FakeSecrets {
+    fn get(&self, account: &str) -> Result<Option<String>, String> {
+        if self.refuse_read.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(format!("Couldn’t read the key from the {STORE}: it is locked"));
+        }
+        Ok(self.saved.lock().unwrap().get(account).cloned())
+    }
+
     fn set(&self, kind: ProviderKind, profile_id: &str, key: &str) -> Result<(), String> {
         if self.refuse {
             return Err(format!("Couldn’t save the key to the {STORE}: it is locked"));
@@ -145,8 +183,12 @@ impl Secrets for FakeSecrets {
         Ok(())
     }
 
-    fn delete(&self, kind: ProviderKind, profile_id: &str) {
-        self.saved.lock().unwrap().remove(&account(kind, profile_id));
+    fn delete_entry(&self, service: &str, account: &str) -> Result<bool, String> {
+        if self.refuse_delete.lock().unwrap().as_deref() == Some(account) {
+            return Err(format!("Couldn’t delete a key from the {STORE}: it is locked"));
+        }
+        let keys = if service == SERVICE { &self.saved } else { &self.old };
+        Ok(keys.lock().unwrap().remove(account).is_some())
     }
 }
 

@@ -9,7 +9,7 @@ use supereditr_core::Config;
 use supereditr_core::detect::{self, Candidate};
 use supereditr_core::policy::{Os, is_password_manager};
 use supereditr_core::provider::{
-    ChatRequest, CheckCode, CheckProblem, ProviderKind, ProviderProfile, Providers, preferred_model,
+    ChatRequest, CheckCode, CheckProblem, ProviderKind, ProviderProfile, Providers, PullProgress, preferred_model,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -260,19 +260,12 @@ pub(crate) fn store_api_key(
     profile_id: &str,
     key: Option<String>,
 ) -> CmdResult<bool> {
-    let kind =
-        state.config().providers.iter().find(|p| p.id == profile_id).map(|p| p.kind).ok_or("Unknown provider.")?;
-    match key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()) {
-        Some(key) => {
-            secrets.set(kind, profile_id, &key)?;
-            state.set_cached_key(kind, profile_id, Some(key));
-        }
-        None => {
-            secrets.delete(kind, profile_id);
-            state.set_cached_key(kind, profile_id, None);
-        }
-    }
-    Ok(state.config().active_provider.as_deref() == Some(profile_id))
+    state.update_provider_config(None, |config| {
+        let profile = config.providers.iter().find(|p| p.id == profile_id).ok_or("Unknown provider.")?;
+        let key = key.map(|key| key.trim().to_string()).filter(|key| !key.is_empty());
+        state.write_key(secrets, profile.kind, profile_id, key)?;
+        Ok(config.active_provider.as_deref() == Some(profile_id))
+    })
 }
 
 #[derive(Serialize)]
@@ -290,14 +283,17 @@ pub struct CandidateView {
 
 /// The provider already added from a detected account: same kind and the same key, or for
 /// keyless kinds (local servers, the Claude CLI) the same address or path.
-fn matching_profile(state: &AppState, candidate: &Candidate) -> Option<ProviderProfile> {
-    state.config().providers.into_iter().find(|p| {
-        p.kind == candidate.kind
-            && match &candidate.api_key {
-                Some(key) => state.key_for(p.kind, &p.id).as_deref() == Some(key.as_str()),
-                None => p.base_url == candidate.base_url,
-            }
-    })
+fn matching_profile(state: &AppState, candidate: &Candidate) -> CmdResult<Option<ProviderProfile>> {
+    for profile in state.config().providers.into_iter().filter(|p| p.kind == candidate.kind) {
+        let matches = match &candidate.api_key {
+            Some(key) => state.profile_key(&profile)?.as_ref() == Some(key),
+            None => profile.base_url == candidate.base_url,
+        };
+        if matches {
+            return Ok(Some(profile));
+        }
+    }
+    Ok(None)
 }
 
 #[tauri::command]
@@ -313,7 +309,7 @@ pub async fn scan_accounts(state: State<'_, AppState>) -> CmdResult<Vec<Candidat
             index,
             candidate: c.clone(),
             label: c.kind.display_name(),
-            profile_id: matching_profile(&state, c).map(|p| p.id),
+            profile_id: matching_profile(&state, c).ok().flatten().map(|p| p.id),
         })
         .collect();
     *state.candidates.lock().unwrap() = found;
@@ -337,17 +333,17 @@ pub(crate) async fn adopt(
     servers: &impl Servers,
     index: usize,
 ) -> CmdResult<ProviderProfile> {
+    let choice = state.begin_provider_choice();
     let candidate =
         state.candidates.lock().unwrap().get(index).cloned().ok_or("That result has expired. Scan again.")?;
     // Already added: switch to it rather than adding a duplicate.
-    if let Some(existing) = matching_profile(state, &candidate) {
-        activate(state, servers, existing.id.clone()).await?;
+    if let Some(existing) = matching_profile(state, &candidate)? {
+        activate_choice(state, servers, &existing.id, choice).await?;
         return Ok(ProviderProfile { api_key: None, ..existing });
     }
     let mut profile = ProviderProfile::new(candidate.kind);
     profile.base_url = candidate.base_url.clone();
     profile.api_key = candidate.api_key.clone();
-    profile.id = unique_id(state, candidate.kind);
     if let Some(models) = servers.models(&profile).await {
         if !models.is_empty() {
             profile.model = preferred_model(candidate.kind, &models);
@@ -355,16 +351,24 @@ pub(crate) async fn adopt(
     } else if !candidate.models.is_empty() {
         profile.model = preferred_model(candidate.kind, &candidate.models);
     }
-    if let Some(key) = &candidate.api_key {
-        secrets.set(profile.kind, &profile.id, key)?;
-        state.set_cached_key(profile.kind, &profile.id, Some(key.clone()));
+    let key = profile.api_key.take();
+    // Persist its ID before writing a key, so a failed save cannot leave an untracked key.
+    state.update_provider_config(Some(choice), |config| {
+        profile.id = unique_id(config, profile.kind);
+        config.providers.push(profile.clone());
+        Ok(())
+    })?;
+    if let Some(key) = key {
+        state.update_provider_config(Some(choice), |config| {
+            if !config.providers.contains(&profile) {
+                return Err("This AI’s settings changed while it was being added. Try again.".into());
+            }
+            state.write_key(secrets, profile.kind, &profile.id, Some(key))
+        })?;
     }
-    let mut config = state.config();
-    config.providers.push(ProviderProfile { api_key: None, ..profile.clone() });
-    state.save_config(config).map_err(|e| e.to_string())?;
     // Added either way, but in use only if it works.
-    activate(state, servers, profile.id.clone()).await?;
-    Ok(ProviderProfile { api_key: None, ..profile })
+    activate_choice(state, servers, &profile.id, choice).await?;
+    Ok(profile)
 }
 
 /// What the AI providers' servers say, over the network in the app ([`Providers`]) and made up in
@@ -412,7 +416,10 @@ pub async fn check(state: &AppState, profile_id: &str) -> ProviderCheck {
 }
 
 async fn check_with(state: &AppState, servers: &impl Servers, profile_id: &str) -> ProviderCheck {
-    check_profile(servers, state.profile(profile_id).as_ref()).await
+    match state.profile(profile_id) {
+        Ok(profile) => check_profile(servers, profile.as_ref()).await,
+        Err(error) => ProviderCheck { ready: false, problem: Some(error), code: None, models: Vec::new() },
+    }
 }
 
 /// Checks `profile` as given, saved or not.
@@ -451,7 +458,7 @@ async fn check_profile(servers: &impl Servers, profile: Option<&ProviderProfile>
 /// sees (Windows). Settings then checks again every few seconds until it's signed in.
 #[tauri::command]
 pub fn claude_sign_in(state: State<'_, AppState>, profile_id: String) -> CmdResult<()> {
-    let profile = state.profile(&profile_id).ok_or("This AI was removed.")?;
+    let profile = state.profile(&profile_id)?.ok_or("This AI was removed.")?;
     if profile.kind != ProviderKind::ClaudeCli {
         return Err("Only Claude Code signs in this way.".into());
     }
@@ -491,9 +498,19 @@ pub async fn activate_provider(
 
 /// `activate_provider` without the menu bar.
 pub(crate) async fn activate(state: &AppState, servers: &impl Servers, profile_id: String) -> CmdResult<ProviderCheck> {
+    let choice = state.begin_provider_choice();
+    activate_choice(state, servers, &profile_id, choice).await
+}
+
+async fn activate_choice(
+    state: &AppState,
+    servers: &impl Servers,
+    profile_id: &str,
+    choice: u64,
+) -> CmdResult<ProviderCheck> {
     // The profile as it is now: both checks use it, and the activation is saved only if it is
     // still what the settings hold.
-    let checked = state.profile(&profile_id);
+    let checked = state.profile(profile_id)?;
     let mut result = check_profile(servers, checked.as_ref()).await;
     // Reachable, but its saved model isn't offered: switch to the fastest one it has. The switch is
     // checked on a copy and saved only with the activation, so a failed one changes nothing.
@@ -509,29 +526,43 @@ pub(crate) async fn activate(state: &AppState, servers: &impl Servers, profile_i
     if !result.ready {
         return Err(result.problem.unwrap_or_else(|| "This AI isn’t working yet.".into()));
     }
-    let checked = checked.ok_or("This AI was removed.")?;
-    loop {
-        let (mut config, revision) = state.config_at_revision();
-        // Edited during the check, or given another key: what passed isn't what is saved, and the
-        // edit is the newer choice.
-        if state.profile(&profile_id).as_ref() != Some(&checked) {
-            return Err("This AI’s settings changed while it was being checked. Try again.".into());
-        }
-        let saved = config.providers.iter_mut().find(|p| p.id == profile_id).ok_or("This AI was removed.")?;
-        if let Some(model) = &switched {
-            saved.model = model.clone();
-        }
-        config.active_provider = Some(profile_id.clone());
-        // Refused when the settings or the key were saved since the comparison: compare again.
-        if state.save_config_for_checked(config, revision, &checked).map_err(|e| e.to_string())?.is_some() {
-            return Ok(result);
-        }
-    }
+    commit_activation(state, &checked.ok_or("This AI was removed.")?, switched, choice)?;
+    Ok(result)
 }
 
-fn unique_id(state: &AppState, kind: ProviderKind) -> String {
+fn commit_activation(state: &AppState, checked: &ProviderProfile, model: Option<String>, choice: u64) -> CmdResult<()> {
+    state.update_provider_config(Some(choice), |config| {
+        let saved = config.providers.iter_mut().find(|p| p.id == checked.id).ok_or("This AI was removed.")?;
+        let mut current = saved.clone();
+        current.api_key = state.profile_key(saved)?;
+        if &current != checked {
+            return Err("This AI’s settings changed while it was being checked. Try again.".into());
+        }
+        if let Some(model) = model {
+            saved.model = model;
+        }
+        config.active_provider = Some(checked.id.clone());
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub fn use_builtin_provider(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
+    use_builtin(&state)?;
+    crate::show_ai_status(&app);
+    Ok(())
+}
+
+fn use_builtin(state: &AppState) -> CmdResult<()> {
+    let choice = state.begin_provider_choice();
+    state.update_provider_config(Some(choice), |config| {
+        config.active_provider = None;
+        Ok(())
+    })
+}
+
+fn unique_id(config: &Config, kind: ProviderKind) -> String {
     let base = ProviderProfile::new(kind).id;
-    let config = state.config();
     let mut id = base.clone();
     let mut n = 2;
     while config.providers.iter().any(|p| p.id == id) {
@@ -543,31 +574,33 @@ fn unique_id(state: &AppState, kind: ProviderKind) -> String {
 
 #[tauri::command]
 pub fn add_provider(state: State<'_, AppState>, kind: ProviderKind) -> CmdResult<ProviderProfile> {
-    let mut profile = ProviderProfile::new(kind);
-    profile.id = unique_id(&state, kind);
-    let mut config = state.config();
-    // Not made active here: that waits for its key and a passing check (`activate_provider`).
-    config.providers.push(profile.clone());
-    state.save_config(config).map_err(|e| e.to_string())?;
-    Ok(profile)
+    state.update_provider_config(None, |config| {
+        let mut profile = ProviderProfile::new(kind);
+        profile.id = unique_id(config, kind);
+        config.providers.push(profile.clone());
+        Ok(profile)
+    })
 }
 
 #[tauri::command]
 pub fn remove_provider(app: AppHandle, state: State<'_, AppState>, profile_id: String) -> CmdResult<()> {
-    let mut config = state.config();
-    let kind = config.providers.iter().find(|p| p.id == profile_id).map(|p| p.kind);
-    config.providers.retain(|p| p.id != profile_id);
-    // Removing the AI in use returns reviews to the built-in one.
-    if config.active_provider.as_deref() == Some(profile_id.as_str()) {
-        config.active_provider = None;
-    }
-    if let Some(kind) = kind {
-        secrets::delete(kind, &profile_id);
-        state.set_cached_key(kind, &profile_id, None);
-    }
-    state.save_config(config).map_err(|e| e.to_string())?;
+    let result = remove(&state, &secrets::CredentialStore, &profile_id);
     crate::show_ai_status(&app);
-    Ok(())
+    result
+}
+
+fn remove(state: &AppState, secrets: &dyn secrets::Secrets, profile_id: &str) -> CmdResult<()> {
+    let choice = state.begin_provider_choice();
+    state.update_provider_config(Some(choice), |config| {
+        if let Some(profile) = config.providers.iter().find(|p| p.id == profile_id) {
+            state.write_key(secrets, profile.kind, profile_id, None)?;
+        }
+        config.providers.retain(|p| p.id != profile_id);
+        if config.active_provider.as_deref() == Some(profile_id) {
+            config.active_provider = None;
+        }
+        Ok(())
+    })
 }
 
 #[derive(Serialize)]
@@ -582,7 +615,7 @@ pub struct TestResult {
 /// Sends a tiny proofreading request and reports latency.
 #[tauri::command]
 pub async fn test_provider(state: State<'_, AppState>, profile_id: String) -> CmdResult<TestResult> {
-    let profile = state.profile(&profile_id).ok_or("Unknown provider.")?;
+    let profile = state.profile(&profile_id)?.ok_or("Unknown provider.")?;
     let providers = &state.engine.providers;
     providers.warm(&profile).await;
     let request = ChatRequest {
@@ -606,21 +639,60 @@ pub async fn test_provider(state: State<'_, AppState>, profile_id: String) -> Cm
     })
 }
 
+#[derive(Serialize, Clone)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct OllamaPullProgress {
+    request_id: String,
+    progress: PullProgress,
+}
+
 #[tauri::command]
 pub async fn pull_ollama_model(
     app: AppHandle,
     state: State<'_, AppState>,
+    request_id: String,
+    profile_id: String,
     base_url: String,
     model: String,
-) -> CmdResult<()> {
+) -> CmdResult<ProviderCheck> {
+    let choice = state.begin_provider_choice();
+    let checked = state.profile(&profile_id)?.ok_or("This AI was removed.")?;
+    if checked.kind != ProviderKind::Ollama || checked.base_url != base_url {
+        return Err("This Ollama server’s settings changed. Try again.".into());
+    }
     state
         .engine
         .providers
         .ollama_pull(&base_url, &model, &mut |progress| {
-            let _ = app.emit_to("settings", "settings:pull", &progress);
+            let _ = app.emit_to(
+                "settings",
+                "settings:pull",
+                OllamaPullProgress { request_id: request_id.clone(), progress },
+            );
         })
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    let result = activate_pulled(&state, &state.engine.providers, &checked, model, choice).await?;
+    crate::show_ai_status(&app);
+    Ok(result)
+}
+
+async fn activate_pulled(
+    state: &AppState,
+    servers: &impl Servers,
+    checked: &ProviderProfile,
+    model: String,
+    choice: u64,
+) -> CmdResult<ProviderCheck> {
+    let mut requested = checked.clone();
+    requested.model = model.clone();
+    let result = check_profile(servers, Some(&requested)).await;
+    if !result.ready {
+        return Err(result.problem.unwrap_or_else(|| "This AI isn’t working yet.".into()));
+    }
+    commit_activation(state, checked, Some(model), choice)?;
+    Ok(result)
 }
 
 #[derive(Serialize)]

@@ -17,12 +17,13 @@
      * couldn't be saved. */
     saveNow: () => Promise<boolean>;
     reload: () => Promise<void>;
+    onWriteFailure: (message: string, error: unknown) => void;
     /** Scan as soon as the page opens (Get Started's "Find my AI accounts"); cleared once it starts. */
     scanOnOpen?: boolean;
     /** Shown until setup is finished: returns to Get Started. */
     backToSetup?: (() => void) | null;
   }
-  let { config = $bindable(), keys, saveNow, reload, scanOnOpen = $bindable(false), backToSetup = null }: Props = $props();
+  let { config = $bindable(), keys, saveNow, reload, onWriteFailure, scanOnOpen = $bindable(false), backToSetup = null }: Props = $props();
   /** The AI that became the one in use on this visit, for the way back to Get Started. */
   let setUp = $state("");
   /** Draws the eye to the scan row when Get Started sent the user here. */
@@ -104,6 +105,13 @@
     }
   }
 
+  function offerRetryForChangedSettings(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.startsWith("The settings file changed on disk.")) return false;
+    onWriteFailure("Couldn’t save the AI settings.", error);
+    return true;
+  }
+
   /** Saves a found account and makes it the AI in use if it passes its check. */
   function adopt(c: Candidate) {
     return makeChoice(async () => {
@@ -119,6 +127,7 @@
         if (p) await recheck(p);
         if (config.active_provider === profile.id) setUp = profile.label;
       } catch (e) {
+        if (offerRetryForChangedSettings(e)) return;
         adoptErrors[c.index] = String(e);
         await reload();
         const added = profilesOf(c.kind).find((q) => q.base_url === c.baseUrl);
@@ -194,26 +203,41 @@
       await reload();
       if (config.active_provider === p.id) setUp = p.label;
     } catch (e) {
+      if (offerRetryForChangedSettings(e)) {
+        delete checks[p.id];
+        return;
+      }
       // The check behind the refusal, for a problem Settings words itself.
       const again = await api.checkProvider(p.id).catch(() => null);
       checks[p.id] = again && !again.ready ? again : { ready: false, problem: String(e), code: null, models: [] };
     }
   }
 
+  async function findOrAdd(kind: ProviderKind): Promise<ProviderProfile | null> {
+    const existing = profileFor(kind);
+    if (existing) return existing;
+    try {
+      await api.addProvider(kind);
+    } catch (error) {
+      onWriteFailure("Couldn’t add the AI.", error);
+      return null;
+    }
+    await reload();
+    return profileFor(kind);
+  }
+
   function choose(choice: Choice) {
     return makeChoice(async () => {
-      opened = choice;
       if (choice === "builtin") {
+        opened = choice;
         if (builtin?.available) await useBuiltin();
         return;
       }
-      let p = profileFor(choice);
-      if (!p) {
-        await api.addProvider(choice);
-        await reload();
-        p = profileFor(choice);
+      const p = await findOrAdd(choice);
+      if (p) {
+        opened = choice;
+        await tryActivate(p);
       }
-      if (p) await tryActivate(p);
     });
   }
 
@@ -227,21 +251,23 @@
   /** Opens an AI's setup (adding it if needed) without making it the one in use. */
   function openSetup(kind: ProviderKind) {
     return makeChoice(async () => {
-      opened = kind;
-      let p = profileFor(kind);
-      if (!p) {
-        await api.addProvider(kind);
-        await reload();
-        p = profileFor(kind);
+      const p = await findOrAdd(kind);
+      if (p) {
+        opened = kind;
+        await recheck(p);
       }
-      if (p) await recheck(p);
     });
   }
 
   /** Returns reviews to the built-in AI (or the rule-based checker without one), keeping this AI
    * and its key for later. Works whether or not Apple Intelligence is available. */
   async function useBuiltin() {
-    await api.useBuiltinProvider();
+    try {
+      await api.useBuiltinProvider();
+    } catch (error) {
+      onWriteFailure("Couldn’t switch to the built-in AI.", error);
+      return;
+    }
     await reload();
     setUp = "";
     opened = "builtin";
@@ -252,7 +278,7 @@
     return makeChoice(async () => {
       // Unsaved, the check would run against the address or model the app still has.
       if (!(await saveNow())) {
-        checks[p.id] = { ready: false, problem: "Couldn’t save this change. Change it again to retry", code: null, models: [] };
+        checks[p.id] = { ready: false, problem: "Couldn’t save this change. Select Retry in Settings.", code: null, models: [] };
         return;
       }
       await tryActivate(p);
@@ -261,7 +287,12 @@
 
   function saveKey(p: ProviderProfile) {
     return makeChoice(async () => {
-      await api.setKey(p.id, keyDrafts[p.id] ?? "");
+      try {
+        await api.setKey(p.id, keyDrafts[p.id] ?? "");
+      } catch (error) {
+        onWriteFailure("Couldn’t save the API key.", error);
+        return;
+      }
       keyDrafts[p.id] = "";
       await reload();
       await tryActivate(p);
@@ -275,6 +306,8 @@
         nextGeneration(p.id);
         delete checks[p.id];
         opened = "builtin";
+      } catch (error) {
+        onWriteFailure("Couldn’t remove the AI.", error);
       } finally {
         await reload();
       }
@@ -305,7 +338,7 @@
         await reload();
         if (config.active_provider === id) setUp = label;
       } catch (e) {
-        pulling = { profileId: id, status: `⚠︎ ${e}`, pct: 0 };
+        pulling = offerRetryForChangedSettings(e) ? null : { profileId: id, status: `⚠︎ ${e}`, pct: 0 };
       } finally {
         pullRequest = null;
       }

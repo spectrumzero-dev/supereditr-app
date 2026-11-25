@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/svelte";
+import { fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import { afterEach, expect, it, vi } from "vitest";
 import App from "./App.svelte";
 import { api } from "./ipc";
@@ -106,6 +106,232 @@ it("names the model setup fields for the provider and check result on screen", a
   expect(await screen.findByRole("combobox", { name: "Model" })).toBeTruthy();
   expect(screen.getByRole("textbox", { name: "Server URL" })).toBeTruthy();
   expect(screen.getByRole("textbox", { name: "Download a model", description: /Small models/ })).toBeTruthy();
+});
+
+it("keeps a failed edit and saves it with Retry after merging a change made outside Settings", async () => {
+  const original = await api.get();
+  const fresh = {
+    ...original,
+    config: { ...original.config, onboarded: true, words: ["Rhyan"], excluded_apps: ["com.example.QuillPoint"] },
+    revision: 1,
+  };
+  const get = vi.spyOn(api, "get").mockResolvedValue(fresh);
+  const save = vi.spyOn(api, "save")
+    .mockRejectedValueOnce("The settings file changed on disk.")
+    .mockResolvedValueOnce({ revision: 3, problems: [], recovery: null });
+
+  render(App);
+  await screen.findByRole("heading", { name: "Models" });
+  await fireEvent.click(await screen.findByRole("button", { name: "Dictionary" }));
+  await fireEvent.input(screen.getByPlaceholderText(/Rhyan/), { target: { value: "Brynlee" } });
+  await fireEvent.click(screen.getByRole("button", { name: "Add" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Couldn’t save your changes.");
+  expect(screen.getByRole("button", { name: "Remove Brynlee" })).toBeTruthy();
+
+  get.mockResolvedValue({
+    ...fresh,
+    revision: 2,
+    config: { ...fresh.config, words: ["Rhyan", "Kyndal"], excluded_apps: [...fresh.config.excluded_apps, "com.example.Rhyan"] },
+  });
+  await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await screen.findByText("Saved");
+  expect(get).toHaveBeenLastCalledWith(true);
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({
+    words: ["Rhyan", "Kyndal", "Brynlee"],
+    excluded_apps: ["com.example.QuillPoint", "com.example.Rhyan"],
+  }), 2);
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+});
+
+it("offers to reload an unreadable settings file and restores controls when it is repaired", async () => {
+  const original = await api.get();
+  const recovery = {
+    path: "/example/settings.json",
+    issues: ["Settings must contain a valid JSON object."],
+    writable: false,
+    exclusionsSafe: false,
+    destinationSafe: false,
+    unavailableProviderIds: [],
+    providerIdsComplete: false,
+  };
+  const get = vi.spyOn(api, "get").mockResolvedValue({ ...original, recovery });
+  const save = vi.spyOn(api, "save");
+  render(App);
+  expect((await screen.findByRole("status")).textContent).toContain("SuperEditr couldn’t load your settings");
+  await fireEvent.click(screen.getByRole("button", { name: "Dictionary" }));
+  expect(screen.queryByRole("heading", { name: "Dictionary" })).toBeNull();
+
+  get.mockResolvedValue({ ...original, recovery: null });
+  await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByRole("heading", { name: "Dictionary" })).toBeTruthy();
+  expect(save).not.toHaveBeenCalled();
+});
+
+it("keeps a model edit pending until the affected profile can be recovered", async () => {
+  const original = await api.get();
+  const profile = original.config.providers[0];
+  const other = { ...profile, id: "quillpoint", label: "QuillPoint" };
+  const restored = { ...other, label: "Brynlee", model: "recovered-model" };
+  const fresh = {
+    ...original,
+    config: { ...original.config, onboarded: true, active_provider: profile.id, providers: [profile, other] },
+    revision: 1,
+  };
+  const get = vi.spyOn(api, "get").mockResolvedValue(fresh);
+  const save = vi.spyOn(api, "save")
+    .mockRejectedValueOnce("The settings file changed on disk.")
+    .mockResolvedValueOnce({ revision: 4, problems: [], recovery: null });
+  render(App);
+
+  const model = await screen.findByRole("textbox");
+  await fireEvent.input(model, { target: { value: "new-model" } });
+  await fireEvent.change(model);
+  expect((await screen.findByRole("alert")).textContent).toContain("Couldn’t save your changes.");
+
+  get.mockImplementation(async () => ({
+    ...fresh,
+    revision: 2,
+    config: { ...fresh.config, providers: [restored] },
+    recovery: {
+      path: "/example/settings.json", issues: ["providers", "active_provider"],
+      writable: true, exclusionsSafe: true, destinationSafe: false,
+      unavailableProviderIds: [profile.id], providerIdsComplete: true,
+    },
+  }));
+  await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByText(/Your changes are still pending/)).toBeTruthy();
+  expect(save).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+
+  get.mockResolvedValue({
+    ...fresh, revision: 3,
+    config: { ...fresh.config, providers: [{ ...profile, label: "QuillPoint" }, restored] },
+  });
+  await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await screen.findByText("Saved");
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({
+    providers: [{ ...profile, label: "QuillPoint", model: "new-model" }, restored],
+  }), 3);
+});
+
+it("keeps a pending dictionary spelling while saving healthy settings and restores it after repair", async () => {
+  const original = await api.get();
+  const fresh = { ...original, revision: 1, config: { ...original.config, words: ["Rhyan"], diagnostic_log: true } };
+  const recovery = {
+    path: "/example/settings.json", issues: ["words"], writable: true,
+    exclusionsSafe: true, destinationSafe: true, unavailableProviderIds: [], providerIdsComplete: true,
+  };
+  const get = vi.spyOn(api, "get").mockImplementation(async () => ({ ...fresh }));
+  const save = vi.spyOn(api, "save")
+    .mockRejectedValueOnce("The settings file changed on disk.")
+    .mockResolvedValueOnce({ revision: 3, problems: [], recovery })
+    .mockResolvedValueOnce({ revision: 5, problems: [], recovery: null });
+  render(App);
+  await fireEvent.click(await screen.findByRole("button", { name: "Dictionary" }));
+  await fireEvent.click(await screen.findByRole("button", { name: "Remove Rhyan" }));
+  await fireEvent.input(screen.getByPlaceholderText(/Rhyan/), { target: { value: "rhyan" } });
+  await fireEvent.click(screen.getByRole("button", { name: "Add" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Couldn’t save your changes.");
+
+  get.mockResolvedValue({ ...fresh, revision: 2, recovery });
+  await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByText(/Your changes are still pending/)).toBeTruthy();
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "Remove Rhyan" }).disabled).toBe(true);
+  expect(screen.getByRole<HTMLInputElement>("textbox", { name: "Words to keep" }).disabled).toBe(true);
+  expect(save).toHaveBeenCalledTimes(1);
+
+  await fireEvent.click(screen.getByRole("button", { name: "General" }));
+  await fireEvent.click(await screen.findByRole("checkbox", { name: "Keep a diagnostic log" }));
+  await waitFor(() => expect(save).toHaveBeenLastCalledWith(expect.objectContaining({
+    words: ["Rhyan"], diagnostic_log: false,
+  }), 2));
+  expect(screen.getByText(/Your changes are still pending/)).toBeTruthy();
+
+  get.mockResolvedValue({
+    ...fresh, revision: 4, config: { ...fresh.config, words: ["Rhyan", "Brynlee"], diagnostic_log: false },
+  });
+  await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(save).toHaveBeenLastCalledWith(expect.objectContaining({
+    words: ["rhyan", "Brynlee"], diagnostic_log: false,
+  }), 4));
+});
+
+it("shows Retry when adding or removing a profile fails", async () => {
+  const original = await api.get();
+  const profile = original.config.providers[0];
+  const fresh = { ...original, config: { ...original.config, onboarded: true, active_provider: profile.id } };
+  const get = vi.spyOn(api, "get").mockResolvedValue(fresh);
+  const add = vi.spyOn(api, "addProvider").mockRejectedValue("The settings file changed on disk.");
+  const remove = vi.spyOn(api, "removeProvider").mockRejectedValue("The settings file changed on disk.");
+  render(App);
+
+  await fireEvent.click(await screen.findByRole("radio", { name: /Ollama/ }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Couldn’t add the AI.");
+  expect(add).toHaveBeenCalledWith("ollama");
+  await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  expect(get).toHaveBeenLastCalledWith(true);
+
+  await fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Couldn’t remove the AI.");
+  expect(remove).toHaveBeenCalledWith(profile.id);
+  expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
+});
+
+it("reloads a changed settings file before retrying a credential save", async () => {
+  const original = await api.get();
+  const profile = original.config.providers[0];
+  const fresh = { ...original, recovery: null, config: { ...original.config, onboarded: true, active_provider: profile.id } };
+  const get = vi.spyOn(api, "get").mockResolvedValue(fresh);
+  const setKey = vi.spyOn(api, "setKey")
+    .mockRejectedValueOnce("The settings file changed on disk.")
+    .mockResolvedValueOnce(undefined);
+  const activate = vi.spyOn(api, "activateProvider").mockResolvedValue({ ready: true, problem: null, models: [], code: null });
+  render(App);
+
+  async function enterAndSaveKey() {
+    await fireEvent.input(await screen.findByLabelText("API key"), { target: { value: "fixture-key" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  }
+
+  await enterAndSaveKey();
+  expect((await screen.findByRole("alert")).textContent).toContain("Couldn’t save the API key.");
+  expect(activate).not.toHaveBeenCalled();
+  await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  expect(get).toHaveBeenLastCalledWith(true);
+  expect(setKey).toHaveBeenCalledExactlyOnceWith(profile.id, "fixture-key");
+
+  await enterAndSaveKey();
+  await waitFor(() => expect(activate).toHaveBeenCalledExactlyOnceWith(profile.id));
+  expect(setKey).toHaveBeenCalledTimes(2);
+});
+
+it("reloads a changed settings file before retrying Stop using", async () => {
+  const original = await api.get();
+  const profile = original.config.providers[0];
+  let fresh: typeof original = {
+    ...original, recovery: null, config: { ...original.config, onboarded: true, active_provider: profile.id },
+  };
+  const get = vi.spyOn(api, "get").mockImplementation(async () => fresh);
+  const builtin = vi.spyOn(api, "useBuiltinProvider")
+    .mockRejectedValueOnce("The settings file changed on disk.")
+    .mockImplementationOnce(async () => {
+      fresh = { ...fresh, config: { ...fresh.config, active_provider: null } };
+    });
+  render(App);
+
+  await fireEvent.click(await screen.findByRole("button", { name: "Stop using" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Couldn’t switch to the built-in AI.");
+  await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  expect(get).toHaveBeenLastCalledWith(true);
+  expect(builtin).toHaveBeenCalledTimes(1);
+
+  await fireEvent.click(await screen.findByRole("button", { name: "Stop using" }));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Stop using" })).toBeNull());
+  expect(builtin).toHaveBeenCalledTimes(2);
 });
 
 async function openLicences() {

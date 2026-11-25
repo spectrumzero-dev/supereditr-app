@@ -1,18 +1,21 @@
 <script lang="ts">
   import type { Config } from "../lib/types";
+  import { wordIdentity } from "./merge";
 
   interface Props {
     config: Config;
     onchange: () => void;
+    wordsReadOnly: boolean;
   }
-  let { config = $bindable(), onchange }: Props = $props();
+  let { config = $bindable(), onchange, wordsReadOnly }: Props = $props();
   let newWord = $state("");
 
   const dialects = ["American English", "British English", "Canadian English", "Australian English", "Indian English"];
 
   function addWord() {
+    if (wordsReadOnly) return;
     const word = newWord.trim();
-    if (word && !config.words.some((w) => w.toLowerCase() === word.toLowerCase())) {
+    if (wordIdentity(word) && !config.words.some((w) => wordIdentity(w) === wordIdentity(word))) {
       config.words = [...config.words, word];
       onchange();
     }
@@ -20,7 +23,8 @@
   }
 
   function removeWord(word: string) {
-    config.words = config.words.filter((w) => w !== word);
+    if (wordsReadOnly) return;
+    config.words = config.words.filter((w) => wordIdentity(w) !== wordIdentity(word));
     onchange();
   }
 </script>
@@ -37,13 +41,13 @@
   <div class="group">
     <div class="row column">
       <form class="add-word" onsubmit={(e) => { e.preventDefault(); addWord(); }}>
-        <input type="text" aria-labelledby="words-to-keep" bind:value={newWord} placeholder="e.g. Rhyan, or 1234 Glenmoor Ct" spellcheck="false" />
-        <button class="btn small" type="submit" disabled={!newWord.trim()}>Add</button>
+        <input type="text" aria-labelledby="words-to-keep" bind:value={newWord} placeholder="e.g. Rhyan, or 1234 Glenmoor Ct" spellcheck="false" disabled={wordsReadOnly} />
+        <button class="btn small" type="submit" disabled={wordsReadOnly || !newWord.trim()}>Add</button>
       </form>
       {#if config.words.length}
         <ul class="words">
           {#each config.words as word (word)}
-            <li>{word}<button aria-label={`Remove ${word}`} title="Remove" onclick={() => removeWord(word)}>×</button></li>
+            <li>{word}<button aria-label={`Remove ${word}`} title="Remove" disabled={wordsReadOnly} onclick={() => removeWord(word)}>×</button></li>
           {/each}
         </ul>
       {:else}
@@ -96,6 +100,10 @@
   }
   .words button:hover {
     color: var(--text);
+  }
+  .words button:disabled {
+    cursor: default;
+    opacity: 0.5;
   }
   .add-word {
     display: flex;

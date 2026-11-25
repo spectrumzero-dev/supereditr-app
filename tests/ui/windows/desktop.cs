@@ -20,6 +20,8 @@ public static class Desk {
   struct InputUnion { [FieldOffset(0)] public MOUSEINPUT mi; [FieldOffset(0)] public KEYBDINPUT ki; }
   [StructLayout(LayoutKind.Sequential)]
   struct INPUT { public uint type; public InputUnion u; }
+  [StructLayout(LayoutKind.Sequential)]
+  struct POINT { public int X, Y; }
   public struct RECT { public int Left, Top, Right, Bottom; }
 
   [DllImport("user32.dll", SetLastError = true)] static extern uint SendInput(uint n, INPUT[] inputs, int size);
@@ -33,6 +35,10 @@ public static class Desk {
   [DllImport("user32.dll")] static extern bool AttachThreadInput(uint a, uint b, bool attach);
   [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(POINT point);
+  [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);
+  [DllImport("user32.dll")] static extern IntPtr SendMessageTimeout(IntPtr h, uint message, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
+  [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT point);
   [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
@@ -96,15 +102,41 @@ public static class Desk {
   }
 
   /// <summary>Moves the pointer to a point on the screen, in physical pixels, and clicks the left button there.</summary>
-  public static void Click(int x, int y) {
-    SetCursorPos(x, y);
+  public static void Click(int x, int y) { ClickAt(x, y, IntPtr.Zero); }
+
+  /// <summary>Activates a fixture window through an exposed part of its title bar.</summary>
+  public static bool ClickCaption(IntPtr window) {
+    RECT rect;
+    if (window == IntPtr.Zero || !GetWindowRect(window, out rect)) return false;
+    int y = rect.Top + (int)(16 * GetDpiForWindow(window) / 96);
+    foreach (int fraction in new int[] { 4, 3, 2 }) {
+      if (ClickAt(rect.Right - (rect.Right - rect.Left) / fraction, y, window)) return true;
+    }
+    return false;
+  }
+
+  static bool ClickAt(int x, int y, IntPtr window) {
+    bool moved = SetCursorPos(x, y);
     Thread.Sleep(100);
+    const uint root = 2; // GA_ROOT
+    if (window != IntPtr.Zero) {
+      POINT point;
+      IntPtr hit;
+      int screenPoint = unchecked((int)((uint)(ushort)x | (uint)(ushort)y << 16));
+      const uint hitTest = 0x0084, abortIfHung = 2; // WM_NCHITTEST, SMTO_ABORTIFHUNG
+      const int caption = 2; // HTCAPTION, excludes tabs, buttons and text
+      if (SendMessageTimeout(window, hitTest, IntPtr.Zero, new IntPtr(screenPoint), abortIfHung, 150, out hit) == IntPtr.Zero ||
+          hit.ToInt64() != caption) return false;
+      if (!moved || !GetCursorPos(out point) || point.X != x || point.Y != y ||
+          GetAncestor(WindowFromPoint(point), root) != window) return false;
+    }
     foreach (uint flag in new uint[] { 2, 4 }) {  // left button down, then up
       var i = new INPUT { type = 0 };
       i.u.mi = new MOUSEINPUT { dwFlags = flag };
       Send(new List<INPUT> { i });
       Thread.Sleep(40);
     }
+    return true;
   }
 
   /// <summary>Types text as Unicode characters, independent of the keyboard layout.</summary>

@@ -32,6 +32,7 @@ mod updater;
 use state::AppState;
 #[cfg(not(target_os = "linux"))]
 use std::sync::atomic::Ordering;
+use supereditr_core::config::ConfigFile;
 use supereditr_core::install::Install;
 use supereditr_core::provider::{ProviderKind, ProviderProfile};
 #[cfg(not(target_os = "linux"))]
@@ -117,7 +118,7 @@ pub fn show_ai_status(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
-        let label = match state.config().active_profile() {
+        let label = match state.configured_profile() {
             Some(profile) => {
                 let name = profile.kind.display_name();
                 let result = commands::check(&state, &profile.id).await;
@@ -255,9 +256,24 @@ const OLD_IDENTIFIER: &str = "com.sghael.supereditr";
 /// first time this version runs, so an update isn't taken for a first run. The old folder stays as
 /// it is. Returns whether it copied the settings.
 fn copy_old_settings(config_dir: &std::path::Path) -> std::io::Result<bool> {
+    use std::io::{self, ErrorKind, Write};
     let old = config_dir.with_file_name(OLD_IDENTIFIER);
-    if config_dir.join("settings.json").exists() || !old.join("settings.json").is_file() {
+    let current = config_dir.join("settings.json");
+    if !matches!(std::fs::symlink_metadata(&current), Err(e) if e.kind() == ErrorKind::NotFound) {
         return Ok(false);
+    }
+    let legacy = old.join("settings.json");
+    let bytes = match std::fs::read(&legacy) {
+        Err(e)
+            if e.kind() == ErrorKind::NotFound
+                && matches!(std::fs::symlink_metadata(&legacy), Err(e) if e.kind() == ErrorKind::NotFound) =>
+        {
+            return Ok(false);
+        }
+        result => result?,
+    };
+    if !serde_json::from_slice::<serde_json::Value>(&bytes).is_ok_and(|value| value.is_object()) {
+        return Err(io::Error::new(ErrorKind::InvalidData, "the previous settings file is not a JSON object"));
     }
     std::fs::create_dir_all(config_dir)?;
     let copy = |name: &str| -> std::io::Result<()> {
@@ -276,19 +292,26 @@ fn copy_old_settings(config_dir: &std::path::Path) -> std::io::Result<bool> {
     if let Err(e) = copy("install.json") {
         eprintln!("SuperEditr: couldn't copy the first-run record from before 0.1.2: {e}");
     }
-    copy("settings.json")?;
-    Ok(true)
+    let mut file = tempfile::NamedTempFile::new_in(config_dir)?;
+    file.write_all(&bytes)?;
+    file.as_file().sync_all()?;
+    // A file created since the check above belongs to the current version.
+    match file.persist_noclobber(&current) {
+        Ok(_) => Ok(true),
+        Err(e) if e.error.kind() == ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(e.error),
+    }
 }
 
-/// The settings file for this launch, and whether its settings were just copied from before
-/// 0.1.2. When the copy fails, this launch keeps its settings in another file, so settings.json
-/// stays missing and the next launch tries the copy again.
-fn settings_file(config_dir: &std::path::Path) -> (std::path::PathBuf, bool) {
-    match copy_old_settings(config_dir) {
-        Ok(copied) => (config_dir.join("settings.json"), copied),
+/// Load the current file, checking the previous location before treating it as a first run.
+fn load_app_settings(path: &std::path::Path) -> ConfigFile {
+    match copy_old_settings(path.parent().expect("settings have a config directory")) {
+        Ok(_) => ConfigFile::load(path),
         Err(e) => {
-            eprintln!("SuperEditr: couldn't copy the settings from before 0.1.2 into {}: {e}", config_dir.display());
-            (config_dir.join("settings-until-copied.json"), false)
+            eprintln!("SuperEditr: couldn't copy the settings from before 0.1.2 into {}: {e}", path.display());
+            ConfigFile::unavailable(
+                "SuperEditr couldn’t copy the settings from its previous folder. Check the file in the old com.sghael.supereditr folder and retry.",
+            )
         }
     }
 }
@@ -298,6 +321,10 @@ fn settings_file(config_dir: &std::path::Path) -> (std::path::PathBuf, bool) {
 /// on, each launch points the login item (a Launch Agent on macOS, an XDG autostart entry on Linux)
 /// at the current copy, so moving the app doesn't break it.
 fn launch_at_login_by_default(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    if !state.allow_startup_settings_changes() {
+        return;
+    }
     // The path the autostart plugin writes into the login item.
     let Some(exe) = std::env::current_exe()
         .and_then(|exe| if cfg!(windows) { Ok(exe) } else { exe.canonicalize() })
@@ -309,9 +336,7 @@ fn launch_at_login_by_default(app: &AppHandle) {
     if !platform::lasting_app_path(&exe) {
         return;
     }
-    let state = app.state::<AppState>();
-    let mut config = state.config();
-    if config.offered_launch_at_login {
+    if state.config().offered_launch_at_login {
         // Rewritten only when the app has moved: macOS announces every change to a login item.
         if login_item_moved(app, &exe)
             && let Err(e) = login_item::enable(app)
@@ -325,8 +350,10 @@ fn launch_at_login_by_default(app: &AppHandle) {
         return;
     }
     platform::reload_autostart();
-    config.offered_launch_at_login = true;
-    if let Err(e) = state.save_config(config) {
+    if let Err(e) = state.update_config(None, |_, config| {
+        config.offered_launch_at_login = true;
+        Some(())
+    }) {
         eprintln!("SuperEditr: couldn't save settings: {e}");
     }
 }
@@ -509,12 +536,16 @@ pub fn run() {
                 app.handle().plugin(tauri_nspanel::init())?;
             }
             let config_dir = app.path().app_config_dir()?;
-            let (settings, _) = settings_file(&config_dir);
+            let settings = config_dir.join("settings.json");
             let install = config_dir.join("install.json");
-            if let Err(e) = Install::record(&install, env!("CARGO_PKG_VERSION"), settings.exists()) {
+            let loaded = load_app_settings(&settings);
+            let state = AppState::with_settings(settings, loaded);
+            if state.allow_startup_settings_changes()
+                && let Err(e) = Install::record(&install, env!("CARGO_PKG_VERSION"), state.config_path.exists())
+            {
                 eprintln!("SuperEditr: couldn't record the first run in {}: {e}", install.display());
             }
-            app.manage(AppState::new(settings));
+            app.manage(state);
             launch_at_login_by_default(app.handle());
             app.manage(hotkeys::Registry::default());
             // The windows are made here, after the state their pages' commands read, rather than by
@@ -622,8 +653,11 @@ pub fn run() {
             // Settings opens by itself on the first run, until Get Started is done or, on Linux,
             // the desktop is set up (SuperEditr then opens at login, so Settings would open at every
             // login); and on macOS while Accessibility isn't granted, since nothing works without it.
-            let first_run = !handle.state::<AppState>().config().onboarded && !platform::desktop_set_up();
-            if first_run || (cfg!(target_os = "macos") && !platform::accessibility_trusted(false)) {
+            let state = handle.state::<AppState>();
+            let first_run = !state.config().onboarded && !platform::desktop_set_up();
+            if !state.allow_startup_settings_changes() {
+                show_settings(&handle, Some("privacy".into()));
+            } else if first_run || (cfg!(target_os = "macos") && !platform::accessibility_trusted(false)) {
                 show_settings(&handle, Some(if first_run { "welcome".into() } else { "privacy".into() }));
             }
             Ok(())
@@ -730,9 +764,10 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_failed_copy_is_tried_again_on_the_next_launch() {
-        use super::settings_file;
+    fn a_failed_copy_is_read_only_until_it_can_be_retried() {
+        use super::load_app_settings;
         use std::os::unix::fs::PermissionsExt;
+        use supereditr_core::config::LoadStatus;
         let root = std::env::temp_dir().join(format!("supereditr-old-retry-{}", std::process::id()));
         let old = root.join(OLD_IDENTIFIER);
         let new = root.join("app.supereditr");
@@ -745,16 +780,12 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
             return;
         }
-        // This launch saves its settings elsewhere, defaults included.
-        let (settings, copied) = settings_file(&new);
-        assert!(!copied);
-        assert_ne!(settings, new.join("settings.json"));
-        std::fs::write(&settings, r#"{"onboarded": false}"#).unwrap();
+        let settings = new.join("settings.json");
+        assert_eq!(load_app_settings(&settings).status(), LoadStatus::Unreadable);
+        assert!(!new.exists(), "the failed migration writes nothing");
 
         std::fs::set_permissions(&old_settings, std::fs::Permissions::from_mode(0o644)).unwrap();
-        let (settings, copied) = settings_file(&new);
-        assert!(copied, "the next launch copies the old settings");
-        assert_eq!(settings, new.join("settings.json"));
+        assert_eq!(load_app_settings(&settings).status(), LoadStatus::Clean);
         assert_eq!(std::fs::read_to_string(settings).unwrap(), r#"{"onboarded": true}"#);
         std::fs::remove_dir_all(root).unwrap();
     }

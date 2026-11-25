@@ -6,6 +6,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::time::Instant;
 use supereditr_core::Config;
+use supereditr_core::config::{ConfigFile, LoadStatus};
 use supereditr_core::detect::{self, Candidate};
 use supereditr_core::policy::{Os, is_password_manager};
 use supereditr_core::provider::{
@@ -63,12 +64,15 @@ pub fn overlay_typing(app: AppHandle, typing: bool) {
 /// already has it.
 #[tauri::command]
 pub fn add_word(app: AppHandle, state: State<'_, AppState>, word: String) -> CmdResult<bool> {
-    let mut config = state.config();
-    if !supereditr_core::words::add(&mut config.words, &word) {
+    let saved = state
+        .update_config(None, |_, config| {
+            supereditr_core::words::add(&mut config.words, &word).then(|| config.words.clone())
+        })
+        .map_err(|e| e.to_string())?;
+    let Some((_, words)) = saved else {
         return Ok(false);
-    }
-    state.save_config(config.clone()).map_err(|e| e.to_string())?;
-    prepare_words(&state, config.words);
+    };
+    prepare_words(&state, words);
     let _ = app.emit_to("settings", "settings:reload", ());
     Ok(true)
 }
@@ -76,10 +80,14 @@ pub fn add_word(app: AppHandle, state: State<'_, AppState>, word: String) -> Cmd
 /// The panel's key tips were closed: turns "always show" off, so they stay closed.
 #[tauri::command]
 pub fn hide_tips(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
-    let mut config = state.config();
-    if config.always_show_tips {
-        config.always_show_tips = false;
-        state.save_config(config).map_err(|e| e.to_string())?;
+    let saved = state
+        .update_config(None, |_, config| {
+            let changed = config.always_show_tips;
+            config.always_show_tips = false;
+            changed.then_some(())
+        })
+        .map_err(|e| e.to_string())?;
+    if saved.is_some() {
         let _ = app.emit_to("settings", "settings:reload", ());
     }
     Ok(())
@@ -117,6 +125,37 @@ pub struct SettingsPayload {
     key_labels: HashMap<String, String>,
     /// The revision `config` was saved at, for `save_settings`.
     revision: u64,
+    recovery: Option<SettingsRecovery>,
+}
+
+#[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+struct SettingsRecovery {
+    path: String,
+    issues: Vec<&'static str>,
+    writable: bool,
+    exclusions_safe: bool,
+    destination_safe: bool,
+    unavailable_provider_ids: Vec<String>,
+    provider_ids_complete: bool,
+}
+
+fn recovery(state: &AppState, settings: &ConfigFile) -> Option<SettingsRecovery> {
+    (!settings.issues.is_empty()).then(|| {
+        let mut unavailable_provider_ids: Vec<_> =
+            settings.unavailable_provider_ids().into_iter().map(str::to_owned).collect();
+        unavailable_provider_ids.sort_unstable();
+        SettingsRecovery {
+            path: state.config_path.display().to_string(),
+            issues: settings.issues.clone(),
+            writable: settings.status() != LoadStatus::Unreadable,
+            exclusions_safe: settings.exclusions_safe,
+            destination_safe: settings.destination_safe,
+            unavailable_provider_ids,
+            provider_ids_complete: settings.provider_ids_complete(),
+        }
+    })
 }
 
 /// What became of a save from Settings.
@@ -128,11 +167,21 @@ pub struct Saved {
     revision: Option<u64>,
     /// Shortcuts that couldn't be registered.
     problems: Vec<String>,
+    recovery: Option<SettingsRecovery>,
 }
 
 #[tauri::command]
-pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> SettingsPayload {
-    let (config, revision) = state.config_at_revision();
+pub fn get_settings(app: AppHandle, state: State<'_, AppState>, reread: Option<bool>) -> SettingsPayload {
+    if reread == Some(true) {
+        let (previous, current) = state.retry_settings(|| crate::load_app_settings(&state.config_path));
+        review::dismiss(&app, None);
+        let mut effects = settings_effects(&previous, &current);
+        effects.show_ai_status = true;
+        effects.refresh_app_toggle = true;
+        apply_settings_effects(&app, &state, effects);
+    }
+    let (config, revision, recovery) =
+        state.read_settings(|settings, revision| (settings.config.clone(), revision, recovery(&state, settings)));
     let started = std::time::Instant::now();
     let keys =
         config.providers.iter().map(|p| (p.id.clone(), state.profile_key(p).is_ok_and(|key| key.is_some()))).collect();
@@ -156,6 +205,7 @@ pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> SettingsPaylo
         #[cfg(not(windows))]
         key_labels: HashMap::new(),
         revision,
+        recovery,
     }
 }
 
@@ -167,24 +217,29 @@ pub fn save_settings(
     config: Config,
     revision: Option<u64>,
 ) -> CmdResult<Saved> {
-    let Some((revision, effects)) = save_from_settings(&state, config.clone(), revision)? else {
-        return Ok(Saved { revision: None, problems: Vec::new() });
+    let Some((revision, effects)) = save_from_settings(&state, config, revision)? else {
+        return Ok(Saved { revision: None, problems: Vec::new(), recovery: None });
     };
-    let revision = Some(revision);
+    let problems = apply_settings_effects(&app, &state, effects);
+    let recovery = state.read_settings(|settings, _| recovery(&state, settings));
+    Ok(Saved { revision: Some(revision), problems, recovery })
+}
+
+fn apply_settings_effects(app: &AppHandle, state: &AppState, effects: SettingsEffects) -> Vec<String> {
     if effects.show_ai_status {
-        crate::show_ai_status(&app);
+        crate::show_ai_status(app);
     }
     if effects.prepare_words {
-        prepare_words(&state, config.words);
+        prepare_words(state, state.config().words);
     }
     if effects.refresh_app_toggle {
-        crate::app_toggle::refresh(&app);
+        crate::app_toggle::refresh(app);
     }
     if effects.register_shortcuts {
-        return Ok(Saved { revision, problems: hotkeys::register_from_config(&app) });
+        return hotkeys::register_from_config(app);
     }
     // The shortcuts weren't touched, so any the desktop refused still are.
-    Ok(Saved { revision, problems: refused_shortcuts() })
+    refused_shortcuts()
 }
 
 /// Saves a config from Settings, unless it was read before another save. Returns the new revision
@@ -197,14 +252,17 @@ pub(crate) fn save_from_settings(
     if config.presets.is_empty() {
         return Err("Keep at least one style.".into());
     }
-    let previous = state.config();
-    // A password manager is never read, so it stays on the excluded apps it was on.
-    for id in previous.excluded_apps.iter().filter(|id| is_password_manager(Os::CURRENT, id)) {
-        config.set_excluded(id, true);
-    }
-    let effects = settings_effects(&previous, &config);
-    let saved = state.save_config_based_on(config, revision).map_err(|e| e.to_string())?;
-    Ok(saved.map(|revision| (revision, effects)))
+    state
+        .update_config(revision, |previous, next| {
+            // A password manager is never read, so it stays on the excluded apps it was on.
+            for id in previous.config.excluded_apps.iter().filter(|id| is_password_manager(Os::CURRENT, id)) {
+                config.set_excluded(id, true);
+            }
+            let effects = settings_effects(&previous.config, &config);
+            *next = config;
+            Some(effects)
+        })
+        .map_err(|e| e.to_string())
 }
 
 /// What a settings change needs done besides saving it.
@@ -261,7 +319,7 @@ pub(crate) fn store_api_key(
     profile_id: &str,
     key: Option<String>,
 ) -> CmdResult<bool> {
-    state.update_provider_config(None, |config| {
+    state.update_provider_config(None, |_, config| {
         let profile = config.providers.iter().find(|p| p.id == profile_id).ok_or("Unknown provider.")?;
         let key = key.map(|key| key.trim().to_string()).filter(|key| !key.is_empty());
         if !secrets::can_store_key(profile.kind) {
@@ -362,19 +420,18 @@ pub(crate) async fn adopt(
     }
     let key = profile.api_key.take();
     // Persist its ID before writing a key, so a failed save cannot leave an untracked key.
-    state.update_provider_config(Some(choice), |config| {
-        profile.id = unique_id(config, profile.kind);
+    state.update_provider_config(Some(choice), |settings, config| {
+        profile.id = unique_id(settings, profile.kind);
         config.providers.push(profile.clone());
         Ok(())
     })?;
     if let Some(key) = key {
-        state.update_provider_config(Some(choice), |config| {
+        state.update_provider_config(Some(choice), |_, config| {
             if !config.providers.contains(&profile) {
                 return Err("This AI’s settings changed while it was being added. Try again.".into());
             }
             let result = state.write_key(secrets, profile.kind, &profile.id, Some(key));
-            // On a refused save, discard the new profile only if the store confirms that
-            // no key was written. Otherwise its ID makes cleanup possible.
+            // A refused save can still have written the key. Keep its ID until cleanup is verified.
             if result.is_err() && secrets.get(&secrets::account(profile.kind, &profile.id)) == Ok(None) {
                 config.providers.retain(|saved| saved.id != profile.id);
             }
@@ -546,7 +603,7 @@ async fn activate_choice(
 }
 
 fn commit_activation(state: &AppState, checked: &ProviderProfile, model: Option<String>, choice: u64) -> CmdResult<()> {
-    state.update_provider_config(Some(choice), |config| {
+    state.update_provider_config(Some(choice), |_, config| {
         let saved = config.providers.iter_mut().find(|p| p.id == checked.id).ok_or("This AI was removed.")?;
         let mut current = saved.clone();
         current.api_key = state.profile_key(saved)?;
@@ -563,24 +620,17 @@ fn commit_activation(state: &AppState, checked: &ProviderProfile, model: Option<
 
 #[tauri::command]
 pub fn use_builtin_provider(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
-    use_builtin(&state)?;
+    state.use_builtin_provider()?;
     crate::show_ai_status(&app);
     Ok(())
 }
 
-fn use_builtin(state: &AppState) -> CmdResult<()> {
-    let choice = state.begin_provider_choice();
-    state.update_provider_config(Some(choice), |config| {
-        config.active_provider = None;
-        Ok(())
-    })
-}
-
-fn unique_id(config: &Config, kind: ProviderKind) -> String {
+fn unique_id(settings: &ConfigFile, kind: ProviderKind) -> String {
     let base = ProviderProfile::new(kind).id;
     let mut id = base.clone();
     let mut n = 2;
-    while config.providers.iter().any(|p| p.id == id) {
+    let unavailable = settings.reserved_provider_ids();
+    while unavailable.contains(id.as_str()) || settings.config.providers.iter().any(|p| p.id == id) {
         id = format!("{base}-{n}");
         n += 1;
     }
@@ -589,9 +639,9 @@ fn unique_id(config: &Config, kind: ProviderKind) -> String {
 
 #[tauri::command]
 pub fn add_provider(state: State<'_, AppState>, kind: ProviderKind) -> CmdResult<ProviderProfile> {
-    state.update_provider_config(None, |config| {
+    state.update_provider_config(None, |settings, config| {
         let mut profile = ProviderProfile::new(kind);
-        profile.id = unique_id(config, kind);
+        profile.id = unique_id(settings, kind);
         config.providers.push(profile.clone());
         Ok(profile)
     })
@@ -606,7 +656,7 @@ pub fn remove_provider(app: AppHandle, state: State<'_, AppState>, profile_id: S
 
 fn remove(state: &AppState, secrets: &dyn secrets::Secrets, profile_id: &str) -> CmdResult<()> {
     let choice = state.begin_provider_choice();
-    state.update_provider_config(Some(choice), |config| {
+    state.update_provider_config(Some(choice), |_, config| {
         if let Some(profile) = config.providers.iter().find(|p| p.id == profile_id)
             && secrets::can_store_key(profile.kind)
         {
@@ -913,7 +963,8 @@ pub fn launch_at_login(app: AppHandle) -> bool {
 
 /// Turns opening at login on or off and returns the state macOS now reports.
 #[tauri::command]
-pub fn set_launch_at_login(app: AppHandle, enabled: bool) -> CmdResult<bool> {
+pub fn set_launch_at_login(app: AppHandle, state: State<'_, AppState>, enabled: bool) -> CmdResult<bool> {
+    require_readable_settings(&state)?;
     let result = if enabled { crate::login_item::enable(&app) } else { crate::login_item::disable(&app) };
     result.map_err(|e| format!("Couldn't change opening at login: {e}"))?;
     #[cfg(target_os = "linux")]
@@ -940,6 +991,7 @@ pub fn set_up_omarchy(app: AppHandle, state: State<'_, AppState>) -> CmdResult<V
     #[cfg(target_os = "linux")]
     {
         use tauri_plugin_autostart::ManagerExt;
+        require_readable_settings(&state)?;
         let config_home = platform::setup::config_home().ok_or("HOME isn’t set")?;
         let mut done = platform::setup::add_flags(&config_home).map_err(|e| format!("Couldn’t add the flag: {e}"))?;
         if !platform::setup::autostart_check(&config_home).ok {
@@ -947,11 +999,13 @@ pub fn set_up_omarchy(app: AppHandle, state: State<'_, AppState>) -> CmdResult<V
             platform::setup::reload_autostart();
             done.push("Turned on opening at login".into());
         }
-        let mut config = state.config();
-        if !config.offered_launch_at_login {
-            config.offered_launch_at_login = true;
-            state.save_config(config).map_err(|e| e.to_string())?;
-        }
+        state
+            .update_config(None, |_, config| {
+                let changed = !config.offered_launch_at_login;
+                config.offered_launch_at_login = true;
+                changed.then_some(())
+            })
+            .map_err(|e| e.to_string())?;
         Ok(done)
     }
     #[cfg(not(target_os = "linux"))]
@@ -959,6 +1013,13 @@ pub fn set_up_omarchy(app: AppHandle, state: State<'_, AppState>) -> CmdResult<V
         let _ = (app, state);
         Err("Set up Omarchy is for Linux.".into())
     }
+}
+
+fn require_readable_settings(state: &AppState) -> CmdResult<()> {
+    state
+        .read_settings(|settings, _| settings.status() != LoadStatus::Unreadable)
+        .then_some(())
+        .ok_or_else(|| "Repair the settings file and retry loading it.".into())
 }
 
 /// Takes out what Set up Omarchy added, as `supereditr uninstall-omarchy` does. Returns what it did.

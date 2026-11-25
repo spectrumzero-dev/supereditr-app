@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { mergeUnsaved, saveUntilCurrent } from "./merge";
+import type { ProviderProfile } from "../lib/types";
+import { mergeUnsaved, needsRepairBeforeMerge, saveUntilCurrent } from "./merge";
 
 const base = { style_notes: "", auto_popup: true, excluded_apps: ["com.1password.1password"], words: ["Rhyan"] };
 
@@ -19,10 +20,70 @@ describe("mergeUnsaved", () => {
     expect(mergeUnsaved(base, { ...base }, fresh)).toEqual(fresh);
   });
 
-  it("lets the user's own edit win a field both changed", () => {
+  it("keeps a deliberate exclusion removal alongside another writer's addition", () => {
     const unsaved = { ...base, excluded_apps: [] };
     const fresh = { ...base, excluded_apps: ["com.1password.1password", "com.apple.TextEdit"] };
-    expect(mergeUnsaved(base, unsaved, fresh).excluded_apps).toEqual([]);
+    expect(mergeUnsaved(base, unsaved, fresh).excluded_apps).toEqual(["com.apple.TextEdit"]);
+  });
+
+  it("merges dictionary changes and matches entries using the dictionary's identity", () => {
+    const original = { words: ["  İona ", "QuillPoint", "Kyndal"] };
+    const unsaved = { words: ["QuillPoint", "kyndal", "Brynlee"] };
+    const fresh = { words: ["iona", "Kyndal", "brynlee", "Rhyan"] };
+    expect(mergeUnsaved(original, unsaved, fresh).words).toEqual(["kyndal", "brynlee", "Rhyan"]);
+    expect(mergeUnsaved(base, { ...base, words: ["Rhyan", "Brynlee"] }, { ...base, words: ["Rhyan", "Kyndal"] }).words)
+      .toEqual(["Rhyan", "Kyndal", "Brynlee"]);
+  });
+
+  it("does not restore an exclusion removed by another writer", () => {
+    const original = { excluded_apps: ["com.example.QuillPoint"] };
+    const unsaved = { excluded_apps: ["com.example.quillpoint", "com.example.Brynlee"] };
+    const fresh = { excluded_apps: ["com.example.brynlee", "com.example.Rhyan"] };
+    expect(mergeUnsaved(original, unsaved, fresh).excluded_apps).toEqual(fresh.excluded_apps);
+  });
+
+  it("merges providers by ID, respecting removals and disjoint edits to a profile", () => {
+    const provider = (id: string): ProviderProfile => ({
+      id, kind: "ollama", label: id, base_url: "http://127.0.0.1:11434", model: "original",
+    });
+    const kept = provider("kept");
+    const removedHere = provider("removed-here");
+    const removedElsewhere = provider("removed-elsewhere");
+    const original = { providers: [kept, removedHere, removedElsewhere], active_provider: null as string | null };
+    const unsaved = {
+      providers: [{ ...kept, model: "new-model" }, { ...removedElsewhere, model: "discarded" }, provider("local")],
+      active_provider: "removed-elsewhere",
+    };
+    const fresh = {
+      providers: [{ ...kept, base_url: "http://127.0.0.1:11435" }, removedHere, provider("other")],
+      active_provider: null,
+    };
+    expect(mergeUnsaved(original, unsaved, fresh)).toEqual({
+      providers: [{ ...kept, model: "new-model", base_url: "http://127.0.0.1:11435" }, provider("other"), provider("local")],
+      active_provider: null,
+    });
+  });
+
+  it("defers only when the edited profile is unavailable or its removal can't be established", () => {
+    const profile: ProviderProfile = {
+      id: "kept", kind: "ollama", label: "Ollama", base_url: "http://127.0.0.1:11434", model: "original",
+    };
+    const original = { ...base, providers: [profile], active_provider: null };
+    const unsaved = { ...original, words: [...original.words, "Brynlee"], providers: [{ ...profile, model: "new-model" }] };
+    const config = { ...original, providers: [] };
+    const recovery = {
+      path: "/example/settings.json", issues: ["providers"], writable: true,
+      exclusionsSafe: true, destinationSafe: true, unavailableProviderIds: ["other"], providerIdsComplete: true,
+    };
+
+    expect(needsRepairBeforeMerge(original, unsaved, { config, recovery })).toBe(false);
+    expect(mergeUnsaved(original, unsaved, config)).toEqual({ ...config, words: ["Rhyan", "Brynlee"] });
+    expect(needsRepairBeforeMerge(original, unsaved, {
+      config, recovery: { ...recovery, unavailableProviderIds: [profile.id] },
+    })).toBe(true);
+    expect(needsRepairBeforeMerge(original, unsaved, {
+      config, recovery: { ...recovery, providerIdsComplete: false },
+    })).toBe(true);
   });
 });
 

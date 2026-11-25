@@ -89,7 +89,7 @@ mod tests {
     use super::*;
     use std::sync::TryLockError;
     use std::sync::mpsc::{Receiver, Sender, channel};
-    use supereditr_core::config::Config;
+    use supereditr_core::config::ConfigFile;
 
     struct HeldLine {
         started: Sender<()>,
@@ -114,13 +114,14 @@ mod tests {
         let log_dir = || Some(dir.clone());
         let log = DiagnosticLog::new();
 
-        let mut config = Config::load(&config_path);
+        let mut settings = ConfigFile::load(&config_path);
+        let mut config = settings.config.clone();
         log.set_enabled(config.diagnostic_log, log_dir);
         log.append(format_args!("review before opt-in"), log_dir);
         assert!(!current.exists() && !rotated.exists());
 
         config.diagnostic_log = true;
-        config.save(&config_path).unwrap();
+        settings.save(&config_path, config.clone()).unwrap();
         log.set_enabled(config.diagnostic_log, log_dir);
         log.append(format_args!("review after opt-in"), log_dir);
         assert!(std::fs::read_to_string(&current).unwrap().contains("review after opt-in"));
@@ -132,7 +133,7 @@ mod tests {
         let line = HeldLine { started, finish: held };
         let log = &log;
         config.diagnostic_log = false;
-        config.save(&config_path).unwrap();
+        settings.save(&config_path, config.clone()).unwrap();
         std::thread::scope(|threads| {
             threads.spawn(move || log.append(format_args!("{line}"), log_dir));
             writing.recv().unwrap();
@@ -151,7 +152,7 @@ mod tests {
         assert!(!current.exists() && !rotated.exists());
 
         let restarted = DiagnosticLog::new();
-        restarted.set_enabled(Config::load(&config_path).diagnostic_log, log_dir);
+        restarted.set_enabled(ConfigFile::load(&config_path).config.diagnostic_log, log_dir);
         restarted.append(format_args!("review after restart"), log_dir);
         assert!(!current.exists() && !rotated.exists());
         std::fs::remove_dir_all(&dir).unwrap();

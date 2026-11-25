@@ -10,7 +10,7 @@
   import Welcome from "./Welcome.svelte";
   import LinuxSetup from "./LinuxSetup.svelte";
   import { api } from "./ipc";
-  import { mergeUnsaved, saveUntilCurrent } from "./merge";
+  import { mergeUnsaved, needsRepairBeforeMerge, saveUntilCurrent } from "./merge";
   import { isLinux, isMac, isWindows, setKeyLabels, setPlatform } from "../lib/platform";
 
   type Section = "welcome" | "setup" | "models" | "styles" | "dictionary" | "general" | "shortcuts" | "privacy" | "about" | "licences";
@@ -32,6 +32,10 @@
   let section = $state<Section>("welcome");
   let problems = $state<string[]>([]);
   let saved = $state(false);
+  let failure = $state("");
+  let retrying = $state(false);
+  let waitingForRepair = $state(false);
+  let dictionaryDraft = $state<{ base: string[]; edited: string[] } | null>(null);
   let timer: ReturnType<typeof setTimeout> | undefined;
   /** The config as Settings last loaded or saved it: what the user's unsaved changes are measured from. */
   let base: Config | null = null;
@@ -40,8 +44,8 @@
   /** Changes made here, and how many of them a finished save has reached. */
   let edits = 0;
   let savedEdits = 0;
-  /** Saves run one at a time, each based on the revision the one before it made. */
-  let saving: Promise<unknown> = Promise.resolve();
+  /** Apply save and reload responses in order so a late response can't replace a newer base. */
+  let pending: Promise<unknown> = Promise.resolve();
   /** Set by Get Started's "Find my AI accounts": Models scans as soon as it opens. */
   let scanOnOpen = $state(false);
 
@@ -50,14 +54,43 @@
     section = "models";
   }
 
-  async function reload() {
-    const fresh = await api.get();
+  function enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const done = pending.then(operation);
+    pending = done.catch(() => {});
+    return done;
+  }
+
+  async function load(reread = false) {
+    const fresh = await api.get(reread);
     setPlatform(fresh.platform);
     setKeyLabels(fresh.keyLabels ?? {});
     const latest = structuredClone(fresh.config);
+    waitingForRepair = false;
     // Changes waiting to be saved, or still being saved, survive a reload.
     if (config && base && edits !== savedEdits) {
-      fresh.config = mergeUnsaved(base, $state.snapshot(config) as Config, fresh.config);
+      const unsaved = $state.snapshot(config) as Config;
+      if (fresh.recovery?.writable && fresh.recovery.issues.includes("words")
+        && JSON.stringify(base.words) !== JSON.stringify(unsaved.words)) {
+        dictionaryDraft = { base: base.words, edited: unsaved.words };
+        unsaved.words = base.words;
+        if (JSON.stringify(unsaved) === JSON.stringify(base)) savedEdits = edits;
+      }
+      if (needsRepairBeforeMerge(base, unsaved, fresh)) {
+        waitingForRepair = true;
+        failure = "Your changes are still pending. Repair the affected settings and select Retry.";
+        payload = fresh;
+        return;
+      }
+      fresh.config = mergeUnsaved(base, unsaved, fresh.config);
+    }
+    if (dictionaryDraft && fresh.recovery?.writable !== false && !fresh.recovery?.issues.includes("words")) {
+      fresh.config.words = mergeUnsaved(
+        { words: $state.snapshot(dictionaryDraft.base) },
+        { words: $state.snapshot(dictionaryDraft.edited) },
+        { words: fresh.config.words },
+      ).words;
+      dictionaryDraft = null;
+      edits++;
     }
     base = latest;
     revision = fresh.revision;
@@ -66,10 +99,29 @@
     config = payload.config;
   }
 
+  function reload() {
+    return enqueue(async () => {
+      try {
+        await load();
+      } catch (error) {
+        failure = `Couldn’t load settings. ${errorMessage(error)}`;
+      }
+    });
+  }
+
+  function errorMessage(error: unknown) {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  function settingsWriteFailed(message: string, error: unknown) {
+    saved = false;
+    failure = `${message} ${errorMessage(error)}`;
+  }
+
   function onchange() {
     edits++;
     clearTimeout(timer);
-    timer = setTimeout(() => (saving = saving.then(() => save()).catch(console.error)), 250);
+    timer = setTimeout(() => void enqueue(save), 250);
   }
 
   /** Saves now, in turn with any other save, for a step that needs the change saved first (checking
@@ -78,29 +130,54 @@
   function saveNow(): Promise<boolean> {
     edits++;
     clearTimeout(timer);
-    const done = saving.then(() => save());
-    saving = done.catch(console.error);
-    return done;
+    return enqueue(save);
   }
 
   /** Saves the whole config. When the app has saved it since Settings loaded or saved it, the app
    * refuses, and Settings reloads, keeping its unsaved changes, and tries again. If the app keeps
    * refusing, the changes stay unsaved until the next one, and this returns false. */
   async function save(): Promise<boolean> {
-    return saveUntilCurrent(async () => {
-      if (!config || edits === savedEdits) return true;
-      const reached = edits;
-      const snapshot = $state.snapshot(config) as Config;
-      const result = await api.save(snapshot, revision);
-      if (result.revision === null) return false;
-      problems = result.problems;
-      revision = result.revision;
-      base = snapshot;
-      savedEdits = reached;
-      saved = true;
-      setTimeout(() => (saved = false), 1200);
-      return true;
-    }, reload);
+    saved = false;
+    try {
+      const done = await saveUntilCurrent(async () => {
+        if (!config || edits === savedEdits) return true;
+        if (waitingForRepair || payload?.recovery?.writable === false) return false;
+        const reached = edits;
+        const snapshot = $state.snapshot(config) as Config;
+        const result = await api.save(snapshot, revision);
+        if (result.revision === null) return false;
+        if (payload) payload.recovery = result.recovery;
+        problems = result.problems;
+        revision = result.revision;
+        base = snapshot;
+        savedEdits = reached;
+        saved = true;
+        setTimeout(() => (saved = false), 1200);
+        return true;
+      }, load);
+      failure = done ? "" : waitingForRepair
+        ? "Your changes are still pending. Repair the affected settings and select Retry."
+        : "Couldn’t save your changes. Try again.";
+      return done;
+    } catch (error) {
+      settingsWriteFailed("Couldn’t save your changes.", error);
+      return false;
+    }
+  }
+
+  function retry() {
+    retrying = true;
+    clearTimeout(timer);
+    void enqueue(async () => {
+      try {
+        await load(true);
+        await save();
+      } catch (error) {
+        failure = `Couldn’t load settings. ${errorMessage(error)}`;
+      } finally {
+        retrying = false;
+      }
+    });
   }
 
   function finish() {
@@ -126,6 +203,7 @@
     const refresh = () => reload();
     window.addEventListener("focus", refresh);
     return () => {
+      clearTimeout(timer);
       stop?.();
       stopReload?.();
       window.removeEventListener("focus", refresh);
@@ -164,7 +242,39 @@
   </aside>
   <main>
     <div class="drag" data-tauri-drag-region></div>
-    {#if config && payload}
+    {#if payload?.recovery || failure}
+      <section class="recovery" aria-label="Settings recovery">
+        {#if payload?.recovery}
+          {@const recovery = payload.recovery}
+          <div role="status">
+            {#if recovery.writable}
+              <strong>Some settings need attention</strong>
+              <p>Check these fields in the settings file. {recovery.issues.join(", ")}.</p>
+              {#if recovery.issues.includes("providers")}
+                <p>Unavailable AI profiles are kept in the file.</p>
+              {/if}
+            {:else}
+              <strong>SuperEditr couldn’t load your settings</strong>
+              <p>{recovery.issues.join(" ")}</p>
+            {/if}
+            {#if !recovery.exclusionsSafe}
+              <p>Reviewing text from other apps is paused until your excluded apps can be read.</p>
+            {/if}
+            {#if !recovery.destinationSafe}
+              <p>Reviews use on-device checks while the selected AI is unavailable.</p>
+            {/if}
+            <p>To reload a repaired file, select Retry.</p>
+            <code>{recovery.path}</code>
+          </div>
+        {/if}
+        {#if failure}<p role="alert">{failure}</p>{/if}
+        {#if dictionaryDraft && !waitingForRepair}
+          <p>Your changes are still pending. Repair the dictionary and select Retry.</p>
+        {/if}
+        <button class="btn small" disabled={retrying} onclick={retry}>Retry</button>
+      </section>
+    {/if}
+    {#if config && payload && !retrying && !waitingForRepair && payload.recovery?.writable !== false}
       {#if section === "welcome"}
         <Welcome bind:config accessibility={payload.accessibility} {saveNow} {finish} openModels={() => (section = "models")} {findAccounts} />
       {:else if section === "models"}
@@ -173,13 +283,14 @@
           keys={payload.keys}
           {saveNow}
           {reload}
+          onWriteFailure={settingsWriteFailed}
           bind:scanOnOpen
           backToSetup={config.onboarded ? null : () => (section = "welcome")}
         />
       {:else if section === "styles"}
         <Styles bind:config {onchange} openModels={() => (section = "models")} />
       {:else if section === "dictionary"}
-        <Dictionary bind:config {onchange} />
+        <Dictionary bind:config {onchange} wordsReadOnly={payload.recovery?.issues.includes("words") ?? false} />
       {:else if section === "general"}
         <General bind:config logPath={payload.logPath} {onchange} />
       {:else if section === "shortcuts"}
@@ -275,6 +386,23 @@
   .saved {
     font-size: 12px;
     color: var(--text-3);
+  }
+  .recovery {
+    color: var(--warn);
+    background: var(--warn-bg);
+    border-radius: 8px;
+    max-width: 720px;
+    margin-bottom: 16px;
+    padding: 12px;
+  }
+  .recovery p {
+    margin: 4px 0;
+  }
+  .recovery code {
+    overflow-wrap: anywhere;
+  }
+  .recovery button {
+    margin-top: 8px;
   }
   main {
     overflow-y: auto;

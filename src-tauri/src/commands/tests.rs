@@ -39,7 +39,7 @@ fn fake_key(owner: &str) -> String {
 fn add(state: &AppState, kind: ProviderKind, model: &str) -> String {
     let mut profile = ProviderProfile::new(kind);
     let mut config = state.config();
-    profile.id = unique_id(&config, kind);
+    profile.id = state.read_settings(|settings, _| unique_id(settings, kind));
     profile.model = model.into();
     config.providers.push(profile.clone());
     state.save_config(config).unwrap();
@@ -338,7 +338,7 @@ fn a_provider_that_uses_no_key_is_removable_without_a_credential_store() {
     block_on(activate(&state, &FakeServers::offering(&["mistral"]), id.clone())).unwrap();
     remove(&state, &store, &id).unwrap();
     assert!(state.active_profile().is_none());
-    assert!(Config::load(&state.config_path).providers.is_empty());
+    assert!(ConfigFile::load(&state.config_path).config.providers.is_empty());
 }
 
 #[test]
@@ -362,27 +362,33 @@ fn a_failed_alias_delete_keeps_the_provider_for_a_retry() {
     remove(&restarted, &store, &id).unwrap();
     assert!(store.old.lock().unwrap().is_empty());
     assert_eq!(store.key(kind, &unrelated), Some(fake_key("kyndal")));
-    assert_eq!(Config::load(&state.config_path).providers[0].id, unrelated);
+    assert_eq!(ConfigFile::load(&state.config_path).config.providers[0].id, unrelated);
 }
 
 #[test]
-fn a_save_failure_after_deletion_leaves_the_provider_id_for_retry() {
+fn changed_settings_refuse_credential_edits_until_reloaded() {
     let state = test_state();
     let store = FakeSecrets::default();
     let kind = ProviderKind::Gemini;
     let id = add(&state, kind, "gemini-flash");
     store_api_key(&state, &store, &id, Some(fake_key("rhyan"))).unwrap();
-    let temp_file = state.config_path.with_extension("json.tmp");
-    std::fs::create_dir(&temp_file).unwrap();
-    assert!(remove(&state, &store, &id).is_err());
-    assert_eq!(store.key(kind, &id), None);
+    let mut replacement: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&state.config_path).unwrap()).unwrap();
+    replacement["words"] = serde_json::json!(["Brynlee"]);
+    std::fs::write(&state.config_path, serde_json::to_vec(&replacement).unwrap()).unwrap();
+    assert!(remove(&state, &store, &id).unwrap_err().contains("changed on disk"));
+    assert!(store_api_key(&state, &store, &id, Some(fake_key("kyndal"))).unwrap_err().contains("changed on disk"));
+    assert!(store_api_key(&state, &store, &id, None).unwrap_err().contains("changed on disk"));
+    assert_eq!(store.key(kind, &id), Some(fake_key("rhyan")));
     assert_eq!(state.config().providers[0].id, id);
-    std::fs::remove_dir(temp_file).unwrap();
 
     let restarted = AppState::new(state.config_path.clone());
     assert_eq!(restarted.config().providers[0].id, id);
     remove(&restarted, &store, &id).unwrap();
-    assert!(Config::load(&state.config_path).providers.is_empty());
+    let saved = ConfigFile::load(&state.config_path);
+    assert!(saved.config.providers.is_empty());
+    assert_eq!(saved.config.words, ["Brynlee"]);
+    assert_eq!(store.key(kind, &id), None);
 }
 
 // --- activate_provider ---------------------------------------------------------------------
@@ -490,7 +496,8 @@ fn choosing_or_reaffirming_local_review_supersedes_an_older_cloud_check() {
             config.active_provider = Some(id.clone());
             state.save_config(config).unwrap();
         }
-        let servers = FakeServers::offering(&["claude-sonnet-5-5"]).during_check(1, || use_builtin(&state).unwrap());
+        let servers =
+            FakeServers::offering(&["claude-sonnet-5-5"]).during_check(1, || state.use_builtin_provider().unwrap());
         assert_eq!(block_on(activate(&state, &servers, id)).unwrap_err(), "A newer AI choice replaced this one.");
         assert!(state.active_profile().is_none());
         assert!(AppState::new(state.config_path.clone()).config().active_provider.is_none());
@@ -507,7 +514,7 @@ fn an_unrelated_settings_edit_does_not_supersede_a_provider_check() {
         state.save_config(config).unwrap();
     });
     block_on(activate(&state, &servers, id.clone())).unwrap();
-    let saved = Config::load(&state.config_path);
+    let saved = ConfigFile::load(&state.config_path).config;
     assert_eq!(saved.active_provider, Some(id));
     assert_eq!(saved.words, ["Kyndal"]);
 }
@@ -553,7 +560,7 @@ fn a_later_provider_choice_wins_in_either_completion_order_even_if_it_fails() {
             assert_eq!(older.unwrap().unwrap_err(), "A newer AI choice replaced this one.");
             assert_eq!(latest.unwrap().is_ok(), latest_works);
             assert_eq!(state.active_profile().map(|profile| profile.id), latest_works.then_some(second.clone()));
-            assert_eq!(Config::load(&state.config_path).active_provider, latest_works.then_some(second));
+            assert_eq!(ConfigFile::load(&state.config_path).config.active_provider, latest_works.then_some(second));
         }
     }
 }
@@ -573,7 +580,7 @@ fn a_pull_can_only_activate_the_requested_model_on_its_original_profile() {
     block_on(activate_pulled(&state, &servers, &checked, "qwen3:4b".into(), choice)).unwrap();
     assert_eq!(state.profile(&other).unwrap().unwrap().model, "mistral");
     assert_eq!(state.active_profile().unwrap().model, "qwen3:4b");
-    assert_eq!(Config::load(&state.config_path).active_provider, Some(id));
+    assert_eq!(ConfigFile::load(&state.config_path).config.active_provider, Some(id));
 }
 
 // --- adopt_candidate -----------------------------------------------------------------------
@@ -615,7 +622,7 @@ fn a_refused_adoption_does_not_leave_an_empty_profile_if_the_key_is_absent() {
     *state.candidates.lock().unwrap() = vec![candidate(ProviderKind::Anthropic, Some(fake_key("rhyan")), &[])];
     let servers = FakeServers::offering(&["claude-sonnet-5-5"]);
     assert!(block_on(adopt(&state, &store, &servers, 0)).is_err());
-    assert!(Config::load(&state.config_path).providers.is_empty());
+    assert!(ConfigFile::load(&state.config_path).config.providers.is_empty());
     let adopted = block_on(adopt(&state, &FakeSecrets::default(), &servers, 0)).unwrap();
     assert_eq!(adopted.id, "anthropic");
     assert_eq!(state.config().providers.len(), 1);
@@ -628,9 +635,31 @@ fn an_unverified_adoption_keeps_the_provider_id_for_cleanup() {
     *state.candidates.lock().unwrap() = vec![candidate(ProviderKind::Anthropic, Some(fake_key("rhyan")), &[])];
     let servers = FakeServers::offering(&["claude-sonnet-5-5"]);
     assert!(block_on(adopt(&state, &store, &servers, 0)).is_err());
-    let saved = Config::load(&state.config_path);
+    let saved = ConfigFile::load(&state.config_path).config;
     assert_eq!(saved.providers[0].id, "anthropic");
     assert!(saved.active_provider.is_none());
+    assert!(servers.checked.lock().unwrap().is_empty());
+}
+
+#[test]
+fn an_import_refused_after_external_settings_replacement_leaves_the_existing_key() {
+    let state = test_state();
+    let secrets = FakeSecrets::default();
+    let kind = ProviderKind::Anthropic;
+    let existing = ProviderProfile::new(kind);
+    let key = fake_key("rhyan");
+    secrets.set(kind, &existing.id, &key).unwrap();
+    let restored = serde_json::to_vec(&serde_json::json!({ "providers": [existing] })).unwrap();
+    std::fs::create_dir_all(&state.dir).unwrap();
+    std::fs::write(&state.config_path, &restored).unwrap();
+
+    *state.candidates.lock().unwrap() = vec![candidate(kind, Some(fake_key("brynlee")), &[])];
+    let servers = FakeServers::offering(&["claude-sonnet-5-5"]);
+    let error = block_on(adopt(&state, &secrets, &servers, 0)).unwrap_err();
+    assert!(error.contains("changed on disk"));
+    assert_eq!(secrets.key(kind, &existing.id), Some(key));
+    assert_eq!(std::fs::read(&state.config_path).unwrap(), restored);
+    assert!(state.config().providers.is_empty());
 }
 
 #[test]

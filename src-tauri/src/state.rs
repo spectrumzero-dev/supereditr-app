@@ -5,12 +5,13 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant};
+use supereditr_core::config::{ConfigFile, LoadStatus};
 use supereditr_core::detect::Candidate;
 use supereditr_core::provider::{ProviderKind, ProviderProfile};
 use supereditr_core::{Config, Engine};
 
 pub struct AppState {
-    pub config: RwLock<Config>,
+    settings: RwLock<ConfigFile>,
     pub config_path: PathBuf,
     pub engine: Engine,
     /// The review or notice on screen, and the quiet period after a fix.
@@ -269,12 +270,18 @@ impl ReviewState {
 }
 
 impl AppState {
+    #[cfg(test)]
     pub fn new(config_path: PathBuf) -> Self {
-        let config = Config::load(&config_path);
+        let settings = ConfigFile::load(&config_path);
+        Self::with_settings(config_path, settings)
+    }
+
+    pub fn with_settings(config_path: PathBuf, settings: ConfigFile) -> Self {
+        let config = &settings.config;
         crate::platform::set_trace(config.diagnostic_log);
         let engine = Engine::new(&config.dialect);
         Self {
-            config: RwLock::new(config),
+            settings: RwLock::new(settings),
             config_path,
             engine,
             review: Mutex::new(ReviewState::new(Instant::now())),
@@ -290,7 +297,40 @@ impl AppState {
     }
 
     pub fn config(&self) -> Config {
-        self.config.read().unwrap().clone()
+        self.settings.read().unwrap().config.clone()
+    }
+
+    pub fn read_settings<T>(&self, read: impl FnOnce(&ConfigFile, u64) -> T) -> T {
+        let settings = self.settings.read().unwrap();
+        read(&settings, self.revision.load(Ordering::Relaxed))
+    }
+
+    pub fn allow_startup_settings_changes(&self) -> bool {
+        self.read_settings(|settings, _| matches!(settings.status(), LoadStatus::Missing | LoadStatus::Clean))
+    }
+
+    /// Rereads a file the user may have repaired, invalidating saves based on the previous copy.
+    pub fn retry_settings(&self, load: impl FnOnce() -> ConfigFile) -> (Config, Config) {
+        let mut settings = self.settings.write().unwrap();
+        let previous = settings.config.clone();
+        *settings = load();
+        self.provider_choice.fetch_add(1, Ordering::Relaxed);
+        self.watch_generation.fetch_add(1, Ordering::Relaxed);
+        self.config_changed(&settings.config);
+        (previous, settings.config.clone())
+    }
+
+    pub fn exclusions_safe(&self) -> bool {
+        self.read_settings(|settings, _| settings.exclusions_safe)
+    }
+
+    pub fn automatic_enabled(&self) -> bool {
+        self.read_settings(|settings, _| settings.exclusions_safe && settings.config.auto_popup)
+    }
+
+    #[cfg(test)]
+    pub fn edit_config_for_test(&self, edit: impl FnOnce(&mut Config)) {
+        edit(&mut self.settings.write().unwrap().config);
     }
 
     pub fn next_session_id(&self) -> u64 {
@@ -349,22 +389,44 @@ impl AppState {
         result
     }
 
-    /// The active provider with its API key attached, ready for a request. If the store
-    /// refuses to read a required key, reviews stay local and the status can report the failure.
+    /// The active provider with its API key attached, ready for a request. A refused read of a
+    /// required key keeps reviews local and the status can report the failure.
     pub fn active_profile(&self) -> Option<ProviderProfile> {
-        let mut profile = self.config.read().unwrap().active_profile()?.clone();
-        let key = self.profile_key(&profile).ok()?;
-        // Reading the key can wait on the credential store. Use the profile only if its
-        // settings and selection are still current.
-        if self.config.read().unwrap().active_profile() != Some(&profile) {
-            return None;
-        }
-        profile.api_key = key;
-        Some(profile)
+        self.review_config().1
+    }
+
+    /// The active profile's settings, independent of credential store availability.
+    pub fn configured_profile(&self) -> Option<ProviderProfile> {
+        self.read_settings(|settings, _| Self::safe_active_profile(settings).cloned())
+    }
+
+    /// The review settings and the destination chosen by the same settings snapshot.
+    pub fn review_config(&self) -> (Config, Option<ProviderProfile>, bool) {
+        // The credential store may wait for the user. Read the current settings again afterwards.
+        let checked = self.configured_profile().and_then(|profile| {
+            let key = self.profile_key(&profile).ok()?;
+            Some((profile, key))
+        });
+        self.read_settings(|settings, _| {
+            let profile = checked.and_then(|(mut profile, key)| {
+                if Self::safe_active_profile(settings) != Some(&profile) {
+                    return None;
+                }
+                profile.api_key = key;
+                Some(profile)
+            });
+            (settings.config.clone(), profile, settings.exclusions_safe)
+        })
+    }
+
+    fn safe_active_profile(settings: &ConfigFile) -> Option<&ProviderProfile> {
+        settings.destination_safe.then(|| settings.config.active_profile()).flatten()
     }
 
     pub fn profile(&self, id: &str) -> Result<Option<ProviderProfile>, String> {
-        let Some(mut profile) = self.config.read().unwrap().providers.iter().find(|p| p.id == id).cloned() else {
+        let Some(mut profile) =
+            self.read_settings(|settings, _| settings.config.providers.iter().find(|p| p.id == id).cloned())
+        else {
             return Ok(None);
         };
         profile.api_key = self.profile_key(&profile)?;
@@ -380,17 +442,28 @@ impl AppState {
             return Ok(None);
         }
         match self.read_key(store, profile.kind, &profile.id) {
-            // An OpenAI-compatible server can accept requests without a key. If the store is
-            // unavailable, still allow a keyless request to the configured server. This is
-            // separate from checking whether the store actually contains a credential.
+            // An OpenAI-compatible server can accept requests without a key, even when the
+            // credential store cannot confirm whether a key is present.
             Err(_) if !profile.kind.needs_key() => Ok(None),
             result => result,
         }
     }
 
     pub fn begin_provider_choice(&self) -> u64 {
-        let _current = self.config.write().unwrap();
+        let _current = self.settings.write().unwrap();
         self.provider_choice.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    pub fn use_builtin_provider(&self) -> Result<(), String> {
+        let mut current = self.settings.write().unwrap();
+        self.provider_choice.fetch_add(1, Ordering::Relaxed);
+        current.check_source(&self.config_path).map_err(|e| e.to_string())?;
+        let mut config = current.config.clone();
+        if config.active_provider.take().is_some() || !current.destination_safe {
+            current.save_destination_choice(&self.config_path, config).map_err(|e| e.to_string())?;
+            self.config_changed(&current.config);
+        }
+        Ok(())
     }
 
     /// Updates providers in the current settings. The check and the save share the lock with
@@ -398,53 +471,75 @@ impl AppState {
     pub fn update_provider_config<T>(
         &self,
         choice: Option<u64>,
-        update: impl FnOnce(&mut Config) -> Result<T, String>,
+        update: impl FnOnce(&ConfigFile, &mut Config) -> Result<T, String>,
     ) -> Result<T, String> {
-        let mut current = self.config.write().unwrap();
+        let mut current = self.settings.write().unwrap();
         if choice.is_some_and(|choice| choice != self.provider_choice.load(Ordering::Relaxed)) {
             return Err("A newer AI choice replaced this one.".into());
         }
-        let mut config = current.clone();
-        let result = update(&mut config)?;
-        if config.providers != current.providers || config.active_provider != current.active_provider {
-            self.persist_config(&mut current, config).map_err(|e| e.to_string())?;
+        if !current.providers_editable() {
+            return Err("Repair the providers in the settings file and retry loading it.".into());
+        }
+        current.check_source(&self.config_path).map_err(|e| e.to_string())?;
+        let mut config = current.config.clone();
+        let result = update(&current, &mut config)?;
+        if config.providers != current.config.providers || config.active_provider != current.config.active_provider {
+            current.save(&self.config_path, config).map_err(|e| e.to_string())?;
+            self.config_changed(&current.config);
         }
         Ok(result)
     }
 
     /// The settings, and the revision they were saved at.
+    #[cfg(test)]
     pub fn config_at_revision(&self) -> (Config, u64) {
-        let config = self.config.read().unwrap();
-        (config.clone(), self.revision.load(Ordering::Relaxed))
+        self.read_settings(|settings, revision| (settings.config.clone(), revision))
     }
 
+    #[cfg(test)]
     pub fn save_config(&self, config: Config) -> std::io::Result<()> {
         self.save_config_based_on(config, None).map(|_| ())
     }
 
     /// Saves, unless `revision` is given and the settings have been saved since then. Returns the
     /// new revision, or None when the save was refused.
+    #[cfg(test)]
     pub fn save_config_based_on(&self, config: Config, revision: Option<u64>) -> std::io::Result<Option<u64>> {
+        self.update_config(revision, |_, next| {
+            *next = config;
+            Some(())
+        })
+        .map(|saved| saved.map(|(revision, ())| revision))
+    }
+
+    /// Applies an edit to the current copy and commits it under the lock. Returning None from
+    /// the edit skips persistence, for a change that no longer needs to be made.
+    pub fn update_config<T>(
+        &self,
+        revision: Option<u64>,
+        update: impl FnOnce(&ConfigFile, &mut Config) -> Option<T>,
+    ) -> std::io::Result<Option<(u64, T)>> {
         // The revision changes only under this lock, so nothing can save between check and write.
-        let mut current = self.config.write().unwrap();
+        let mut current = self.settings.write().unwrap();
         if revision.is_some_and(|r| r != self.revision.load(Ordering::Relaxed)) {
             return Ok(None);
         }
-        if config.active_provider != current.active_provider {
+        let mut config = current.config.clone();
+        let Some(value) = update(&current, &mut config) else { return Ok(None) };
+        let changed_choice = config.active_provider != current.config.active_provider;
+        current.save(&self.config_path, config)?;
+        if changed_choice {
             self.provider_choice.fetch_add(1, Ordering::Relaxed);
         }
-        self.persist_config(&mut current, config).map(Some)
+        Ok(Some((self.config_changed(&current.config), value)))
     }
 
-    fn persist_config(&self, current: &mut Config, mut config: Config) -> std::io::Result<u64> {
-        config.pin_official_addresses();
-        config.save(&self.config_path)?;
+    fn config_changed(&self, config: &Config) -> u64 {
         crate::platform::set_trace(config.diagnostic_log);
-        *current = config;
         // Any setting may change what a review would say: the AI, its model, the styles, the word
         // list. The next review asks afresh.
         self.last_review.forget();
-        Ok(self.revision.fetch_add(1, Ordering::Relaxed) + 1)
+        self.revision.fetch_add(1, Ordering::Relaxed) + 1
     }
 }
 
@@ -469,6 +564,87 @@ mod tests {
     }
 
     #[test]
+    fn startup_skips_degraded_files_and_retry_adopts_repaired_privacy_and_destination() {
+        let dir = std::env::temp_dir().join(format!("supereditr-recovery-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let missing = AppState::new(path.clone());
+        assert!(missing.allow_startup_settings_changes());
+
+        let broken = br#"{"auto_popup": true, "excluded_apps": false, "active_provider": "future"}"#;
+        for bytes in [b"{".as_slice(), broken] {
+            std::fs::write(&path, bytes).unwrap();
+            let state = AppState::new(path.clone());
+            assert!(!state.allow_startup_settings_changes());
+            assert!(!state.automatic_enabled());
+            assert!(state.active_profile().is_none());
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        std::fs::write(&path, b"{").unwrap();
+        let state = AppState::new(path.clone());
+        let (stale, revision) = state.config_at_revision();
+        assert!(state.save_config(stale.clone()).is_err());
+
+        let repaired = br#"{"auto_popup": true, "excluded_apps": ["com.example.quillpoint"]}"#;
+        std::fs::write(&path, repaired).unwrap();
+        state.retry_settings(|| ConfigFile::load(&path));
+        assert!(state.allow_startup_settings_changes());
+        assert!(state.automatic_enabled());
+        assert!(state.config().is_excluded("com.example.quillpoint"));
+        assert_eq!(state.save_config_based_on(stale, Some(revision)).unwrap(), None);
+        assert_eq!(std::fs::read(&path).unwrap(), repaired);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_native_edits_commit_against_the_latest_settings() {
+        let dir = std::env::temp_dir().join(format!("supereditr-native-edits-{}", std::process::id()));
+        let path = dir.join("settings.json");
+        let state = AppState::new(path.clone());
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                state
+                    .update_config(None, |_, config| config.set_excluded("com.example.QuillPoint", true).then_some(()))
+                    .unwrap();
+            });
+            scope.spawn(|| {
+                state
+                    .update_config(None, |_, config| {
+                        supereditr_core::words::add(&mut config.words, "Brynlee").then_some(())
+                    })
+                    .unwrap();
+            });
+        });
+        let saved = ConfigFile::load(&path).config;
+        assert_eq!(saved.words, ["Brynlee"]);
+        assert!(saved.is_excluded("com.example.quillpoint"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_explicit_builtin_choice_repairs_a_malformed_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, br#"{"active_provider": false}"#).unwrap();
+        let state = AppState::new(path.clone());
+        assert!(state.configured_profile().is_none());
+
+        state
+            .update_config(None, |_, config| {
+                config.always_show_tips = false;
+                Some(())
+            })
+            .unwrap();
+        assert!(!ConfigFile::load(&path).destination_safe);
+        state.use_builtin_provider().unwrap();
+
+        let repaired = ConfigFile::load(&path);
+        assert!(repaired.destination_safe);
+        assert!(repaired.config.active_provider.is_none());
+        assert!(!repaired.config.always_show_tips);
+    }
+
+    #[test]
     fn a_save_based_on_settings_read_before_another_save_is_refused() {
         let dir = std::env::temp_dir().join(format!("supereditr-revision-{}", std::process::id()));
         let state = AppState::new(dir.join("settings.json"));
@@ -482,7 +658,7 @@ mod tests {
         edited.style_notes = "Short sentences.".into();
         assert_eq!(state.save_config_based_on(edited.clone(), Some(read_at)).unwrap(), None);
         assert!(state.config().is_excluded("com.apple.Notes"));
-        assert!(Config::load(&dir.join("settings.json")).is_excluded("com.apple.Notes"));
+        assert!(ConfigFile::load(&dir.join("settings.json")).config.is_excluded("com.apple.Notes"));
         // Based on the current revision, the same save goes through.
         let (_, now) = state.config_at_revision();
         assert_eq!(state.save_config_based_on(edited, Some(now)).unwrap(), Some(now + 1));

@@ -45,13 +45,15 @@ async function picker(active: ProviderProfile) {
   const { config } = await api.get();
   const saveNow = vi.fn(async () => true);
   const reload = vi.fn(async () => {});
+  const onWriteFailure = vi.fn();
   render(Models, {
     config: { ...structuredClone(config), providers: [ollama, openAi], active_provider: active.id },
     keys: {},
     saveNow,
     reload,
+    onWriteFailure,
   });
-  return { saveNow, reload };
+  return { saveNow, reload, onWriteFailure };
 }
 
 const radio = (name: RegExp) => screen.getByRole<HTMLInputElement>("radio", { name });
@@ -75,7 +77,7 @@ beforeEach(() => {
 it("keeps the working provider selected and prevents competing choices until a check fails", async () => {
   const activation = pendingCheck();
   vi.mocked(api.activateProvider).mockReturnValueOnce(activation.promise);
-  await picker(openAi);
+  const { onWriteFailure } = await picker(openAi);
   await fireEvent.click(button("Scan"));
   const [adopt] = await screen.findAllByRole<HTMLButtonElement>("button", { name: "Use" });
   await fireEvent.click(radio(/Ollama/));
@@ -96,6 +98,35 @@ it("keeps the working provider selected and prevents competing choices until a c
   expect(adopt.disabled).toBe(false);
   expect(radio(/^OpenAI API/).checked).toBe(true);
   expect(screen.getByText(/Server unavailable/)).toBeTruthy();
+  expect(onWriteFailure).not.toHaveBeenCalled();
+});
+
+const changedOnDisk = "The settings file changed on disk. Retry to load the current file.";
+
+it("offers Settings retry when activating a provider cannot save its choice", async () => {
+  vi.mocked(api.activateProvider).mockRejectedValueOnce(changedOnDisk);
+  const { onWriteFailure } = await picker(openAi);
+  await fireEvent.click(radio(/Ollama/));
+  await waitFor(() => expect(onWriteFailure).toHaveBeenCalledExactlyOnceWith("Couldn’t save the AI settings.", changedOnDisk));
+  expect(radio(/^OpenAI API/).checked).toBe(true);
+});
+
+it("offers Settings retry when adopting a scanned provider cannot save its profile", async () => {
+  vi.mocked(api.adopt).mockRejectedValueOnce(changedOnDisk);
+  const { onWriteFailure } = await picker(openAi);
+  await fireEvent.click(button("Scan"));
+  const [adopt] = await screen.findAllByRole<HTMLButtonElement>("button", { name: "Use" });
+  await fireEvent.click(adopt);
+  await waitFor(() => expect(onWriteFailure).toHaveBeenCalledExactlyOnceWith("Couldn’t save the AI settings.", changedOnDisk));
+  expect(radio(/^OpenAI API/).checked).toBe(true);
+});
+
+it("offers Settings retry when a model download cannot save its choice", async () => {
+  vi.mocked(api.pull).mockRejectedValueOnce(changedOnDisk);
+  const { onWriteFailure } = await picker(ollama);
+  await fireEvent.click(button("Download"));
+  await waitFor(() => expect(onWriteFailure).toHaveBeenCalledExactlyOnceWith("Couldn’t save the AI settings.", changedOnDisk));
+  expect(button("Download").disabled).toBe(false);
 });
 
 it("keeps Download busy after a layer finishes and checks the original request", async () => {

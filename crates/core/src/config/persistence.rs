@@ -111,19 +111,35 @@ impl ConfigFile {
         }
     }
 
-    pub fn save(&mut self, path: &Path, mut config: Config) -> io::Result<()> {
+    /// Checks that this snapshot still describes the file before an edit changes a credential.
+    pub fn check_source(&self, path: &Path) -> io::Result<()> {
+        let expected = match &self.source {
+            Source::Missing => None,
+            Source::Unreadable => return Err(io::Error::other("Repair the settings file and retry loading it.")),
+            Source::Document { bytes, .. } => Some(bytes.as_slice()),
+        };
+        if read(path)?.as_deref() != expected {
+            return Err(io::Error::other("The settings file changed on disk. Retry to load the current file."));
+        }
+        Ok(())
+    }
+
+    pub fn save(&mut self, path: &Path, config: Config) -> io::Result<()> {
+        self.save_config(path, config, false)
+    }
+
+    /// Saves an explicit destination choice even when the recovered value matches it.
+    pub fn save_destination_choice(&mut self, path: &Path, config: Config) -> io::Result<()> {
+        self.save_config(path, config, true)
+    }
+
+    fn save_config(&mut self, path: &Path, mut config: Config, destination_chosen: bool) -> io::Result<()> {
+        self.check_source(path)?;
         let (expected, fields) = match &self.source {
             Source::Missing => (None, Fields::new()),
             Source::Unreadable => return Err(io::Error::other("Repair the settings file and retry loading it.")),
             Source::Document { bytes, fields } => (Some(bytes.as_slice()), fields.clone()),
         };
-        let unchanged = || -> io::Result<()> {
-            if read(path)?.as_deref() != expected {
-                return Err(io::Error::other("The settings file changed on disk. Retry to load the current file."));
-            }
-            Ok(())
-        };
-        unchanged()?;
         if !self.exclusions_safe
             && (config.excluded_apps != self.config.excluded_apps
                 || config.offered_exclusions != self.config.offered_exclusions)
@@ -145,7 +161,8 @@ impl ConfigFile {
         let mut fields = render(fields, &config, self)?;
         // Choices the user hasn't changed may still refer to an unsupported or damaged record.
         // Keep the exact value in that case, including a future non-string representation.
-        if !self.destination_safe
+        if !destination_chosen
+            && !self.destination_safe
             && config.active_provider == self.config.active_provider
             && let Source::Document { fields: original, .. } = &self.source
             && let Some(active) = original.get("active_provider")
@@ -171,7 +188,7 @@ impl ConfigFile {
         let mut temp = tempfile::NamedTempFile::new_in(parent)?;
         temp.write_all(&bytes)?;
         temp.as_file().sync_all()?;
-        unchanged()?;
+        self.check_source(path)?;
         temp.persist(path).map_err(|e| e.error)?;
         // The replacement is already visible. Keep the in-memory state in step with it even on
         // filesystems that can't confirm the directory entry was flushed.

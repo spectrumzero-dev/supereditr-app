@@ -366,25 +366,29 @@ fn a_failed_alias_delete_keeps_the_provider_for_a_retry() {
 }
 
 #[test]
-fn a_save_failure_after_deletion_leaves_the_provider_id_for_retry() {
+fn changed_settings_refuse_credential_edits_until_reloaded() {
     let state = test_state();
     let store = FakeSecrets::default();
     let kind = ProviderKind::Gemini;
     let id = add(&state, kind, "gemini-flash");
     store_api_key(&state, &store, &id, Some(fake_key("rhyan"))).unwrap();
-    let saved = state.config_path.with_extension("json.saved");
-    std::fs::rename(&state.config_path, &saved).unwrap();
-    std::fs::create_dir(&state.config_path).unwrap();
-    assert!(remove(&state, &store, &id).is_err());
-    assert_eq!(store.key(kind, &id), None);
+    let mut replacement: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&state.config_path).unwrap()).unwrap();
+    replacement["words"] = serde_json::json!(["Brynlee"]);
+    std::fs::write(&state.config_path, serde_json::to_vec(&replacement).unwrap()).unwrap();
+    assert!(remove(&state, &store, &id).unwrap_err().contains("changed on disk"));
+    assert!(store_api_key(&state, &store, &id, Some(fake_key("kyndal"))).unwrap_err().contains("changed on disk"));
+    assert!(store_api_key(&state, &store, &id, None).unwrap_err().contains("changed on disk"));
+    assert_eq!(store.key(kind, &id), Some(fake_key("rhyan")));
     assert_eq!(state.config().providers[0].id, id);
-    std::fs::remove_dir(&state.config_path).unwrap();
-    std::fs::rename(saved, &state.config_path).unwrap();
 
     let restarted = AppState::new(state.config_path.clone());
     assert_eq!(restarted.config().providers[0].id, id);
     remove(&restarted, &store, &id).unwrap();
-    assert!(ConfigFile::load(&state.config_path).config.providers.is_empty());
+    let saved = ConfigFile::load(&state.config_path);
+    assert!(saved.config.providers.is_empty());
+    assert_eq!(saved.config.words, ["Brynlee"]);
+    assert_eq!(store.key(kind, &id), None);
 }
 
 // --- activate_provider ---------------------------------------------------------------------
@@ -492,7 +496,8 @@ fn choosing_or_reaffirming_local_review_supersedes_an_older_cloud_check() {
             config.active_provider = Some(id.clone());
             state.save_config(config).unwrap();
         }
-        let servers = FakeServers::offering(&["claude-sonnet-5-5"]).during_check(1, || use_builtin(&state).unwrap());
+        let servers =
+            FakeServers::offering(&["claude-sonnet-5-5"]).during_check(1, || state.use_builtin_provider().unwrap());
         assert_eq!(block_on(activate(&state, &servers, id)).unwrap_err(), "A newer AI choice replaced this one.");
         assert!(state.active_profile().is_none());
         assert!(AppState::new(state.config_path.clone()).config().active_provider.is_none());

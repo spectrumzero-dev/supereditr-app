@@ -215,13 +215,18 @@ it("keeps a model edit pending until the affected profile can be recovered", asy
   }), 3);
 });
 
-it("keeps a pending dictionary spelling through an unreadable list and saves it after repair", async () => {
+it("keeps a pending dictionary spelling while saving healthy settings and restores it after repair", async () => {
   const original = await api.get();
-  const fresh = { ...original, revision: 1, config: { ...original.config, words: ["Rhyan"] } };
+  const fresh = { ...original, revision: 1, config: { ...original.config, words: ["Rhyan"], diagnostic_log: true } };
+  const recovery = {
+    path: "/example/settings.json", issues: ["words"], writable: true,
+    exclusionsSafe: true, destinationSafe: true, unavailableProviderIds: [], providerIdsComplete: true,
+  };
   const get = vi.spyOn(api, "get").mockImplementation(async () => ({ ...fresh }));
   const save = vi.spyOn(api, "save")
     .mockRejectedValueOnce("The settings file changed on disk.")
-    .mockResolvedValueOnce({ revision: 4, problems: [], recovery: null });
+    .mockResolvedValueOnce({ revision: 3, problems: [], recovery })
+    .mockResolvedValueOnce({ revision: 5, problems: [], recovery: null });
   render(App);
   await fireEvent.click(await screen.findByRole("button", { name: "Dictionary" }));
   await fireEvent.click(await screen.findByRole("button", { name: "Remove Rhyan" }));
@@ -229,24 +234,27 @@ it("keeps a pending dictionary spelling through an unreadable list and saves it 
   await fireEvent.click(screen.getByRole("button", { name: "Add" }));
   expect((await screen.findByRole("alert")).textContent).toContain("Couldn’t save your changes.");
 
-  get.mockResolvedValue({
-    ...fresh,
-    revision: 2,
-    recovery: {
-      path: "/example/settings.json", issues: ["words"], writable: true,
-      exclusionsSafe: true, destinationSafe: true, unavailableProviderIds: [], providerIdsComplete: true,
-    },
-  });
+  get.mockResolvedValue({ ...fresh, revision: 2, recovery });
   await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
   expect(await screen.findByText(/Your changes are still pending/)).toBeTruthy();
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "Remove Rhyan" }).disabled).toBe(true);
+  expect(screen.getByRole<HTMLInputElement>("textbox", { name: "Words to keep" }).disabled).toBe(true);
   expect(save).toHaveBeenCalledTimes(1);
 
+  await fireEvent.click(screen.getByRole("button", { name: "General" }));
+  await fireEvent.click(await screen.findByRole("checkbox", { name: "Keep a diagnostic log" }));
+  await waitFor(() => expect(save).toHaveBeenLastCalledWith(expect.objectContaining({
+    words: ["Rhyan"], diagnostic_log: false,
+  }), 2));
+  expect(screen.getByText(/Your changes are still pending/)).toBeTruthy();
+
   get.mockResolvedValue({
-    ...fresh, revision: 3, config: { ...fresh.config, words: ["Rhyan", "Brynlee"] },
+    ...fresh, revision: 4, config: { ...fresh.config, words: ["Rhyan", "Brynlee"], diagnostic_log: false },
   });
   await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await screen.findByText("Saved");
-  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ words: ["rhyan", "Brynlee"] }), 3);
+  await waitFor(() => expect(save).toHaveBeenLastCalledWith(expect.objectContaining({
+    words: ["rhyan", "Brynlee"], diagnostic_log: false,
+  }), 4));
 });
 
 it("shows Retry when adding or removing a profile fails", async () => {

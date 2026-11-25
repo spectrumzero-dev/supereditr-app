@@ -35,6 +35,7 @@
   let failure = $state("");
   let retrying = $state(false);
   let waitingForRepair = $state(false);
+  let dictionaryDraft = $state<{ base: string[]; edited: string[] } | null>(null);
   let timer: ReturnType<typeof setTimeout> | undefined;
   /** The config as Settings last loaded or saved it: what the user's unsaved changes are measured from. */
   let base: Config | null = null;
@@ -68,6 +69,12 @@
     // Changes waiting to be saved, or still being saved, survive a reload.
     if (config && base && edits !== savedEdits) {
       const unsaved = $state.snapshot(config) as Config;
+      if (fresh.recovery?.writable && fresh.recovery.issues.includes("words")
+        && JSON.stringify(base.words) !== JSON.stringify(unsaved.words)) {
+        dictionaryDraft = { base: base.words, edited: unsaved.words };
+        unsaved.words = base.words;
+        if (JSON.stringify(unsaved) === JSON.stringify(base)) savedEdits = edits;
+      }
       if (needsRepairBeforeMerge(base, unsaved, fresh)) {
         waitingForRepair = true;
         failure = "Your changes are still pending. Repair the affected settings and select Retry.";
@@ -75,6 +82,15 @@
         return;
       }
       fresh.config = mergeUnsaved(base, unsaved, fresh.config);
+    }
+    if (dictionaryDraft && fresh.recovery?.writable !== false && !fresh.recovery?.issues.includes("words")) {
+      fresh.config.words = mergeUnsaved(
+        { words: $state.snapshot(dictionaryDraft.base) },
+        { words: $state.snapshot(dictionaryDraft.edited) },
+        { words: fresh.config.words },
+      ).words;
+      dictionaryDraft = null;
+      edits++;
     }
     base = latest;
     revision = fresh.revision;
@@ -252,6 +268,9 @@
           </div>
         {/if}
         {#if failure}<p role="alert">{failure}</p>{/if}
+        {#if dictionaryDraft && !waitingForRepair}
+          <p>Your changes are still pending. Repair the dictionary and select Retry.</p>
+        {/if}
         <button class="btn small" disabled={retrying} onclick={retry}>Retry</button>
       </section>
     {/if}
@@ -271,7 +290,7 @@
       {:else if section === "styles"}
         <Styles bind:config {onchange} openModels={() => (section = "models")} />
       {:else if section === "dictionary"}
-        <Dictionary bind:config {onchange} />
+        <Dictionary bind:config {onchange} wordsReadOnly={payload.recovery?.issues.includes("words") ?? false} />
       {:else if section === "general"}
         <General bind:config logPath={payload.logPath} {onchange} />
       {:else if section === "shortcuts"}

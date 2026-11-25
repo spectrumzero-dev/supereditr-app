@@ -454,6 +454,18 @@ impl AppState {
         self.provider_choice.fetch_add(1, Ordering::Relaxed) + 1
     }
 
+    pub fn use_builtin_provider(&self) -> Result<(), String> {
+        let mut current = self.settings.write().unwrap();
+        self.provider_choice.fetch_add(1, Ordering::Relaxed);
+        current.check_source(&self.config_path).map_err(|e| e.to_string())?;
+        let mut config = current.config.clone();
+        if config.active_provider.take().is_some() || !current.destination_safe {
+            current.save_destination_choice(&self.config_path, config).map_err(|e| e.to_string())?;
+            self.config_changed(&current.config);
+        }
+        Ok(())
+    }
+
     /// Updates providers in the current settings. The check and the save share the lock with
     /// new choices, credential updates and unrelated settings saves.
     pub fn update_provider_config<T>(
@@ -468,6 +480,7 @@ impl AppState {
         if !current.providers_editable() {
             return Err("Repair the providers in the settings file and retry loading it.".into());
         }
+        current.check_source(&self.config_path).map_err(|e| e.to_string())?;
         let mut config = current.config.clone();
         let result = update(&current, &mut config)?;
         if config.providers != current.config.providers || config.active_provider != current.config.active_provider {
@@ -606,6 +619,29 @@ mod tests {
         assert_eq!(saved.words, ["Brynlee"]);
         assert!(saved.is_excluded("com.example.quillpoint"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_explicit_builtin_choice_repairs_a_malformed_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, br#"{"active_provider": false}"#).unwrap();
+        let state = AppState::new(path.clone());
+        assert!(state.configured_profile().is_none());
+
+        state
+            .update_config(None, |_, config| {
+                config.always_show_tips = false;
+                Some(())
+            })
+            .unwrap();
+        assert!(!ConfigFile::load(&path).destination_safe);
+        state.use_builtin_provider().unwrap();
+
+        let repaired = ConfigFile::load(&path);
+        assert!(repaired.destination_safe);
+        assert!(repaired.config.active_provider.is_none());
+        assert!(!repaired.config.always_show_tips);
     }
 
     #[test]

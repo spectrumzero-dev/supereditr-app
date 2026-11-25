@@ -620,17 +620,9 @@ fn commit_activation(state: &AppState, checked: &ProviderProfile, model: Option<
 
 #[tauri::command]
 pub fn use_builtin_provider(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
-    use_builtin(&state)?;
+    state.use_builtin_provider()?;
     crate::show_ai_status(&app);
     Ok(())
-}
-
-fn use_builtin(state: &AppState) -> CmdResult<()> {
-    let choice = state.begin_provider_choice();
-    state.update_provider_config(Some(choice), |_, config| {
-        config.active_provider = None;
-        Ok(())
-    })
 }
 
 fn unique_id(settings: &ConfigFile, kind: ProviderKind) -> String {

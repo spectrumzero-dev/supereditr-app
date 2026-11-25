@@ -10,10 +10,13 @@
     /** Which shortcut this is ("review", "quick_fix", "preset:<id>"), so it isn't reported as
      * conflicting with itself. */
     slot: string;
+    labelledby: string;
+    describedby: string;
     onchange: (value: string) => void;
     placeholder?: string;
   }
-  let { value, slot, onchange, placeholder = "Record shortcut" }: Props = $props();
+  let { value, slot, labelledby, describedby, onchange, placeholder = "Record shortcut" }: Props = $props();
+  const valueId = $props.id();
   /** Why the last shortcut typed was refused; the previous one stays. */
   let problem = $state("");
   let recording = $state(false);
@@ -111,14 +114,16 @@
 </script>
 
 <span class="wrap">
-  <button class="shortcut" class:recording bind:this={button} onclick={() => setRecording(!recording)}>
-    {#if recording}
-      {first ? `${keySymbols(first)} … press again for a double press` : "Type shortcut…"}
-    {:else if value}
-      {keySymbols(value)}
-    {:else}
-      <span class="muted">{placeholder}</span>
-    {/if}
+  <button class="shortcut" class:recording bind:this={button} aria-labelledby={`${labelledby} ${valueId}`} aria-describedby={describedby} onclick={() => setRecording(!recording)}>
+    <span id={valueId} class:muted={!recording && !value}>
+      {#if recording}
+        {first ? `${keySymbols(first)} … press again for a double press` : "Type shortcut…"}
+      {:else if value}
+        {keySymbols(value)}
+      {:else}
+        {placeholder}
+      {/if}
+    </span>
   </button>
   {#if problem}<span class="problem" role="alert">{problem}</span>{/if}
 </span>

@@ -105,6 +105,13 @@
     }
   }
 
+  function offerRetryForChangedSettings(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.startsWith("The settings file changed on disk.")) return false;
+    onWriteFailure("Couldn’t save the AI settings.", error);
+    return true;
+  }
+
   /** Saves a found account and makes it the AI in use if it passes its check. */
   function adopt(c: Candidate) {
     return makeChoice(async () => {
@@ -120,6 +127,7 @@
         if (p) await recheck(p);
         if (config.active_provider === profile.id) setUp = profile.label;
       } catch (e) {
+        if (offerRetryForChangedSettings(e)) return;
         adoptErrors[c.index] = String(e);
         await reload();
         const added = profilesOf(c.kind).find((q) => q.base_url === c.baseUrl);
@@ -195,6 +203,10 @@
       await reload();
       if (config.active_provider === p.id) setUp = p.label;
     } catch (e) {
+      if (offerRetryForChangedSettings(e)) {
+        delete checks[p.id];
+        return;
+      }
       // The check behind the refusal, for a problem Settings words itself.
       const again = await api.checkProvider(p.id).catch(() => null);
       checks[p.id] = again && !again.ready ? again : { ready: false, problem: String(e), code: null, models: [] };
@@ -250,7 +262,12 @@
   /** Returns reviews to the built-in AI (or the rule-based checker without one), keeping this AI
    * and its key for later. Works whether or not Apple Intelligence is available. */
   async function useBuiltin() {
-    await api.useBuiltinProvider();
+    try {
+      await api.useBuiltinProvider();
+    } catch (error) {
+      onWriteFailure("Couldn’t switch to the built-in AI.", error);
+      return;
+    }
     await reload();
     setUp = "";
     opened = "builtin";
@@ -321,7 +338,7 @@
         await reload();
         if (config.active_provider === id) setUp = label;
       } catch (e) {
-        pulling = { profileId: id, status: `⚠︎ ${e}`, pct: 0 };
+        pulling = offerRetryForChangedSettings(e) ? null : { profileId: id, status: `⚠︎ ${e}`, pct: 0 };
       } finally {
         pullRequest = null;
       }

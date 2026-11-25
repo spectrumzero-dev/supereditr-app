@@ -308,6 +308,32 @@ it("reloads a changed settings file before retrying a credential save", async ()
   expect(setKey).toHaveBeenCalledTimes(2);
 });
 
+it("reloads a changed settings file before retrying Stop using", async () => {
+  const original = await api.get();
+  const profile = original.config.providers[0];
+  let fresh: typeof original = {
+    ...original, recovery: null, config: { ...original.config, onboarded: true, active_provider: profile.id },
+  };
+  const get = vi.spyOn(api, "get").mockImplementation(async () => fresh);
+  const builtin = vi.spyOn(api, "useBuiltinProvider")
+    .mockRejectedValueOnce("The settings file changed on disk.")
+    .mockImplementationOnce(async () => {
+      fresh = { ...fresh, config: { ...fresh.config, active_provider: null } };
+    });
+  render(App);
+
+  await fireEvent.click(await screen.findByRole("button", { name: "Stop using" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Couldn’t switch to the built-in AI.");
+  await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  expect(get).toHaveBeenLastCalledWith(true);
+  expect(builtin).toHaveBeenCalledTimes(1);
+
+  await fireEvent.click(await screen.findByRole("button", { name: "Stop using" }));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Stop using" })).toBeNull());
+  expect(builtin).toHaveBeenCalledTimes(2);
+});
+
 async function openLicences() {
   render(App);
   await fireEvent.click(await screen.findByRole("button", { name: "About" }));

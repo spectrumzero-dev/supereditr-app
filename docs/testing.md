@@ -19,9 +19,11 @@ A bug found by a smoke test usually gets its regression test one or two layers d
 | Contracts | That Rust and the UI, or the app and the live UI drivers, agree on names, types, strings and log lines | `tests/contracts/`, with a test on each side (see `AGENTS.md`) | `scripts/check.sh` |
 | Live UI (smoke) | The built app, driving real apps on a real desktop | `tests/ui/smoke.swift`, `tests/ui/linux/`, `tests/ui/windows/` | `scripts/ui-smoke.sh`, `scripts/ui-smoke-linux.sh`, `scripts/ui-smoke-windows.sh` |
 
-`scripts/check.sh` runs every layer but the last, on whichever system it runs on; CI runs it on macOS, Linux and Windows for every pull request. A platform's chain tests compile and run only on that platform, so a change to another system's code is first compiled and tested in CI. On a Mac with a warm build, `check.sh` takes about a minute and a half, almost all of it compiling: the Rust tests themselves finish in a few seconds, and vitest in about two. CI's check jobs take two to three minutes each.
+`scripts/check.sh` runs every layer but the last, on whichever system it runs on; CI runs it on macOS, Linux and Windows for every pull request. A platform's chain tests compile and run only on that platform, so a change to another system's code is first compiled and tested in CI. In one Apple silicon measurement on macOS 27.2 with Rust 1.99.1 and Node 26.13.0, `check.sh` took about 39 seconds with seeded Rust build artifacts and a fresh npm install, 18 seconds on a warm rerun, and 26 seconds after an incremental change. Median CI check-step times in a sample of 12 main runs were 104 seconds on macOS (11 comparable runs), 54 seconds on Linux and 116 seconds on Windows. Cold caches can take several minutes longer.
 
-The live UI tests run only in the maintainers' full builds. Each run needs a test desktop to itself, so runs queue one at a time, and a run takes far longer than `check.sh`. A pull request gets them once it's ready to land; its author doesn't need to run them.
+The macOS app suite includes an installed-app lookup for Finder by name and bundle ID, with PNG icon conversion. It needs access to the Mac's Launch Services and application icons. If a sandbox blocks that access, run the check in a session with normal access to those services.
+
+The live UI tests run in the maintainers' full builds and can also be run against an isolated test desktop. Each run needs a test desktop to itself, so runs queue one at a time, and a run takes far longer than `check.sh`. A pull request gets them once it's ready to land; its author doesn't need to run them.
 
 ## Examples
 

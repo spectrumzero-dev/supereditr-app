@@ -43,7 +43,8 @@
     "set_up_omarchy",
     "test_provider",
     "update_now",
-    "update_status"
+    "update_status",
+    "use_builtin_provider"
   ],
   "events": [
     "guide:side",

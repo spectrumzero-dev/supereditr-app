@@ -9,9 +9,10 @@
 
   interface Props {
     profileId: string;
+    disabled?: boolean;
     onsignedin: () => void;
   }
-  let { profileId, onsignedin }: Props = $props();
+  let { profileId, disabled = false, onsignedin }: Props = $props();
 
   let phase = $state<"idle" | "waiting" | "signed-in">("idle");
   let note = $state("");
@@ -57,7 +58,7 @@
   {:else if phase === "signed-in"}
     <span class="done">✓ Signed in</span>
   {:else}
-    <button class="btn small primary" onclick={start}>Sign in to Claude</button>
+    <button class="btn small primary" {disabled} onclick={start}>Sign in to Claude</button>
   {/if}
   {#if note}<span class="hint">{note}</span>{/if}
 </div>

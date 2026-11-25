@@ -34,11 +34,11 @@
     keep) in the suggestion panel.
   </p>
 
-  <div class="group-title">Words to keep</div>
+  <div class="group-title" id="words-to-keep">Words to keep</div>
   <div class="group">
     <div class="row column">
       <form class="add-word" onsubmit={(e) => { e.preventDefault(); addWord(); }}>
-        <input type="text" bind:value={newWord} placeholder="e.g. Rhyan, or 1234 Glenmoor Ct" spellcheck="false" />
+        <input type="text" aria-labelledby="words-to-keep" bind:value={newWord} placeholder="e.g. Rhyan, or 1234 Glenmoor Ct" spellcheck="false" />
         <button class="btn small" type="submit" disabled={!newWord.trim()}>Add</button>
       </form>
       {#if config.words.length}
@@ -57,10 +57,10 @@
   <div class="group">
     <div class="row">
       <div>
-        <div class="label">English spelling</div>
-        <div class="hint">The rule-based checker and your AI both follow it.</div>
+        <label class="label" for="english-spelling">English spelling</label>
+        <div class="hint" id="english-spelling-hint">The rule-based checker and your AI both follow it.</div>
       </div>
-      <select bind:value={config.dialect} onchange={onchange}>
+      <select id="english-spelling" aria-describedby="english-spelling-hint" bind:value={config.dialect} onchange={onchange}>
         {#each dialects as d (d)}<option>{d}</option>{/each}
       </select>
     </div>

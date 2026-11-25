@@ -2,7 +2,7 @@
 // tests/contracts/ipc-names.json lists the same names; contracts.test.ts checks this file against it
 // and src-tauri/src/ipc_contract.rs checks the app. The windows' `invoke` and `listen` wrappers take
 // only these names, so a misspelt one doesn't compile.
-import type { EnginePayload, GuideSide, PanelKeyPayload, PullProgress, SessionPayload, StatusPayload, UpdateStatus } from "./types";
+import type { EnginePayload, GuideSide, OllamaPullProgress, PanelKeyPayload, SessionPayload, StatusPayload, UpdateStatus } from "./types";
 
 export const commands = [
   "accessibility_status",
@@ -49,6 +49,7 @@ export const commands = [
   "test_provider",
   "update_now",
   "update_status",
+  "use_builtin_provider",
 ] as const;
 
 /** A command the app registers (`generate_handler!` in src-tauri/src/lib.rs). */
@@ -70,7 +71,7 @@ export interface EventPayloads {
   "settings:accessibility-granted": null;
   /** The revised text for the "Try it now" box. */
   "settings:playground-apply": string;
-  "settings:pull": PullProgress;
+  "settings:pull": OllamaPullProgress;
   "settings:reload": null;
   "settings:review-shortcut": null;
   /** The Settings section to show. */

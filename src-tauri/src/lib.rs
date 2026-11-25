@@ -118,7 +118,7 @@ pub fn show_ai_status(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
-        let label = match state.active_profile() {
+        let label = match state.configured_profile() {
             Some(profile) => {
                 let name = profile.kind.display_name();
                 let result = commands::check(&state, &profile.id).await;
@@ -688,6 +688,7 @@ pub fn run() {
             commands::check_provider,
             commands::claude_sign_in,
             commands::activate_provider,
+            commands::use_builtin_provider,
             commands::review_playground,
             commands::fit_settings_height,
             commands::pause_shortcuts,

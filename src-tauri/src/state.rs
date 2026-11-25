@@ -1,4 +1,5 @@
 use crate::platform::{Capture, Rect};
+use crate::secrets::{self, CredentialStore, Secrets};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -30,8 +31,6 @@ pub struct AppState {
     pub next_id: AtomicU64,
     /// Results of the last account scan, keys included, until the user picks one.
     pub candidates: Mutex<Vec<Candidate>>,
-    /// Serializes allocating and releasing provider IDs with their credential operations.
-    pub provider_changes: Mutex<()>,
     /// API keys read from the keychain, cached so a review never waits on Keychain Services.
     keys: Mutex<HashMap<String, Option<String>>>,
     pub paused: AtomicBool,
@@ -43,6 +42,9 @@ pub struct AppState {
     /// Counts saves of the settings, so Settings' save of a copy read before another save (the menu
     /// bar's "Turn off in …", the panel's "Always keep") can be refused instead of undoing it.
     revision: AtomicU64,
+    /// Records the latest provider choice, even when its check fails or it just reaffirms local review.
+    /// Updated and checked under the configuration write lock.
+    provider_choice: AtomicU64,
 }
 
 pub struct Session {
@@ -267,9 +269,6 @@ impl ReviewState {
     }
 }
 
-// Test builds keep the diagnostic log whatever the setting says, so a build that misbehaves on a
-// tester's Mac has left a record even when it can no longer be reached to turn the log on. Only
-// official release builds (`updater::ENABLED`) follow the setting.
 impl AppState {
     #[cfg(test)]
     pub fn new(config_path: PathBuf) -> Self {
@@ -279,7 +278,7 @@ impl AppState {
 
     pub fn with_settings(config_path: PathBuf, settings: ConfigFile) -> Self {
         let config = &settings.config;
-        crate::platform::set_trace(config.diagnostic_log || !crate::updater::ENABLED);
+        crate::platform::set_trace(config.diagnostic_log);
         let engine = Engine::new(&config.dialect);
         Self {
             settings: RwLock::new(settings),
@@ -288,12 +287,12 @@ impl AppState {
             review: Mutex::new(ReviewState::new(Instant::now())),
             next_id: AtomicU64::new(1),
             candidates: Mutex::new(Vec::new()),
-            provider_changes: Mutex::new(()),
             keys: Mutex::new(HashMap::new()),
             paused: AtomicBool::new(false),
             watch_generation: AtomicU64::new(0),
             last_review: Default::default(),
             revision: AtomicU64::new(0),
+            provider_choice: AtomicU64::new(0),
         }
     }
 
@@ -312,10 +311,10 @@ impl AppState {
 
     /// Rereads a file the user may have repaired, invalidating saves based on the previous copy.
     pub fn retry_settings(&self, load: impl FnOnce() -> ConfigFile) -> (Config, Config) {
-        let _changes = self.provider_changes.lock().unwrap();
         let mut settings = self.settings.write().unwrap();
         let previous = settings.config.clone();
         *settings = load();
+        self.provider_choice.fetch_add(1, Ordering::Relaxed);
         self.watch_generation.fetch_add(1, Ordering::Relaxed);
         self.config_changed(&settings.config);
         (previous, settings.config.clone())
@@ -338,58 +337,148 @@ impl AppState {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
+    #[cfg(test)]
     pub fn key_for(&self, kind: ProviderKind, profile_id: &str) -> Option<String> {
-        let account = crate::secrets::account(kind, profile_id);
-        let mut keys = self.keys.lock().unwrap();
-        keys.entry(account.clone()).or_insert_with(|| crate::secrets::get(&account)).clone()
+        self.read_key(&CredentialStore, kind, profile_id).ok().flatten()
     }
 
+    pub fn read_key(
+        &self,
+        store: &dyn Secrets,
+        kind: ProviderKind,
+        profile_id: &str,
+    ) -> Result<Option<String>, String> {
+        let account = secrets::account(kind, profile_id);
+        let mut keys = self.keys.lock().unwrap();
+        if let Some(key) = keys.get(&account) {
+            return Ok(key.clone());
+        }
+        let key = store.get(&account)?;
+        keys.insert(account, key.clone());
+        Ok(key)
+    }
+
+    #[cfg(test)]
     pub fn set_cached_key(&self, kind: ProviderKind, profile_id: &str, key: Option<String>) {
-        self.keys.lock().unwrap().insert(crate::secrets::account(kind, profile_id), key);
+        self.keys.lock().unwrap().insert(secrets::account(kind, profile_id), key);
         self.last_review.forget();
     }
 
-    /// Saves `config` as `save_config_based_on` does, and only while `profile`'s API key is still
-    /// the one it carries. The keys are held for the save, so a key saved meanwhile either comes
-    /// first and refuses this, or comes after it.
-    pub fn save_config_for_checked(
+    /// Updates the store and cache together. Call within a provider configuration update, so
+    /// a check or removal cannot commit against a different key.
+    pub fn write_key(
         &self,
-        config: Config,
-        revision: u64,
-        profile: &ProviderProfile,
-    ) -> std::io::Result<Option<u64>> {
-        let account = crate::secrets::account(profile.kind, &profile.id);
+        store: &dyn Secrets,
+        kind: ProviderKind,
+        profile_id: &str,
+        key: Option<String>,
+    ) -> Result<(), String> {
+        let account = secrets::account(kind, profile_id);
         let mut keys = self.keys.lock().unwrap();
-        if *keys.entry(account.clone()).or_insert_with(|| crate::secrets::get(&account)) != profile.api_key {
-            return Ok(None);
+        let result = match &key {
+            Some(key) => store.set(kind, profile_id, key),
+            None => store.delete(kind, profile_id).map(|_| ()),
+        };
+        if result.is_ok() {
+            keys.insert(account, key);
+        } else {
+            // An alias deletion can fail after the current key has already been removed.
+            keys.remove(&account);
         }
-        self.save_config_based_on(config, Some(revision))
+        self.last_review.forget();
+        result
     }
 
-    /// The active provider with its API key attached, ready for a request.
+    /// The active provider with its API key attached, ready for a request. A refused read of a
+    /// required key keeps reviews local and the status can report the failure.
     pub fn active_profile(&self) -> Option<ProviderProfile> {
         self.review_config().1
     }
 
-    /// The review settings and the destination chosen by the same settings snapshot.
-    pub fn review_config(&self) -> (Config, Option<ProviderProfile>, bool) {
-        let (config, mut profile, exclusions_safe) = self.read_settings(|settings, _| {
-            let profile = settings.destination_safe.then(|| settings.config.active_profile()).flatten().cloned();
-            (settings.config.clone(), profile, settings.exclusions_safe)
-        });
-        if let Some(profile) = &mut profile {
-            profile.api_key = self.key_for(profile.kind, &profile.id);
-        }
-        (config, profile, exclusions_safe)
+    /// The active profile's settings, independent of credential store availability.
+    pub fn configured_profile(&self) -> Option<ProviderProfile> {
+        self.read_settings(|settings, _| Self::safe_active_profile(settings).cloned())
     }
 
-    pub fn profile(&self, id: &str) -> Option<ProviderProfile> {
-        let mut profile = self.settings.read().unwrap().config.providers.iter().find(|p| p.id == id)?.clone();
-        profile.api_key = self.key_for(profile.kind, &profile.id);
-        Some(profile)
+    /// The review settings and the destination chosen by the same settings snapshot.
+    pub fn review_config(&self) -> (Config, Option<ProviderProfile>, bool) {
+        // The credential store may wait for the user. Read the current settings again afterwards.
+        let checked = self.configured_profile().and_then(|profile| {
+            let key = self.profile_key(&profile).ok()?;
+            Some((profile, key))
+        });
+        self.read_settings(|settings, _| {
+            let profile = checked.and_then(|(mut profile, key)| {
+                if Self::safe_active_profile(settings) != Some(&profile) {
+                    return None;
+                }
+                profile.api_key = key;
+                Some(profile)
+            });
+            (settings.config.clone(), profile, settings.exclusions_safe)
+        })
+    }
+
+    fn safe_active_profile(settings: &ConfigFile) -> Option<&ProviderProfile> {
+        settings.destination_safe.then(|| settings.config.active_profile()).flatten()
+    }
+
+    pub fn profile(&self, id: &str) -> Result<Option<ProviderProfile>, String> {
+        let Some(mut profile) =
+            self.read_settings(|settings, _| settings.config.providers.iter().find(|p| p.id == id).cloned())
+        else {
+            return Ok(None);
+        };
+        profile.api_key = self.profile_key(&profile)?;
+        Ok(Some(profile))
+    }
+
+    pub fn profile_key(&self, profile: &ProviderProfile) -> Result<Option<String>, String> {
+        self.profile_key_from(&CredentialStore, profile)
+    }
+
+    fn profile_key_from(&self, store: &dyn Secrets, profile: &ProviderProfile) -> Result<Option<String>, String> {
+        if !secrets::can_store_key(profile.kind) {
+            return Ok(None);
+        }
+        match self.read_key(store, profile.kind, &profile.id) {
+            // An OpenAI-compatible server can accept requests without a key, even when the
+            // credential store cannot confirm whether a key is present.
+            Err(_) if !profile.kind.needs_key() => Ok(None),
+            result => result,
+        }
+    }
+
+    pub fn begin_provider_choice(&self) -> u64 {
+        let _current = self.settings.write().unwrap();
+        self.provider_choice.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Updates providers in the current settings. The check and the save share the lock with
+    /// new choices, credential updates and unrelated settings saves.
+    pub fn update_provider_config<T>(
+        &self,
+        choice: Option<u64>,
+        update: impl FnOnce(&ConfigFile, &mut Config) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut current = self.settings.write().unwrap();
+        if choice.is_some_and(|choice| choice != self.provider_choice.load(Ordering::Relaxed)) {
+            return Err("A newer AI choice replaced this one.".into());
+        }
+        if !current.providers_editable() {
+            return Err("Repair the providers in the settings file and retry loading it.".into());
+        }
+        let mut config = current.config.clone();
+        let result = update(&current, &mut config)?;
+        if config.providers != current.config.providers || config.active_provider != current.config.active_provider {
+            current.save(&self.config_path, config).map_err(|e| e.to_string())?;
+            self.config_changed(&current.config);
+        }
+        Ok(result)
     }
 
     /// The settings, and the revision they were saved at.
+    #[cfg(test)]
     pub fn config_at_revision(&self) -> (Config, u64) {
         self.read_settings(|settings, revision| (settings.config.clone(), revision))
     }
@@ -401,6 +490,7 @@ impl AppState {
 
     /// Saves, unless `revision` is given and the settings have been saved since then. Returns the
     /// new revision, or None when the save was refused.
+    #[cfg(test)]
     pub fn save_config_based_on(&self, config: Config, revision: Option<u64>) -> std::io::Result<Option<u64>> {
         self.update_config(revision, |_, next| {
             *next = config;
@@ -423,12 +513,16 @@ impl AppState {
         }
         let mut config = current.config.clone();
         let Some(value) = update(&current, &mut config) else { return Ok(None) };
+        let changed_choice = config.active_provider != current.config.active_provider;
         current.save(&self.config_path, config)?;
+        if changed_choice {
+            self.provider_choice.fetch_add(1, Ordering::Relaxed);
+        }
         Ok(Some((self.config_changed(&current.config), value)))
     }
 
     fn config_changed(&self, config: &Config) -> u64 {
-        crate::platform::set_trace(config.diagnostic_log || !crate::updater::ENABLED);
+        crate::platform::set_trace(config.diagnostic_log);
         // Any setting may change what a review would say: the AI, its model, the styles, the word
         // list. The next review asks afresh.
         self.last_review.forget();
@@ -439,6 +533,22 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unavailable_credential_store_only_blocks_providers_that_require_a_key() {
+        let dir = std::env::temp_dir().join(format!("supereditr-optional-key-{}", std::process::id()));
+        let state = AppState::new(dir.join("settings.json"));
+        let store = secrets::FakeSecrets { unavailable: true, ..Default::default() };
+        let local = ProviderProfile::new(ProviderKind::OpenAiCompatible);
+        let cloud = ProviderProfile::new(ProviderKind::OpenAi);
+        assert_eq!(state.profile_key_from(&store, &local).unwrap(), None);
+        assert!(state.read_key(&store, local.kind, &local.id).is_err(), "the missing store was not cached");
+        assert!(state.profile_key_from(&store, &cloud).is_err());
+
+        let store = secrets::FakeSecrets::default();
+        store.set(local.kind, &local.id, "test-key").unwrap();
+        assert_eq!(state.profile_key_from(&store, &local).unwrap().as_deref(), Some("test-key"));
+    }
 
     #[test]
     fn startup_skips_degraded_files_and_retry_adopts_repaired_privacy_and_destination() {

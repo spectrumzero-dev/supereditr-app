@@ -45,36 +45,36 @@
     {#if isMac()}
     <div class="row">
       <div>
-        <div class="label">Suggest as soon as I select text</div>
-        <div class="hint">Shows suggestions automatically when you select text you’re editing. Typing or clicking elsewhere hides them. Turn off to use the shortcut only.</div>
+        <label class="label" for="auto-popup">Suggest as soon as I select text</label>
+        <div class="hint" id="auto-popup-hint">Shows suggestions automatically when you select text you’re editing. Typing or clicking elsewhere hides them. Turn off to use the shortcut only.</div>
       </div>
-      <input type="checkbox" class="switch" bind:checked={config.auto_popup} onchange={onchange} />
+      <input id="auto-popup" type="checkbox" class="switch" aria-describedby="auto-popup-hint" bind:checked={config.auto_popup} onchange={onchange} />
     </div>
     <div class="row">
       <div>
-        <div class="label">Minimum selection</div>
-        <div class="hint">Shorter selections are ignored for automatic suggestions.</div>
+        <label class="label" for="auto-min">Minimum selection</label>
+        <div class="hint" id="auto-min-hint">Shorter selections are ignored for automatic suggestions.</div>
       </div>
-      <span><input type="number" min="1" max="500" bind:value={config.auto_min_chars} onchange={onchange} style="width: 70px" /> characters</span>
+      <span><input id="auto-min" type="number" min="1" max="500" aria-describedby="auto-min-unit auto-min-hint" bind:value={config.auto_min_chars} onchange={onchange} style="width: 70px" /> <span id="auto-min-unit">characters</span></span>
     </div>
     <div class="row">
       <div>
-        <div class="label">Maximum selection</div>
-        <div class="hint">Longer selections, such as a whole document, are ignored for automatic suggestions. The shortcut still reviews any selection.</div>
+        <label class="label" for="auto-max">Maximum selection</label>
+        <div class="hint" id="auto-max-hint">Longer selections, such as a whole document, are ignored for automatic suggestions. The shortcut still reviews any selection.</div>
       </div>
-      <span><input type="number" min="500" max="100000" bind:value={config.auto_max_chars} onchange={onchange} style="width: 70px" /> characters</span>
+      <span><input id="auto-max" type="number" min="500" max="100000" aria-describedby="auto-max-unit auto-max-hint" bind:value={config.auto_max_chars} onchange={onchange} style="width: 70px" /> <span id="auto-max-unit">characters</span></span>
     </div>
     {/if}
     <div class="row">
       <div>
-        <div class="label">Keep formatting when applying fixes</div>
-        <div class="hint">Proofread fixes change only the words that need fixing, so code, bold and links stay as they are. Undo takes one step per fix.</div>
+        <label class="label" for="keep-formatting">Keep formatting when applying fixes</label>
+        <div class="hint" id="keep-formatting-hint">Proofread fixes change only the words that need fixing, so code, bold and links stay as they are. Undo takes one step per fix.</div>
       </div>
-      <input type="checkbox" class="switch" bind:checked={config.keep_formatting} onchange={onchange} />
+      <input id="keep-formatting" type="checkbox" class="switch" aria-describedby="keep-formatting-hint" bind:checked={config.keep_formatting} onchange={onchange} />
     </div>
     <div class="row">
-      <div class="label">Show response times</div>
-      <input type="checkbox" class="switch" bind:checked={config.show_timing} onchange={onchange} />
+      <label class="label" for="show-timing">Show response times</label>
+      <input id="show-timing" type="checkbox" class="switch" bind:checked={config.show_timing} onchange={onchange} />
     </div>
   </div>
 
@@ -82,10 +82,10 @@
   <div class="group">
     <div class="row">
       <div>
-        <div class="label">Open at login</div>
-        <div class="hint">Starts SuperEditr in {w.tray} when you log in, so it’s running again after you restart {w.yourDevice}.</div>
+        <label class="label" for="launch-at-login">Open at login</label>
+        <div class="hint" id="launch-at-login-hint">Starts SuperEditr in {w.tray} when you log in, so it’s running again after you restart {w.yourDevice}.</div>
       </div>
-      <input type="checkbox" class="switch" aria-label="Open at login" checked={launchAtLogin} onchange={(e) => setLaunchAtLogin(e.currentTarget.checked)} />
+      <input id="launch-at-login" type="checkbox" class="switch" aria-describedby="launch-at-login-hint" checked={launchAtLogin} onchange={(e) => setLaunchAtLogin(e.currentTarget.checked)} />
     </div>
     {#if launchError}
       <div class="row warn">{launchError}</div>
@@ -96,10 +96,10 @@
   <div class="group">
     <div class="row">
       <div>
-        <div class="label">Keep a diagnostic log</div>
-        <div class="hint">Records which app each selection came from, with timings and lengths but never your text, in {shownLogPath}. Turn on to diagnose a problem in a particular app. Turning it off deletes the log.</div>
+        <label class="label" for="diagnostic-log">Keep a diagnostic log</label>
+        <div class="hint" id="diagnostic-log-hint">Records which app each selection came from, with timings and lengths but never your text, in {shownLogPath}. Turn on to diagnose a problem in a particular app. Turning it off deletes the log.</div>
       </div>
-      <input type="checkbox" class="switch" bind:checked={config.diagnostic_log} onchange={onchange} />
+      <input id="diagnostic-log" type="checkbox" class="switch" aria-describedby="diagnostic-log-hint" bind:checked={config.diagnostic_log} onchange={onchange} />
     </div>
   </div>
 </div>

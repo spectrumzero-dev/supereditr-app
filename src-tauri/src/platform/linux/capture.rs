@@ -173,7 +173,7 @@ async fn guarded_copy(services: &Services<'_>, window: &WindowRef, profile: Prof
         transaction.restore();
         return if profile.terminal {
             Err(PlatformError::Other(format!(
-                "Nothing was selected in {}. If a program there has the mouse, select the text again, or hold Shift while you select.",
+                "Nothing was selected in {}. If a program handles the mouse, hold Shift while selecting, or paste the text into Settings → Try it now.",
                 apps::display_name(&window.app_id)
             )))
         } else {

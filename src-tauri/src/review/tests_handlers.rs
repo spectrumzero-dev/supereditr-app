@@ -623,7 +623,7 @@ fn a_new_review_hides_the_notice_and_opens_the_panel_with_the_keys() {
     let calls = fake.take();
     // The panel's keys come from the reviewed app only, and its window is watched, before the panel
     // gets the review.
-    assert_eq!(calls[..2], [SetReviewApp(REVIEWED), Follow(id)]);
+    assert_eq!(calls[..2], [Follow(id), SetReviewApp(REVIEWED)]);
     let Emit { window, event, payload } = &calls[2] else { panic!("{calls:?}") };
     assert_eq!((window.as_str(), event.as_str()), ("overlay", "overlay:session"));
     assert_eq!(payload["id"], json!(id));

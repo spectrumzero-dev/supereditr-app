@@ -6,7 +6,31 @@ fn main() {
         build_foundation_models_helper();
     }
     set_version_label();
-    tauri_build::build()
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+    {
+        build_with_windows_test_manifest();
+    } else {
+        tauri_build::build();
+    }
+}
+
+fn build_with_windows_test_manifest() {
+    // Tauri 2.7 links its manifest into app binaries only. The mock IPC tests also link code
+    // that imports TaskDialogIndirect, and the Windows loader needs Common Controls v6 for it.
+    // Embed the same dependency in every linkable target, including the library's unit tests.
+    const COMMON_CONTROLS_V6: &str = concat!(
+        "type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' ",
+        "processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'",
+    );
+    println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+    println!("cargo:rustc-link-arg=/MANIFESTUAC:NO");
+    println!("cargo:rustc-link-arg=/MANIFESTDEPENDENCY:{COMMON_CONTROLS_V6}");
+    let attributes =
+        tauri_build::Attributes::new().windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
+    if let Err(error) = tauri_build::try_build(attributes) {
+        panic!("Tauri build failed: {error:#}");
+    }
 }
 
 /// Sets `SUPEREDITR_VERSION_LABEL`, the version Settings shows. A release build shows the plain

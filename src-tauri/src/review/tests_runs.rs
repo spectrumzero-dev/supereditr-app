@@ -286,11 +286,16 @@ fn the_shortcut_reads_the_selection_and_opens_a_review_of_it() {
     select(&fake, Ok(capture(TEXT, false)));
     block_on(fake.controller().start_manual(Some("polish".into())));
     let calls = fake.take();
-    assert_eq!(
-        calls[..3],
-        [WarmConnection, ReadSelection { allow_clipboard: true, select_sentence: true }, SetReviewApp(REVIEWED)]
-    );
     let id = showing(&state).unwrap();
+    assert_eq!(
+        calls[..4],
+        [
+            WarmConnection,
+            ReadSelection { allow_clipboard: true, select_sentence: true },
+            Follow(id),
+            SetReviewApp(REVIEWED)
+        ]
+    );
     assert_eq!(
         calls.last(),
         Some(&StartRun { id, run: 0, text: TEXT.into(), preset_id: "polish".into(), steer: None })
@@ -456,6 +461,21 @@ fn quick_fix_checks_the_text_after_rejected_edits_are_removed() {
     *fake.events.lock().unwrap() = vec![Event::Done(result)];
     block_on(fake.controller().quick_fix());
     assert_eq!(fake.take().last(), Some(&Replace { text: "Send 12 today. Check the date.".into(), proofread: true }));
+    assert_eq!(showing(&state), None);
+}
+
+#[test]
+fn a_superseded_quick_fix_cannot_claim_the_panels_keyboard_target() {
+    let state = test_state();
+    let fake = Fake::new(&state);
+    let controller = fake.controller();
+    let old = controller.reserve_quick_fix(QUICK_FIX_TIMEOUT);
+    let _new = controller.reserve_quick_fix(QUICK_FIX_TIMEOUT);
+    assert!(matches!(
+        controller.begin_for(capture(TEXT, false), false, None, Some(&old)),
+        Err(AutoOutcome::Superseded)
+    ));
+    assert!(fake.take().iter().all(|call| !matches!(call, SetReviewApp(_) | Show { .. })));
     assert_eq!(showing(&state), None);
 }
 

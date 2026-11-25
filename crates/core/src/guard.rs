@@ -41,7 +41,11 @@ fn prose_tokens(text: &str, out: &mut Vec<String>) {
         let (clock, attached) =
             trimmed.split_at(trimmed.find(|c: char| c.is_ascii_alphabetic()).unwrap_or(trimmed.len()));
         if is_clock_time(clock) {
-            let suffix = if attached.is_empty() { words.peek().copied().unwrap_or_default() } else { attached };
+            let suffix = if attached.is_empty() && word.ends_with(clock) {
+                words.peek().copied().unwrap_or_default()
+            } else {
+                attached
+            };
             let marker = suffix.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '"', '\'', '”', '’']);
             let period = if marker.eq_ignore_ascii_case("am") || marker.eq_ignore_ascii_case("a.m") {
                 Some("am")
@@ -280,6 +284,7 @@ mod tests {
         assert_eq!(changed_tokens("5:30pm", "5:35 pm"), ["5:30 pm", "5:35 pm"]);
         assert_eq!(changed_tokens("1pm and 1 PM", "1 p.m."), ["1 pm"]);
         assert!(!changed_tokens("Score: 5.", "Score: 5 pm.").is_empty());
+        assert!(changed_tokens("Meet at 5. Am I late?", "Am I late? Meet at 5.").is_empty());
     }
 
     /// The text of each code span.

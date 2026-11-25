@@ -339,9 +339,6 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
         // A Quick Fix result that needs the author's judgment can arrive after a window switch.
         // Opening it must leave keyboard focus in the window the author chose.
         let keyboard = !auto && quick_fix.is_none();
-        // The panel's keys are taken from this app only, not from a launcher opened over it. Does
-        // nothing outside macOS.
-        self.host.set_review_app(captured.pid);
         // Before the session lock: watching the window reads it through the platform, which may
         // wait on the app.
         let following = self.host.follow(id, &captured);
@@ -379,6 +376,8 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
             } else if !auto {
                 review.cancel_quick_fix();
             }
+            // Commit the panel's keyboard target together with the accepted session.
+            self.host.set_review_app(session.capture.pid);
             review.begin(session)
         };
         self.shell.emit("overlay", "overlay:session", payload);

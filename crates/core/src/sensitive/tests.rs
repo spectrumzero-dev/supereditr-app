@@ -99,6 +99,11 @@ fn caught() -> Vec<(&'static str, String)> {
         ("a password in a link", "https://deploy:tr0ub4dor@git.example.org/repo.git".to_string()),
         ("a key or token", format!("Here’s my API key {} — don’t share it.", random(40))),
         ("a key or token", format!("the token was \"{}\".", random(32))),
+        ("a key or token", format!("API key:\n    {}", random(32))),
+        ("a key or token", format!("Secret key:\n{}", random(32))),
+        ("a key or token", format!("Password and API key:\n{}", random(32))),
+        ("a key or token", format!("The token is\r\n`{}`.", random(36))),
+        ("a key or token", format!("The API key is listed in this message for the project team: {}", random(40))),
     ];
     cases
         .into_iter()
@@ -163,6 +168,8 @@ fn leaves_ordinary_writing_alone() {
         "Reset your password: it needs at least 12 characters.".to_string(),
         "Pick a strong password and keep it secret.".into(),
         "Our API key rotation policy is every 90 days.".into(),
+        "Our API key:\n    It needs to be rotated every 90 days.".into(),
+        format!("The API key rotation has been moved to next week.\n\nBuild ID {}", random(40)),
         "Secret Santa is on the 12th, and the token exchange is at 3.".into(),
         "The tokenizer splits text into tokens: about 4 characters each.".into(),
         "Password requirements: 8+ characters, one digit.".into(),

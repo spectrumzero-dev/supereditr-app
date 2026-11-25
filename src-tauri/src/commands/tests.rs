@@ -1,5 +1,5 @@
 use super::*;
-use crate::secrets::FakeSecrets;
+use crate::secrets::{FakeSecrets, Secrets};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -38,9 +38,9 @@ fn fake_key(owner: &str) -> String {
 /// Adds a provider of `kind` to the settings and returns its ID.
 fn add(state: &AppState, kind: ProviderKind, model: &str) -> String {
     let mut profile = ProviderProfile::new(kind);
-    profile.id = unique_id(state, kind);
-    profile.model = model.into();
     let mut config = state.config();
+    profile.id = unique_id(&config, kind);
+    profile.model = model.into();
     config.providers.push(profile.clone());
     state.save_config(config).unwrap();
     profile.id
@@ -49,8 +49,8 @@ fn add(state: &AppState, kind: ProviderKind, model: &str) -> String {
 /// Servers that answer without the network: each lists `offered` and passes its check when its key
 /// is present, or none answers at all when `reachable` is false.
 struct FakeServers<'a> {
-    /// What happens while the second check is waiting for its answer, such as an edit in Settings.
-    during_second: Option<Box<dyn Fn() + Send + Sync + 'a>>,
+    /// What happens while a specific check is waiting for its answer, such as an edit in Settings.
+    during: Option<(usize, Box<dyn Fn() + Send + Sync + 'a>)>,
     offered: Vec<String>,
     reachable: bool,
     /// The profiles checked, by ID, in order.
@@ -60,8 +60,8 @@ struct FakeServers<'a> {
 }
 
 impl<'a> FakeServers<'a> {
-    fn during_second_check(self, act: impl Fn() + Send + Sync + 'a) -> Self {
-        Self { during_second: Some(Box::new(act)), ..self }
+    fn during_check(self, number: usize, act: impl Fn() + Send + Sync + 'a) -> Self {
+        Self { during: Some((number, Box::new(act))), ..self }
     }
 
     fn offering(models: &[&str]) -> Self {
@@ -70,7 +70,7 @@ impl<'a> FakeServers<'a> {
             reachable: true,
             checked: Mutex::default(),
             answers: usize::MAX,
-            during_second: None,
+            during: None,
         }
     }
 
@@ -93,9 +93,11 @@ impl Servers for FakeServers<'_> {
         let mut checked = self.checked.lock().unwrap();
         checked.push(profile.id.clone());
         let answered_before = checked.len() > self.answers;
-        let second = checked.len() == 2;
+        let number = checked.len();
         drop(checked);
-        if second && let Some(act) = &self.during_second {
+        if let Some((at, act)) = &self.during
+            && number == *at
+        {
             act();
         }
         if profile.kind.needs_key() && profile.api_key.is_none() {
@@ -308,6 +310,81 @@ fn a_key_the_credential_store_refuses_is_not_used() {
     assert_eq!(state.key_for(ProviderKind::Anthropic, &id), None);
 }
 
+#[test]
+fn a_refused_read_is_not_cached_as_a_missing_key() {
+    let state = test_state();
+    let store = FakeSecrets::default();
+    let kind = ProviderKind::Gemini;
+    let id = add(&state, kind, "gemini-flash");
+    store.refuse_read.store(true, Ordering::Relaxed);
+    assert!(state.read_key(&store, kind, &id).is_err());
+    store.refuse_read.store(false, Ordering::Relaxed);
+    let key = fake_key("brynlee");
+    store.set(kind, &id, &key).unwrap();
+    assert_eq!(state.read_key(&store, kind, &id).unwrap(), Some(key));
+    assert_eq!(state.read_key(&store, kind, "missing").unwrap(), None);
+}
+
+#[test]
+fn a_provider_that_uses_no_key_is_removable_without_a_credential_store() {
+    let state = test_state();
+    let store = FakeSecrets { unavailable: true, ..Default::default() };
+    let id = add(&state, ProviderKind::Ollama, "mistral");
+    assert_eq!(
+        store_api_key(&state, &store, &id, Some(fake_key("rhyan"))).unwrap_err(),
+        "This AI doesn’t use an API key."
+    );
+    assert!(!store_api_key(&state, &store, &id, None).unwrap());
+    block_on(activate(&state, &FakeServers::offering(&["mistral"]), id.clone())).unwrap();
+    remove(&state, &store, &id).unwrap();
+    assert!(state.active_profile().is_none());
+    assert!(Config::load(&state.config_path).providers.is_empty());
+}
+
+#[test]
+fn a_failed_alias_delete_keeps_the_provider_for_a_retry() {
+    let state = test_state();
+    let store = FakeSecrets::default();
+    let kind = ProviderKind::Gemini;
+    let id = add(&state, kind, "gemini-flash");
+    let unrelated = add(&state, kind, "gemini-flash");
+    store_api_key(&state, &store, &id, Some(fake_key("rhyan"))).unwrap();
+    store_api_key(&state, &store, &unrelated, Some(fake_key("kyndal"))).unwrap();
+    store.old.lock().unwrap().insert(id.clone(), fake_key("brynlee"));
+    *store.refuse_delete.lock().unwrap() = Some(id.clone());
+    assert!(remove(&state, &store, &id).unwrap_err().contains("Deleted 1 credential entries"));
+    assert!(state.config().providers.iter().any(|provider| provider.id == id));
+    assert_eq!(state.read_key(&store, kind, &id).unwrap(), None, "the deleted key is no longer cached");
+    assert!(store.old.lock().unwrap().contains_key(&id));
+
+    let restarted = AppState::new(state.config_path.clone());
+    *store.refuse_delete.lock().unwrap() = None;
+    remove(&restarted, &store, &id).unwrap();
+    assert!(store.old.lock().unwrap().is_empty());
+    assert_eq!(store.key(kind, &unrelated), Some(fake_key("kyndal")));
+    assert_eq!(Config::load(&state.config_path).providers[0].id, unrelated);
+}
+
+#[test]
+fn a_save_failure_after_deletion_leaves_the_provider_id_for_retry() {
+    let state = test_state();
+    let store = FakeSecrets::default();
+    let kind = ProviderKind::Gemini;
+    let id = add(&state, kind, "gemini-flash");
+    store_api_key(&state, &store, &id, Some(fake_key("rhyan"))).unwrap();
+    let temp_file = state.config_path.with_extension("json.tmp");
+    std::fs::create_dir(&temp_file).unwrap();
+    assert!(remove(&state, &store, &id).is_err());
+    assert_eq!(store.key(kind, &id), None);
+    assert_eq!(state.config().providers[0].id, id);
+    std::fs::remove_dir(temp_file).unwrap();
+
+    let restarted = AppState::new(state.config_path.clone());
+    assert_eq!(restarted.config().providers[0].id, id);
+    remove(&restarted, &store, &id).unwrap();
+    assert!(Config::load(&state.config_path).providers.is_empty());
+}
+
 // --- activate_provider ---------------------------------------------------------------------
 
 #[test]
@@ -337,7 +414,7 @@ fn a_provider_whose_model_is_gone_switches_to_one_its_server_offers() {
     let id = add(&state, ProviderKind::Ollama, "retired-model");
     let servers = FakeServers::offering(&["mistral", "qwen3:4b"]);
     assert!(block_on(activate(&state, &servers, id.clone())).unwrap().ready);
-    assert_eq!(state.profile(&id).unwrap().model, "qwen3:4b");
+    assert_eq!(state.profile(&id).unwrap().unwrap().model, "qwen3:4b");
     assert_eq!(state.config().active_provider, Some(id.clone()));
     assert_eq!(*servers.checked.lock().unwrap(), [id.clone(), id], "checked again with the new model");
 }
@@ -346,14 +423,14 @@ fn a_provider_whose_model_is_gone_switches_to_one_its_server_offers() {
 fn a_model_chosen_while_the_switched_one_is_checked_is_kept_and_nothing_is_activated() {
     let state = test_state();
     let id = add(&state, ProviderKind::Ollama, "retired-model");
-    let servers = FakeServers::offering(&["mistral", "qwen3:4b"]).during_second_check(|| {
+    let servers = FakeServers::offering(&["mistral", "qwen3:4b"]).during_check(2, || {
         let mut config = state.config();
         config.providers.iter_mut().find(|p| p.id == id).unwrap().model = "qwen3:4b".into();
         state.save_config(config).unwrap();
     });
     let error = block_on(activate(&state, &servers, id.clone())).unwrap_err();
     assert_eq!(error, "This AI’s settings changed while it was being checked. Try again.");
-    assert_eq!(state.profile(&id).unwrap().model, "qwen3:4b", "the newer choice stays");
+    assert_eq!(state.profile(&id).unwrap().unwrap().model, "qwen3:4b", "the newer choice stays");
     assert_eq!(state.config().active_provider, None);
 }
 
@@ -363,10 +440,10 @@ fn a_key_replaced_while_the_ai_is_checked_means_nothing_is_activated() {
     let id = add(&state, ProviderKind::Anthropic, "retired-model");
     state.set_cached_key(ProviderKind::Anthropic, &id, Some(fake_key("brynlee")));
     let servers = FakeServers::offering(&["claude-sonnet-5-5"])
-        .during_second_check(|| state.set_cached_key(ProviderKind::Anthropic, &id, Some(fake_key("kyndal"))));
+        .during_check(2, || state.set_cached_key(ProviderKind::Anthropic, &id, Some(fake_key("kyndal"))));
     let error = block_on(activate(&state, &servers, id.clone())).unwrap_err();
     assert_eq!(error, "This AI’s settings changed while it was being checked. Try again.");
-    assert_eq!(state.profile(&id).unwrap().model, "retired-model");
+    assert_eq!(state.profile(&id).unwrap().unwrap().model, "retired-model");
     assert_eq!(state.config().active_provider, None);
 }
 
@@ -377,7 +454,7 @@ fn a_provider_that_fails_its_check_with_the_switched_model_keeps_the_model_it_ha
     let servers = FakeServers::offering(&["mistral", "qwen3:4b"]).answering_once();
     let error = block_on(activate(&state, &servers, id.clone())).unwrap_err();
     assert_eq!(error, "Can’t connect: no answer in 8 seconds");
-    assert_eq!(state.profile(&id).unwrap().model, "retired-model");
+    assert_eq!(state.profile(&id).unwrap().unwrap().model, "retired-model");
     assert_eq!(state.config().active_provider, None);
 }
 
@@ -400,6 +477,103 @@ fn a_removed_provider_is_not_made_the_ai_in_use() {
     let servers = FakeServers::offering(&["mistral"]);
     assert_eq!(block_on(activate(&state, &servers, "ollama".into())).unwrap_err(), "This AI was removed.");
     assert_eq!(state.config().active_provider, None);
+}
+
+#[test]
+fn choosing_or_reaffirming_local_review_supersedes_an_older_cloud_check() {
+    for was_using_cloud in [true, false] {
+        let state = test_state();
+        let id = add(&state, ProviderKind::Anthropic, "claude-sonnet-5-5");
+        state.set_cached_key(ProviderKind::Anthropic, &id, Some(fake_key("rhyan")));
+        if was_using_cloud {
+            let mut config = state.config();
+            config.active_provider = Some(id.clone());
+            state.save_config(config).unwrap();
+        }
+        let servers = FakeServers::offering(&["claude-sonnet-5-5"]).during_check(1, || use_builtin(&state).unwrap());
+        assert_eq!(block_on(activate(&state, &servers, id)).unwrap_err(), "A newer AI choice replaced this one.");
+        assert!(state.active_profile().is_none());
+        assert!(AppState::new(state.config_path.clone()).config().active_provider.is_none());
+    }
+}
+
+#[test]
+fn an_unrelated_settings_edit_does_not_supersede_a_provider_check() {
+    let state = test_state();
+    let id = add(&state, ProviderKind::Ollama, "mistral");
+    let servers = FakeServers::offering(&["mistral"]).during_check(1, || {
+        let mut config = state.config();
+        config.words.push("Kyndal".into());
+        state.save_config(config).unwrap();
+    });
+    block_on(activate(&state, &servers, id.clone())).unwrap();
+    let saved = Config::load(&state.config_path);
+    assert_eq!(saved.active_provider, Some(id));
+    assert_eq!(saved.words, ["Kyndal"]);
+}
+
+#[test]
+fn a_later_provider_choice_wins_in_either_completion_order_even_if_it_fails() {
+    use std::sync::Barrier;
+    for older_finishes_first in [false, true] {
+        for latest_works in [false, true] {
+            let state = test_state();
+            let first = add(&state, ProviderKind::Ollama, "mistral");
+            let second = add(&state, ProviderKind::Ollama, "qwen3:4b");
+            let older_started = Barrier::new(2);
+            let older_release = Barrier::new(2);
+            let latest_started = Barrier::new(2);
+            let latest_release = Barrier::new(2);
+            let older = FakeServers::offering(&["mistral"]).during_check(1, || {
+                older_started.wait();
+                older_release.wait();
+            });
+            let latest = FakeServers::offering(&["qwen3:4b"]).during_check(1, || {
+                latest_started.wait();
+                latest_release.wait();
+            });
+            let latest = if latest_works { latest } else { FakeServers { reachable: false, ..latest } };
+            let (older, latest) = std::thread::scope(|threads| {
+                let older = threads.spawn(|| block_on(activate(&state, &older, first.clone())));
+                older_started.wait();
+                let latest = threads.spawn(|| block_on(activate(&state, &latest, second.clone())));
+                latest_started.wait();
+                if older_finishes_first {
+                    older_release.wait();
+                    let older = older.join();
+                    latest_release.wait();
+                    (older, latest.join())
+                } else {
+                    latest_release.wait();
+                    let latest = latest.join();
+                    older_release.wait();
+                    (older.join(), latest)
+                }
+            });
+            assert_eq!(older.unwrap().unwrap_err(), "A newer AI choice replaced this one.");
+            assert_eq!(latest.unwrap().is_ok(), latest_works);
+            assert_eq!(state.active_profile().map(|profile| profile.id), latest_works.then_some(second.clone()));
+            assert_eq!(Config::load(&state.config_path).active_provider, latest_works.then_some(second));
+        }
+    }
+}
+
+#[test]
+fn a_pull_can_only_activate_the_requested_model_on_its_original_profile() {
+    let state = test_state();
+    let other = add(&state, ProviderKind::Ollama, "mistral");
+    let id = add(&state, ProviderKind::Ollama, "gemma3:4b");
+    let checked = state.profile(&id).unwrap().unwrap();
+    let servers = FakeServers::offering(&["mistral", "qwen3:4b"]);
+    let choice = state.begin_provider_choice();
+    let error = block_on(activate_pulled(&state, &servers, &checked, "missing".into(), choice)).unwrap_err();
+    assert!(error.contains("missing"));
+    assert!(state.config().active_provider.is_none());
+    assert_eq!(state.profile(&id).unwrap().unwrap().model, "gemma3:4b");
+    block_on(activate_pulled(&state, &servers, &checked, "qwen3:4b".into(), choice)).unwrap();
+    assert_eq!(state.profile(&other).unwrap().unwrap().model, "mistral");
+    assert_eq!(state.active_profile().unwrap().model, "qwen3:4b");
+    assert_eq!(Config::load(&state.config_path).active_provider, Some(id));
 }
 
 // --- adopt_candidate -----------------------------------------------------------------------
@@ -432,6 +606,31 @@ fn an_account_with_a_key_is_added_with_its_key_and_used() {
     assert_eq!(config.providers.len(), 1);
     assert_eq!(config.providers[0].api_key, None, "keys stay out of the settings file");
     assert_eq!(config.active_provider, Some(profile.id));
+}
+
+#[test]
+fn a_refused_adoption_does_not_leave_an_empty_profile_if_the_key_is_absent() {
+    let state = test_state();
+    let store = FakeSecrets { refuse: true, ..Default::default() };
+    *state.candidates.lock().unwrap() = vec![candidate(ProviderKind::Anthropic, Some(fake_key("rhyan")), &[])];
+    let servers = FakeServers::offering(&["claude-sonnet-5-5"]);
+    assert!(block_on(adopt(&state, &store, &servers, 0)).is_err());
+    assert!(Config::load(&state.config_path).providers.is_empty());
+    let adopted = block_on(adopt(&state, &FakeSecrets::default(), &servers, 0)).unwrap();
+    assert_eq!(adopted.id, "anthropic");
+    assert_eq!(state.config().providers.len(), 1);
+}
+
+#[test]
+fn an_unverified_adoption_keeps_the_provider_id_for_cleanup() {
+    let state = test_state();
+    let store = FakeSecrets { unavailable: true, ..Default::default() };
+    *state.candidates.lock().unwrap() = vec![candidate(ProviderKind::Anthropic, Some(fake_key("rhyan")), &[])];
+    let servers = FakeServers::offering(&["claude-sonnet-5-5"]);
+    assert!(block_on(adopt(&state, &store, &servers, 0)).is_err());
+    let saved = Config::load(&state.config_path);
+    assert_eq!(saved.providers[0].id, "anthropic");
+    assert!(saved.active_provider.is_none());
 }
 
 #[test]

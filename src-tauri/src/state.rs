@@ -353,7 +353,7 @@ impl AppState {
     }
 
     /// The active provider with its API key attached, ready for a request. If the store
-    /// refuses a read, reviews stay local and the provider status can report the failure.
+    /// refuses to read a required key, reviews stay local and the status can report the failure.
     pub fn active_profile(&self) -> Option<ProviderProfile> {
         let mut profile = self.config.read().unwrap().active_profile()?.clone();
         let key = self.profile_key(&profile).ok()?;
@@ -375,10 +375,19 @@ impl AppState {
     }
 
     pub fn profile_key(&self, profile: &ProviderProfile) -> Result<Option<String>, String> {
-        if secrets::can_store_key(profile.kind) {
-            self.read_key(&CredentialStore, profile.kind, &profile.id)
-        } else {
-            Ok(None)
+        self.profile_key_from(&CredentialStore, profile)
+    }
+
+    fn profile_key_from(&self, store: &dyn Secrets, profile: &ProviderProfile) -> Result<Option<String>, String> {
+        if !secrets::can_store_key(profile.kind) {
+            return Ok(None);
+        }
+        match self.read_key(store, profile.kind, &profile.id) {
+            // An OpenAI-compatible server can accept requests without a key. If the store is
+            // unavailable, still allow a keyless request to the configured server. This is
+            // separate from checking whether the store actually contains a credential.
+            Err(_) if !profile.kind.needs_key() => Ok(None),
+            result => result,
         }
     }
 
@@ -445,6 +454,22 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unavailable_credential_store_only_blocks_providers_that_require_a_key() {
+        let dir = std::env::temp_dir().join(format!("supereditr-optional-key-{}", std::process::id()));
+        let state = AppState::new(dir.join("settings.json"));
+        let store = secrets::FakeSecrets { unavailable: true, ..Default::default() };
+        let local = ProviderProfile::new(ProviderKind::OpenAiCompatible);
+        let cloud = ProviderProfile::new(ProviderKind::OpenAi);
+        assert_eq!(state.profile_key_from(&store, &local).unwrap(), None);
+        assert!(state.read_key(&store, local.kind, &local.id).is_err(), "the missing store was not cached");
+        assert!(state.profile_key_from(&store, &cloud).is_err());
+
+        let store = secrets::FakeSecrets::default();
+        store.set(local.kind, &local.id, "test-key").unwrap();
+        assert_eq!(state.profile_key_from(&store, &local).unwrap().as_deref(), Some("test-key"));
+    }
 
     #[test]
     fn a_save_based_on_settings_read_before_another_save_is_refused() {

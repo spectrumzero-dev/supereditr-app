@@ -161,6 +161,7 @@ pub struct FakeSecrets {
     /// Refuse every save, as a locked or missing credential store does.
     pub refuse: bool,
     pub refuse_read: std::sync::atomic::AtomicBool,
+    /// Simulate a store that refuses every read, save and delete.
     pub unavailable: bool,
     pub refuse_delete: std::sync::Mutex<Option<String>>,
 }

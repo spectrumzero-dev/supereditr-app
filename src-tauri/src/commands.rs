@@ -264,8 +264,8 @@ pub(crate) fn store_api_key(
     state.update_provider_config(None, |config| {
         let profile = config.providers.iter().find(|p| p.id == profile_id).ok_or("Unknown provider.")?;
         let key = key.map(|key| key.trim().to_string()).filter(|key| !key.is_empty());
-        if key.is_some() && !secrets::can_store_key(profile.kind) {
-            return Err("This AI doesn’t use an API key.".into());
+        if !secrets::can_store_key(profile.kind) {
+            return if key.is_some() { Err("This AI doesn’t use an API key.".into()) } else { Ok(false) };
         }
         state.write_key(secrets, profile.kind, profile_id, key)?;
         Ok(config.active_provider.as_deref() == Some(profile_id))
@@ -287,10 +287,14 @@ pub struct CandidateView {
 
 /// The provider already added from a detected account: same kind and the same key, or for
 /// keyless kinds (local servers, the Claude CLI) the same address or path.
-fn matching_profile(state: &AppState, candidate: &Candidate) -> CmdResult<Option<ProviderProfile>> {
+fn matching_profile(
+    state: &AppState,
+    store: &dyn secrets::Secrets,
+    candidate: &Candidate,
+) -> CmdResult<Option<ProviderProfile>> {
     for profile in state.config().providers.into_iter().filter(|p| p.kind == candidate.kind) {
         let matches = match &candidate.api_key {
-            Some(key) => state.profile_key(&profile)?.as_ref() == Some(key),
+            Some(key) => state.read_key(store, profile.kind, &profile.id)?.as_ref() == Some(key),
             None => profile.base_url == candidate.base_url,
         };
         if matches {
@@ -313,7 +317,7 @@ pub async fn scan_accounts(state: State<'_, AppState>) -> CmdResult<Vec<Candidat
             index,
             candidate: c.clone(),
             label: c.kind.display_name(),
-            profile_id: matching_profile(&state, c).ok().flatten().map(|p| p.id),
+            profile_id: matching_profile(&state, &secrets::CredentialStore, c).ok().flatten().map(|p| p.id),
         })
         .collect();
     *state.candidates.lock().unwrap() = found;
@@ -341,7 +345,7 @@ pub(crate) async fn adopt(
     let candidate =
         state.candidates.lock().unwrap().get(index).cloned().ok_or("That result has expired. Scan again.")?;
     // Already added: switch to it rather than adding a duplicate.
-    if let Some(existing) = matching_profile(state, &candidate)? {
+    if let Some(existing) = matching_profile(state, secrets, &candidate)? {
         activate_choice(state, servers, &existing.id, choice).await?;
         return Ok(ProviderProfile { api_key: None, ..existing });
     }

@@ -334,6 +334,7 @@ fn a_provider_that_uses_no_key_is_removable_without_a_credential_store() {
         store_api_key(&state, &store, &id, Some(fake_key("rhyan"))).unwrap_err(),
         "This AI doesn’t use an API key."
     );
+    assert!(!store_api_key(&state, &store, &id, None).unwrap());
     block_on(activate(&state, &FakeServers::offering(&["mistral"]), id.clone())).unwrap();
     remove(&state, &store, &id).unwrap();
     assert!(state.active_profile().is_none());

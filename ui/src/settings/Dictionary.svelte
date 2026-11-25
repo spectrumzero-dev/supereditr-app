@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Config } from "../lib/types";
+  import { wordIdentity } from "./merge";
 
   interface Props {
     config: Config;
@@ -12,7 +13,7 @@
 
   function addWord() {
     const word = newWord.trim();
-    if (word && !config.words.some((w) => w.toLowerCase() === word.toLowerCase())) {
+    if (wordIdentity(word) && !config.words.some((w) => wordIdentity(w) === wordIdentity(word))) {
       config.words = [...config.words, word];
       onchange();
     }
@@ -20,7 +21,7 @@
   }
 
   function removeWord(word: string) {
-    config.words = config.words.filter((w) => w !== word);
+    config.words = config.words.filter((w) => wordIdentity(w) !== wordIdentity(word));
     onchange();
   }
 </script>

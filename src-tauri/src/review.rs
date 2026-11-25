@@ -116,6 +116,7 @@ enum Target {
 }
 
 const NOT_TRUSTED: &str = "Allow SuperEditr in System Settings first: open SuperEditr Settings → Get Started.";
+const EXCLUSIONS_UNAVAILABLE: &str = "Repair the app exclusions in Settings before reviewing text from other apps.";
 
 /// Whether SuperEditr never reads text in this app: it's excluded, or it's a password manager,
 /// which is never read whatever the excluded apps say.
@@ -177,7 +178,11 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
         if !self.host.accessibility_trusted() {
             return Target::NotTrusted;
         }
-        let config = self.state.config();
+        let (config, exclusions_safe) =
+            self.state.read_settings(|settings, _| (settings.config.clone(), settings.exclusions_safe));
+        if !exclusions_safe {
+            return Target::Excluded(EXCLUSIONS_UNAVAILABLE.into());
+        }
         match self.host.focused_app() {
             Some((pid, _, _)) if pid == self.host.own_pid() => Target::Ignored,
             Some((_, bundle_id, name)) if never_read(&config, &bundle_id) => {
@@ -283,9 +288,16 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
     /// or why it didn't open, for an automatic suggestion's log line.
     fn begin(&self, captured: Capture, auto: bool, preset_id: Option<String>) -> Result<(u64, String), AutoOutcome> {
         let state = self.state;
-        let config = state.config();
+        let (config, exclusions_safe) =
+            state.read_settings(|settings, _| (settings.config.clone(), settings.exclusions_safe));
         if captured.pid == self.host.own_pid() && !captured.playground {
             return Err(AutoOutcome::OwnWindow);
+        }
+        if !exclusions_safe && !captured.playground {
+            if !auto {
+                self.show_error(EXCLUSIONS_UNAVAILABLE.into());
+            }
+            return Err(AutoOutcome::Excluded);
         }
         // Never open an empty review: say what to do instead (only when asked, by shortcut).
         if captured.text.trim().is_empty() {
@@ -414,11 +426,13 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
         // Read before the settings and key: a save from here on forgets, so this run's result isn't
         // kept when it may have been asked with settings from before the save.
         let generation = state.last_review.generation();
-        let config = state.config();
+        let (config, profile, exclusions_safe) = state.review_config();
         let Some(preset) = config.preset(&preset_id).cloned() else { return };
-        let profile = state.active_profile();
         let proofread = is_proofread(&preset_id, steer.as_deref());
         let mut review = state.review.lock().unwrap();
+        if !exclusions_safe && review.current(id).is_some_and(|session| !session.capture.playground) {
+            return;
+        }
         let Some(current) = review.start_run(id, run, proofread) else { return };
         let job = job_for(&config, profile, &current.capture, preset, steer);
         if !fresh && let Some(outcome) = state.last_review.recall(&current.capture, &job, self.host.now()) {
@@ -616,8 +630,8 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
             Ok(c) => c,
             Err(error) => return self.show_capture_error(error),
         };
-        let config = state.config();
-        if captured.pid == self.host.own_pid() || never_read(&config, &captured.bundle_id) {
+        let (config, profile, exclusions_safe) = state.review_config();
+        if !exclusions_safe || captured.pid == self.host.own_pid() || never_read(&config, &captured.bundle_id) {
             return;
         }
         if !captured.editable {
@@ -625,7 +639,7 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
                 "Quick fix works in text you’re editing. Use your review shortcut to review this text instead.".into(),
             );
         }
-        let job = job_for(&config, state.active_profile(), &captured, config.default_preset().clone(), None);
+        let job = job_for(&config, profile, &captured, config.default_preset().clone(), None);
         let mut outcome = None;
         let mut failure = None;
         for event in self.host.run_to_end(job).await {
@@ -780,7 +794,7 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
         // In this order: ending the gesture may close a panel, which the last check reads. Each
         // lock is read in its own statement, so none is held while another is taken.
         let window_dragged = self.host.gesture_ended();
-        let turned_on = state.config().auto_popup;
+        let turned_on = state.automatic_enabled();
         let paused = state.paused.load(Ordering::Relaxed);
         let (just_applied, review_open) = {
             let review = state.review.lock().unwrap();

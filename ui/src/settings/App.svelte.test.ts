@@ -1,6 +1,7 @@
-import { fireEvent, render, screen } from "@testing-library/svelte";
+import { fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import { afterEach, expect, it, vi } from "vitest";
 import App from "./App.svelte";
+import { api } from "./ipc";
 
 // Settings first mounts Get Started, which measures its banner.
 globalThis.ResizeObserver ??= class {
@@ -29,6 +30,63 @@ it("opens the bundled third-party licences from About and shows the Apache licen
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+it("keeps a failed edit and saves it with Retry after merging a change made outside Settings", async () => {
+  const original = await api.get();
+  const fresh = {
+    ...original,
+    config: { ...original.config, onboarded: true, words: ["Rhyan"], excluded_apps: ["com.example.QuillPoint"] },
+    revision: 1,
+  };
+  const get = vi.spyOn(api, "get").mockResolvedValue(fresh);
+  const save = vi.spyOn(api, "save")
+    .mockRejectedValueOnce("The settings file changed on disk.")
+    .mockResolvedValueOnce({ revision: 3, problems: [], recovery: null });
+
+  render(App);
+  await screen.findByRole("heading", { name: "Models" });
+  await fireEvent.click(await screen.findByRole("button", { name: "Dictionary" }));
+  await fireEvent.input(screen.getByPlaceholderText(/Rhyan/), { target: { value: "Brynlee" } });
+  await fireEvent.click(screen.getByRole("button", { name: "Add" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Couldn’t save your changes.");
+  expect(screen.getByRole("button", { name: "Remove Brynlee" })).toBeTruthy();
+
+  get.mockResolvedValue({
+    ...fresh,
+    revision: 2,
+    config: { ...fresh.config, words: ["Rhyan", "Kyndal"], excluded_apps: [...fresh.config.excluded_apps, "com.example.Rhyan"] },
+  });
+  await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await screen.findByText("Saved");
+  expect(get).toHaveBeenLastCalledWith(true);
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({
+    words: ["Rhyan", "Kyndal", "Brynlee"],
+    excluded_apps: ["com.example.QuillPoint", "com.example.Rhyan"],
+  }), 2);
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+});
+
+it("offers to reload an unreadable settings file and restores controls when it is repaired", async () => {
+  const original = await api.get();
+  const recovery = {
+    path: "/example/settings.json",
+    issues: ["Settings must contain a valid JSON object."],
+    writable: false,
+    exclusionsSafe: false,
+    destinationSafe: false,
+  };
+  const get = vi.spyOn(api, "get").mockResolvedValue({ ...original, recovery });
+  const save = vi.spyOn(api, "save");
+  render(App);
+  expect((await screen.findByRole("status")).textContent).toContain("SuperEditr couldn’t load your settings");
+  await fireEvent.click(screen.getByRole("button", { name: "Dictionary" }));
+  expect(screen.queryByRole("heading", { name: "Dictionary" })).toBeNull();
+
+  get.mockResolvedValue({ ...original, recovery: null });
+  await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByRole("heading", { name: "Dictionary" })).toBeTruthy();
+  expect(save).not.toHaveBeenCalled();
 });
 
 async function openLicences() {

@@ -90,7 +90,11 @@ pub fn init_without_menu(app: &AppHandle) {
 /// What the item says now, or None when it's hidden.
 pub fn current_label(app: &AppHandle) -> Option<String> {
     let toggle = app.try_state::<AppToggle>()?;
-    let config = app.state::<AppState>().config();
+    let state = app.state::<AppState>();
+    if !state.exclusions_safe() {
+        return None;
+    }
+    let config = state.config();
     toggle.target.lock().unwrap().as_ref().and_then(|target| label(&config, target))
 }
 
@@ -137,15 +141,20 @@ pub fn on_menu(app: &AppHandle) {
     let Some(toggle) = app.try_state::<AppToggle>() else { return };
     let Some(target) = toggle.target.lock().unwrap().clone() else { return };
     let state = app.state::<AppState>();
-    let mut config = state.config();
-    if !offered(&config, &target.bundle_id) {
-        return;
-    }
-    let excluding = !config.is_excluded(&target.bundle_id);
-    config.set_excluded(&target.bundle_id, excluding);
-    if let Err(e) = crate::commands::save_settings(app.clone(), state, config, None) {
-        eprintln!("SuperEditr: couldn't save settings: {e}");
-        return crate::review::show_error(app, failure_message(&target, excluding, &e));
+    let mut excluding = false;
+    match state.update_config(None, |settings, config| {
+        if !settings.exclusions_safe || !offered(config, &target.bundle_id) {
+            return None;
+        }
+        excluding = !config.is_excluded(&target.bundle_id);
+        config.set_excluded(&target.bundle_id, excluding).then_some(())
+    }) {
+        Ok(Some(_)) => refresh(app),
+        Ok(None) => return,
+        Err(e) => {
+            eprintln!("SuperEditr: couldn't save settings: {e}");
+            return crate::review::show_error(app, failure_message(&target, excluding, &e.to_string()));
+        }
     }
     let _ = app.emit_to("settings", "settings:reload", ());
 }

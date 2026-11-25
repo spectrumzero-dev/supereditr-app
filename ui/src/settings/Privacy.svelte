@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { AppInfo, Config } from "../lib/types";
-  import { excludedRows, withApps } from "./excluded";
+  import { appIdentity, excludedRows, withApps } from "./excluded";
   import { api } from "./ipc";
   import { isMac, isWindows, words } from "../lib/platform";
 
@@ -70,7 +70,7 @@
   }
 
   function remove(id: string) {
-    config.excluded_apps = config.excluded_apps.filter((a) => a !== id);
+    config.excluded_apps = config.excluded_apps.filter((a) => appIdentity(a) !== appIdentity(id));
     onchange();
   }
 </script>

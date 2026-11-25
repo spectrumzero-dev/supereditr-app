@@ -4,12 +4,13 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant};
+use supereditr_core::config::{ConfigFile, LoadStatus};
 use supereditr_core::detect::Candidate;
 use supereditr_core::provider::{ProviderKind, ProviderProfile};
 use supereditr_core::{Config, Engine};
 
 pub struct AppState {
-    pub config: RwLock<Config>,
+    settings: RwLock<ConfigFile>,
     pub config_path: PathBuf,
     pub engine: Engine,
     /// The review or notice on screen, and the quiet period after a fix.
@@ -29,6 +30,8 @@ pub struct AppState {
     pub next_id: AtomicU64,
     /// Results of the last account scan, keys included, until the user picks one.
     pub candidates: Mutex<Vec<Candidate>>,
+    /// Serializes allocating and releasing provider IDs with their credential operations.
+    pub provider_changes: Mutex<()>,
     /// API keys read from the keychain, cached so a review never waits on Keychain Services.
     keys: Mutex<HashMap<String, Option<String>>>,
     pub paused: AtomicBool,
@@ -268,17 +271,24 @@ impl ReviewState {
 // tester's Mac has left a record even when it can no longer be reached to turn the log on. Only
 // official release builds (`updater::ENABLED`) follow the setting.
 impl AppState {
+    #[cfg(test)]
     pub fn new(config_path: PathBuf) -> Self {
-        let config = Config::load(&config_path);
+        let settings = ConfigFile::load(&config_path);
+        Self::with_settings(config_path, settings)
+    }
+
+    pub fn with_settings(config_path: PathBuf, settings: ConfigFile) -> Self {
+        let config = &settings.config;
         crate::platform::set_trace(config.diagnostic_log || !crate::updater::ENABLED);
         let engine = Engine::new(&config.dialect);
         Self {
-            config: RwLock::new(config),
+            settings: RwLock::new(settings),
             config_path,
             engine,
             review: Mutex::new(ReviewState::new(Instant::now())),
             next_id: AtomicU64::new(1),
             candidates: Mutex::new(Vec::new()),
+            provider_changes: Mutex::new(()),
             keys: Mutex::new(HashMap::new()),
             paused: AtomicBool::new(false),
             watch_generation: AtomicU64::new(0),
@@ -288,7 +298,39 @@ impl AppState {
     }
 
     pub fn config(&self) -> Config {
-        self.config.read().unwrap().clone()
+        self.settings.read().unwrap().config.clone()
+    }
+
+    pub fn read_settings<T>(&self, read: impl FnOnce(&ConfigFile, u64) -> T) -> T {
+        let settings = self.settings.read().unwrap();
+        read(&settings, self.revision.load(Ordering::Relaxed))
+    }
+
+    pub fn allow_startup_settings_changes(&self) -> bool {
+        self.read_settings(|settings, _| matches!(settings.status(), LoadStatus::Missing | LoadStatus::Clean))
+    }
+
+    /// Rereads a file the user may have repaired, invalidating saves based on the previous copy.
+    pub fn retry_settings(&self, load: impl FnOnce() -> ConfigFile) -> (Config, Config) {
+        let mut settings = self.settings.write().unwrap();
+        let previous = settings.config.clone();
+        *settings = load();
+        self.watch_generation.fetch_add(1, Ordering::Relaxed);
+        self.config_changed(&settings.config);
+        (previous, settings.config.clone())
+    }
+
+    pub fn exclusions_safe(&self) -> bool {
+        self.read_settings(|settings, _| settings.exclusions_safe)
+    }
+
+    pub fn automatic_enabled(&self) -> bool {
+        self.read_settings(|settings, _| settings.exclusions_safe && settings.config.auto_popup)
+    }
+
+    #[cfg(test)]
+    pub fn edit_config_for_test(&self, edit: impl FnOnce(&mut Config)) {
+        edit(&mut self.settings.write().unwrap().config);
     }
 
     pub fn next_session_id(&self) -> u64 {
@@ -325,49 +367,135 @@ impl AppState {
 
     /// The active provider with its API key attached, ready for a request.
     pub fn active_profile(&self) -> Option<ProviderProfile> {
-        let mut profile = self.config.read().unwrap().active_profile()?.clone();
-        profile.api_key = self.key_for(profile.kind, &profile.id);
-        Some(profile)
+        self.review_config().1
+    }
+
+    /// The review settings and the destination chosen by the same settings snapshot.
+    pub fn review_config(&self) -> (Config, Option<ProviderProfile>, bool) {
+        let (config, mut profile, exclusions_safe) = self.read_settings(|settings, _| {
+            let profile = settings.destination_safe.then(|| settings.config.active_profile()).flatten().cloned();
+            (settings.config.clone(), profile, settings.exclusions_safe)
+        });
+        if let Some(profile) = &mut profile {
+            profile.api_key = self.key_for(profile.kind, &profile.id);
+        }
+        (config, profile, exclusions_safe)
     }
 
     pub fn profile(&self, id: &str) -> Option<ProviderProfile> {
-        let mut profile = self.config.read().unwrap().providers.iter().find(|p| p.id == id)?.clone();
+        let mut profile = self.settings.read().unwrap().config.providers.iter().find(|p| p.id == id)?.clone();
         profile.api_key = self.key_for(profile.kind, &profile.id);
         Some(profile)
     }
 
     /// The settings, and the revision they were saved at.
     pub fn config_at_revision(&self) -> (Config, u64) {
-        let config = self.config.read().unwrap();
-        (config.clone(), self.revision.load(Ordering::Relaxed))
+        self.read_settings(|settings, revision| (settings.config.clone(), revision))
     }
 
+    #[cfg(test)]
     pub fn save_config(&self, config: Config) -> std::io::Result<()> {
         self.save_config_based_on(config, None).map(|_| ())
     }
 
     /// Saves, unless `revision` is given and the settings have been saved since then. Returns the
     /// new revision, or None when the save was refused.
-    pub fn save_config_based_on(&self, mut config: Config, revision: Option<u64>) -> std::io::Result<Option<u64>> {
-        config.pin_official_addresses();
+    pub fn save_config_based_on(&self, config: Config, revision: Option<u64>) -> std::io::Result<Option<u64>> {
+        self.update_config(revision, |_, next| {
+            *next = config;
+            Some(())
+        })
+        .map(|saved| saved.map(|(revision, ())| revision))
+    }
+
+    /// Applies an edit to the current copy and commits it under the lock. Returning None from
+    /// the edit skips persistence, for a change that no longer needs to be made.
+    pub fn update_config<T>(
+        &self,
+        revision: Option<u64>,
+        update: impl FnOnce(&ConfigFile, &mut Config) -> Option<T>,
+    ) -> std::io::Result<Option<(u64, T)>> {
         // The revision changes only under this lock, so nothing can save between check and write.
-        let mut current = self.config.write().unwrap();
+        let mut current = self.settings.write().unwrap();
         if revision.is_some_and(|r| r != self.revision.load(Ordering::Relaxed)) {
             return Ok(None);
         }
-        config.save(&self.config_path)?;
+        let mut config = current.config.clone();
+        let Some(value) = update(&current, &mut config) else { return Ok(None) };
+        current.save(&self.config_path, config)?;
+        Ok(Some((self.config_changed(&current.config), value)))
+    }
+
+    fn config_changed(&self, config: &Config) -> u64 {
         crate::platform::set_trace(config.diagnostic_log || !crate::updater::ENABLED);
-        *current = config;
         // Any setting may change what a review would say: the AI, its model, the styles, the word
         // list. The next review asks afresh.
         self.last_review.forget();
-        Ok(Some(self.revision.fetch_add(1, Ordering::Relaxed) + 1))
+        self.revision.fetch_add(1, Ordering::Relaxed) + 1
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_skips_degraded_files_and_retry_adopts_repaired_privacy_and_destination() {
+        let dir = std::env::temp_dir().join(format!("supereditr-recovery-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let missing = AppState::new(path.clone());
+        assert!(missing.allow_startup_settings_changes());
+
+        let broken = br#"{"auto_popup": true, "excluded_apps": false, "active_provider": "future"}"#;
+        for bytes in [b"{".as_slice(), broken] {
+            std::fs::write(&path, bytes).unwrap();
+            let state = AppState::new(path.clone());
+            assert!(!state.allow_startup_settings_changes());
+            assert!(!state.automatic_enabled());
+            assert!(state.active_profile().is_none());
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        std::fs::write(&path, b"{").unwrap();
+        let state = AppState::new(path.clone());
+        let (stale, revision) = state.config_at_revision();
+        assert!(state.save_config(stale.clone()).is_err());
+
+        let repaired = br#"{"auto_popup": true, "excluded_apps": ["com.example.quillpoint"]}"#;
+        std::fs::write(&path, repaired).unwrap();
+        state.retry_settings(|| ConfigFile::load(&path));
+        assert!(state.allow_startup_settings_changes());
+        assert!(state.automatic_enabled());
+        assert!(state.config().is_excluded("com.example.quillpoint"));
+        assert_eq!(state.save_config_based_on(stale, Some(revision)).unwrap(), None);
+        assert_eq!(std::fs::read(&path).unwrap(), repaired);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_native_edits_commit_against_the_latest_settings() {
+        let dir = std::env::temp_dir().join(format!("supereditr-native-edits-{}", std::process::id()));
+        let path = dir.join("settings.json");
+        let state = AppState::new(path.clone());
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                state
+                    .update_config(None, |_, config| config.set_excluded("com.example.QuillPoint", true).then_some(()))
+                    .unwrap();
+            });
+            scope.spawn(|| {
+                state
+                    .update_config(None, |_, config| {
+                        supereditr_core::words::add(&mut config.words, "Brynlee").then_some(())
+                    })
+                    .unwrap();
+            });
+        });
+        let saved = ConfigFile::load(&path).config;
+        assert_eq!(saved.words, ["Brynlee"]);
+        assert!(saved.is_excluded("com.example.quillpoint"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn a_save_based_on_settings_read_before_another_save_is_refused() {
@@ -383,7 +511,7 @@ mod tests {
         edited.style_notes = "Short sentences.".into();
         assert_eq!(state.save_config_based_on(edited.clone(), Some(read_at)).unwrap(), None);
         assert!(state.config().is_excluded("com.apple.Notes"));
-        assert!(Config::load(&dir.join("settings.json")).is_excluded("com.apple.Notes"));
+        assert!(ConfigFile::load(&dir.join("settings.json")).config.is_excluded("com.apple.Notes"));
         // Based on the current revision, the same save goes through.
         let (_, now) = state.config_at_revision();
         assert_eq!(state.save_config_based_on(edited, Some(now)).unwrap(), Some(now + 1));

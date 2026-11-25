@@ -4,7 +4,9 @@
 use crate::prompts::{Preset, builtin_presets};
 use crate::provider::ProviderProfile;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+
+mod persistence;
+pub use persistence::{ConfigFile, LoadStatus};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -168,7 +170,6 @@ const HOTKEYS_KEY: &str = "linux_hotkeys";
 const HOTKEYS_KEY: &str = "windows_hotkeys";
 #[cfg(not(any(target_os = "linux", windows)))]
 const HOTKEYS_KEY: &str = "hotkeys";
-const ALL_HOTKEYS_KEYS: &[&str] = &["hotkeys", "linux_hotkeys", "windows_hotkeys"];
 
 impl Default for Hotkeys {
     fn default() -> Self {
@@ -262,63 +263,25 @@ impl Default for Config {
 }
 
 impl Config {
-    pub fn load(path: &Path) -> Self {
-        let mut config: Config = std::fs::read_to_string(path)
-            .ok()
-            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-            .and_then(|mut raw| {
-                // This OS's shortcuts, or the defaults: never another OS's.
-                if let Some(fields) = raw.as_object_mut() {
-                    match fields.remove(HOTKEYS_KEY) {
-                        Some(own) => fields.insert("hotkeys".into(), own),
-                        None => fields.remove("hotkeys"),
-                    };
-                }
-                serde_json::from_value(raw).ok()
-            })
-            .unwrap_or_default();
-        config.merge_new_builtins();
-        config.merge_new_exclusions();
-        config.drop_builtin_ai();
-        config.pin_official_addresses();
+    fn migrate(&mut self) {
+        self.merge_new_builtins();
+        self.merge_new_exclusions();
+        self.drop_builtin_ai();
+        self.pin_official_addresses();
         #[cfg(not(any(target_os = "linux", windows)))]
-        if config.hotkeys.review == OLD_REVIEW_SHORTCUT {
-            config.hotkeys.review = REVIEW_SHORTCUT.into();
+        if self.hotkeys.review == OLD_REVIEW_SHORTCUT {
+            self.hotkeys.review = REVIEW_SHORTCUT.into();
         }
         #[cfg(target_os = "linux")]
-        if OLD_QUICK_FIX_SHORTCUTS.contains(&config.hotkeys.quick_fix.as_str()) {
-            config.hotkeys.quick_fix = QUICK_FIX_SHORTCUT.into();
+        if OLD_QUICK_FIX_SHORTCUTS.contains(&self.hotkeys.quick_fix.as_str()) {
+            self.hotkeys.quick_fix = QUICK_FIX_SHORTCUT.into();
         }
         // Review could already be on Super+Alt+R, which its choices offered, with Quick fix moved
         // or defaulted to it: one key would then do both.
         #[cfg(target_os = "linux")]
-        if config.hotkeys.quick_fix == QUICK_FIX_SHORTCUT && config.hotkeys.review == QUICK_FIX_SHORTCUT {
-            config.hotkeys.quick_fix = SPARE_QUICK_FIX_SHORTCUT.into();
+        if self.hotkeys.quick_fix == QUICK_FIX_SHORTCUT && self.hotkeys.review == QUICK_FIX_SHORTCUT {
+            self.hotkeys.quick_fix = SPARE_QUICK_FIX_SHORTCUT.into();
         }
-        config
-    }
-
-    /// Writes atomically so a crash mid-save never leaves a truncated settings file.
-    pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut raw = serde_json::to_value(self).map_err(std::io::Error::other)?;
-        let previous: Option<serde_json::Value> =
-            std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok());
-        if let Some(fields) = raw.as_object_mut() {
-            if let Some(own) = fields.remove("hotkeys") {
-                fields.insert(HOTKEYS_KEY.into(), own);
-            }
-            for key in ALL_HOTKEYS_KEYS.iter().filter(|key| **key != HOTKEYS_KEY) {
-                if let Some(other) = previous.as_ref().and_then(|p| p.get(*key)) {
-                    fields.insert(key.to_string(), other.clone());
-                }
-            }
-        }
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(&raw).map_err(std::io::Error::other)?)?;
-        std::fs::rename(tmp, path)
     }
 
     /// Adds default exclusions introduced since these settings were saved.
@@ -406,6 +369,17 @@ impl Config {
 mod tests {
     use super::*;
     use crate::provider::ProviderKind;
+    use std::path::Path;
+
+    impl Config {
+        fn load(path: &Path) -> Self {
+            ConfigFile::load(path).config
+        }
+
+        fn save(&self, path: &Path) -> std::io::Result<()> {
+            ConfigFile::load(path).save(path, self.clone())
+        }
+    }
 
     #[test]
     fn round_trips_and_keeps_user_edits() {

@@ -32,6 +32,8 @@
   let section = $state<Section>("welcome");
   let problems = $state<string[]>([]);
   let saved = $state(false);
+  let failure = $state("");
+  let retrying = $state(false);
   let timer: ReturnType<typeof setTimeout> | undefined;
   /** The config as Settings last loaded or saved it: what the user's unsaved changes are measured from. */
   let base: Config | null = null;
@@ -40,8 +42,8 @@
   /** Changes made here, and how many of them a finished save has reached. */
   let edits = 0;
   let savedEdits = 0;
-  /** Saves run one at a time, each based on the revision the one before it made. */
-  let saving: Promise<unknown> = Promise.resolve();
+  /** Apply save and reload responses in order so a late response can't replace a newer base. */
+  let pending: Promise<unknown> = Promise.resolve();
   /** Set by Get Started's "Find my AI accounts": Models scans as soon as it opens. */
   let scanOnOpen = $state(false);
 
@@ -50,10 +52,21 @@
     section = "models";
   }
 
-  async function reload() {
-    const fresh = await api.get();
+  function enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const done = pending.then(operation);
+    pending = done.catch(() => {});
+    return done;
+  }
+
+  async function load(reread = false) {
+    const fresh = await api.get(reread);
     setPlatform(fresh.platform);
     setKeyLabels(fresh.keyLabels ?? {});
+    if (fresh.recovery?.writable === false && config && base && edits !== savedEdits) {
+      // Keep the real base while the file is unavailable, so a later retry can rebase these edits.
+      payload = fresh;
+      return;
+    }
     const latest = structuredClone(fresh.config);
     // Changes waiting to be saved, or still being saved, survive a reload.
     if (config && base && edits !== savedEdits) {
@@ -66,10 +79,24 @@
     config = payload.config;
   }
 
+  function reload() {
+    return enqueue(async () => {
+      try {
+        await load();
+      } catch (error) {
+        failure = `Couldn’t load settings. ${errorMessage(error)}`;
+      }
+    });
+  }
+
+  function errorMessage(error: unknown) {
+    return error instanceof Error ? error.message : String(error);
+  }
+
   function onchange() {
     edits++;
     clearTimeout(timer);
-    timer = setTimeout(() => (saving = saving.then(() => save()).catch(console.error)), 250);
+    timer = setTimeout(() => void enqueue(save), 250);
   }
 
   /** Saves now, in turn with any other save, for a step that needs the change saved first (checking
@@ -78,29 +105,52 @@
   function saveNow(): Promise<boolean> {
     edits++;
     clearTimeout(timer);
-    const done = saving.then(() => save());
-    saving = done.catch(console.error);
-    return done;
+    return enqueue(save);
   }
 
   /** Saves the whole config. When the app has saved it since Settings loaded or saved it, the app
    * refuses, and Settings reloads, keeping its unsaved changes, and tries again. If the app keeps
    * refusing, the changes stay unsaved until the next one, and this returns false. */
   async function save(): Promise<boolean> {
-    return saveUntilCurrent(async () => {
-      if (!config || edits === savedEdits) return true;
-      const reached = edits;
-      const snapshot = $state.snapshot(config) as Config;
-      const result = await api.save(snapshot, revision);
-      if (result.revision === null) return false;
-      problems = result.problems;
-      revision = result.revision;
-      base = snapshot;
-      savedEdits = reached;
-      saved = true;
-      setTimeout(() => (saved = false), 1200);
-      return true;
-    }, reload);
+    saved = false;
+    try {
+      const done = await saveUntilCurrent(async () => {
+        if (!config || edits === savedEdits) return true;
+        if (payload?.recovery?.writable === false) return false;
+        const reached = edits;
+        const snapshot = $state.snapshot(config) as Config;
+        const result = await api.save(snapshot, revision);
+        if (result.revision === null) return false;
+        if (payload) payload.recovery = result.recovery;
+        problems = result.problems;
+        revision = result.revision;
+        base = snapshot;
+        savedEdits = reached;
+        saved = true;
+        setTimeout(() => (saved = false), 1200);
+        return true;
+      }, load);
+      failure = done ? "" : "Couldn’t save your changes. Try again.";
+      return done;
+    } catch (error) {
+      failure = `Couldn’t save your changes. ${errorMessage(error)}`;
+      return false;
+    }
+  }
+
+  function retry() {
+    retrying = true;
+    clearTimeout(timer);
+    void enqueue(async () => {
+      try {
+        await load(true);
+        await save();
+      } catch (error) {
+        failure = `Couldn’t load settings. ${errorMessage(error)}`;
+      } finally {
+        retrying = false;
+      }
+    });
   }
 
   function finish() {
@@ -126,6 +176,7 @@
     const refresh = () => reload();
     window.addEventListener("focus", refresh);
     return () => {
+      clearTimeout(timer);
       stop?.();
       stopReload?.();
       window.removeEventListener("focus", refresh);
@@ -164,7 +215,36 @@
   </aside>
   <main>
     <div class="drag" data-tauri-drag-region></div>
-    {#if config && payload}
+    {#if payload?.recovery || failure}
+      <section class="recovery" aria-label="Settings recovery">
+        {#if payload?.recovery}
+          {@const recovery = payload.recovery}
+          <div role="status">
+            {#if recovery.writable}
+              <strong>Some settings need attention</strong>
+              <p>Check these fields in the settings file. {recovery.issues.join(", ")}.</p>
+              {#if recovery.issues.includes("providers")}
+                <p>Unavailable AI profiles are kept in the file.</p>
+              {/if}
+            {:else}
+              <strong>SuperEditr couldn’t load your settings</strong>
+              <p>{recovery.issues.join(" ")}</p>
+            {/if}
+            {#if !recovery.exclusionsSafe}
+              <p>Reviewing text from other apps is paused until your excluded apps can be read.</p>
+            {/if}
+            {#if !recovery.destinationSafe}
+              <p>Reviews use on-device checks while the selected AI is unavailable.</p>
+            {/if}
+            <p>To reload a repaired file, select Retry.</p>
+            <code>{recovery.path}</code>
+          </div>
+        {/if}
+        {#if failure}<p role="alert">{failure}</p>{/if}
+        <button class="btn small" disabled={retrying} onclick={retry}>Retry</button>
+      </section>
+    {/if}
+    {#if config && payload && payload.recovery?.writable !== false}
       {#if section === "welcome"}
         <Welcome bind:config accessibility={payload.accessibility} {saveNow} {finish} openModels={() => (section = "models")} {findAccounts} />
       {:else if section === "models"}
@@ -276,6 +356,23 @@
   .saved {
     font-size: 12px;
     color: var(--text-3);
+  }
+  .recovery {
+    color: var(--warn);
+    background: var(--warn-bg);
+    border-radius: 8px;
+    max-width: 720px;
+    margin-bottom: 16px;
+    padding: 12px;
+  }
+  .recovery p {
+    margin: 4px 0;
+  }
+  .recovery code {
+    overflow-wrap: anywhere;
+  }
+  .recovery button {
+    margin-top: 8px;
   }
   main {
     overflow-y: auto;

@@ -4,6 +4,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import acceleratorsJson from "../../../tests/contracts/accelerators.json?raw";
 import diffApplyJson from "../../../tests/contracts/diff-apply.json?raw";
 import ipcNamesJson from "../../../tests/contracts/ipc-names.json?raw";
+import guideIpc from "../guide/Guide.svelte?raw";
+import overlayIpc from "../overlay/ipc.ts?raw";
+import settingsIpc from "../settings/ipc.ts?raw";
+import updateIpc from "../update/Update.svelte?raw";
 import { acceleratorFromEvent, windowsKeyName } from "./accelerator";
 import { applyView } from "./diff";
 import { commands, events } from "./ipc-names";
@@ -32,7 +36,8 @@ interface DiffApply {
 
 const accelerators: Accelerators = JSON.parse(acceleratorsJson);
 const diffApply: DiffApply = JSON.parse(diffApplyJson);
-const ipcNames: { commands: string[]; events: string[] } = JSON.parse(ipcNamesJson);
+const windowIpc = { guide: guideIpc, overlay: overlayIpc, settings: settingsIpc, update: updateIpc };
+const ipcNames: { windowCommands: Record<string, string[]>; events: string[] } = JSON.parse(ipcNamesJson);
 
 const keydown = (e: KeyEvent) =>
   ({
@@ -88,12 +93,24 @@ describe("diff-apply.json", () => {
   }
 });
 
-// src-tauri/src/ipc_contract.rs checks the same lists against the commands the app registers and the
-// events it emits.
+// src-tauri/src/ipc_contract.rs checks the registered commands, their grants, and emitted events.
 describe("ipc-names.json", () => {
   it("names every command the app registers, as ipc-names.ts does", () => {
-    expect([...commands].sort()).toEqual([...ipcNames.commands].sort());
+    const windowCommands = new Set(Object.values(ipcNames.windowCommands).flat());
+    expect([...commands].sort()).toEqual([...windowCommands].sort());
   });
+
+  it("lists the four window entry points", () => {
+    expect(Object.keys(ipcNames.windowCommands).sort()).toEqual(Object.keys(windowIpc).sort());
+  });
+
+  for (const [window, source] of Object.entries(windowIpc)) {
+    it(`lists the app commands called by ${window}`, () => {
+      const calls = source.matchAll(/\binvoke(?:<[^\n(]*>)?\s*\(\s*["']([a-z_][a-z0-9_]*)["']/g);
+      const invoked = new Set(Array.from(calls, (call) => call[1]));
+      expect([...invoked].sort()).toEqual([...ipcNames.windowCommands[window]].sort());
+    });
+  }
 
   it("names every event the app emits, as ipc-names.ts does", () => {
     expect([...events].sort()).toEqual([...ipcNames.events].sort());

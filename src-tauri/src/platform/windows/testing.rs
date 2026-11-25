@@ -303,13 +303,29 @@ impl World {
 
     pub fn replace(&self, capture: &Capture, text: &str) -> ReplaceOutcome {
         self.clear_keys();
-        replace::replace(&self.services(), capture, text, replace::Clip::Restore)
+        replace::replace(&self.services(), capture, text, replace::Clip::Restore, crate::platform::ReplaceMode::Apply)
+    }
+
+    pub fn quick_fix(&self, capture: &Capture, text: &str) -> ReplaceOutcome {
+        let run = crate::platform::QuickFix::new(std::time::Instant::now() + Duration::from_secs(5));
+        self.quick_fix_run(capture, text, &run)
+    }
+
+    pub fn quick_fix_run(&self, capture: &Capture, text: &str, run: &crate::platform::QuickFix) -> ReplaceOutcome {
+        self.clear_keys();
+        replace::replace(
+            &self.services(),
+            capture,
+            text,
+            replace::Clip::Restore,
+            crate::platform::ReplaceMode::QuickFix(run),
+        )
     }
 
     /// The user chose to replace without their clipboard put aside.
     pub fn replace_anyway(&self, capture: &Capture, text: &str) -> ReplaceOutcome {
         self.clear_keys();
-        replace::replace(&self.services(), capture, text, replace::Clip::Leave)
+        replace::replace(&self.services(), capture, text, replace::Clip::Leave, crate::platform::ReplaceMode::Apply)
     }
 
     /// The app that put the clipboard's text there takes `wait` to render it.

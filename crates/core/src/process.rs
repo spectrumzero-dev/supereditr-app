@@ -42,6 +42,12 @@ impl Child {
         self.process.wait().await
     }
 
+    /// Kills the process and waits for it to be reaped.
+    pub async fn terminate(&mut self) -> io::Result<ExitStatus> {
+        self.process.kill()?;
+        self.wait().await
+    }
+
     /// Reads both outputs to the end and waits for the program to exit.
     pub async fn output(mut self) -> io::Result<Output> {
         drop(self.stdin.take());
@@ -119,6 +125,10 @@ mod imp {
         pub async fn wait(&mut self) -> io::Result<ExitStatus> {
             self.0.wait().await
         }
+
+        pub fn kill(&mut self) -> io::Result<()> {
+            self.0.start_kill()
+        }
     }
 
     pub fn spawn(program: &str, args: &[&str], dir: Option<&Path>, stdin: super::Stdin) -> io::Result<Child> {
@@ -187,20 +197,29 @@ mod imp {
             if let Some(status) = self.status {
                 return Ok(status);
             }
-            let exit = self.exit.take().ok_or_else(|| io::Error::other("the child was already waited on"))?;
+            let exit = self.exit.as_mut().ok_or_else(|| io::Error::other("the child was already waited on"))?;
             let status = exit.await.map_err(|_| io::Error::other("the child's waiter thread stopped"))??;
+            self.exit = None;
             self.status = Some(status);
             Ok(status)
+        }
+
+        pub fn kill(&self) -> io::Result<()> {
+            let reaped = self.reaped.lock().unwrap_or_else(PoisonError::into_inner);
+            if !*reaped && unsafe { libc::kill(self.pid, libc::SIGKILL) } != 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(error);
+                }
+            }
+            Ok(())
         }
     }
 
     impl Drop for Process {
         fn drop(&mut self) {
-            let reaped = self.reaped.lock().unwrap_or_else(PoisonError::into_inner);
-            if !*reaped {
-                // The waiter thread reaps it once it exits.
-                unsafe { libc::kill(self.pid, libc::SIGKILL) };
-            }
+            // The waiter thread reaps it once it exits.
+            let _ = self.kill();
         }
     }
 
@@ -319,7 +338,8 @@ mod imp {
         });
         let process = Process { pid, reaped, exit: Some(exit), status: None };
         if let Err(e) = waiter {
-            drop(process); // kills it; it stays a zombie until SuperEditr quits
+            let _ = process.kill();
+            let _ = wait_and_reap(pid, &process.reaped);
             return Err(e);
         }
 

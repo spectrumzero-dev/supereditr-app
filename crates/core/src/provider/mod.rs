@@ -19,6 +19,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+// The authentication and option-retry error fixtures in tests/providers/http.rs are at most
+// 110 bytes. Keep room for provider diagnostics and structured context before falling back to a
+// short text preview. Statuses with dedicated errors need no body at all.
+const HTTP_ERROR_BODY_LIMIT: usize = 16 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
@@ -165,6 +170,8 @@ pub enum ProviderError {
     Network(String),
     #[error("Unexpected response from the provider: {0}")]
     Protocol(String),
+    #[error(transparent)]
+    FrameTooLarge(#[from] crate::sse::FrameTooLarge),
     #[error("{0}")]
     Process(String),
 }
@@ -306,8 +313,34 @@ impl Providers {
 /// Converts a non-success HTTP response into a typed error.
 async fn http_error(provider: &'static str, model: &str, response: reqwest::Response) -> ProviderError {
     let status = response.status().as_u16();
-    let body = response.text().await.unwrap_or_default();
-    let message = serde_json::from_str::<serde_json::Value>(&body)
+    match status {
+        401 | 403 => ProviderError::Unauthorized,
+        429 => ProviderError::RateLimited,
+        404 => ProviderError::ModelNotFound(model.to_string()),
+        _ => {
+            let message = http_error_message(response, HTTP_ERROR_BODY_LIMIT).await;
+            ProviderError::Http { provider, status, message }
+        }
+    }
+}
+
+async fn http_error_message(mut response: reqwest::Response, limit: usize) -> String {
+    let mut prefix = Vec::new();
+    while prefix.len() < limit {
+        let Ok(Some(chunk)) = response.chunk().await else { break };
+        let take = chunk.len().min(limit - prefix.len());
+        prefix.extend_from_slice(&chunk[..take]);
+    }
+
+    // Decode only the captured bytes, with the same charset and BOM handling as reqwest.
+    let mut excerpt = http::Response::new(prefix);
+    let content_type = reqwest::header::CONTENT_TYPE;
+    if let Some(value) = response.headers().get(&content_type) {
+        excerpt.headers_mut().insert(content_type, value.clone());
+    }
+    drop(response);
+    let body = reqwest::Response::from(excerpt).text().await.unwrap_or_default();
+    serde_json::from_str::<serde_json::Value>(&body)
         .ok()
         .and_then(|v| {
             v.pointer("/error/message")
@@ -315,13 +348,7 @@ async fn http_error(provider: &'static str, model: &str, response: reqwest::Resp
                 .or_else(|| v.pointer("/message"))
                 .and_then(|m| m.as_str().map(str::to_string))
         })
-        .unwrap_or_else(|| body.chars().take(300).collect());
-    match status {
-        401 | 403 => ProviderError::Unauthorized,
-        429 => ProviderError::RateLimited,
-        404 => ProviderError::ModelNotFound(model.to_string()),
-        _ => ProviderError::Http { provider, status, message },
-    }
+        .unwrap_or_else(|| body.chars().take(300).collect())
 }
 
 /// True when a 400 response complains about one of the optional latency parameters, which
@@ -490,6 +517,47 @@ pub fn start_claude_sign_in(saved: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn http_error_message_reads_only_the_budget_across_chunks() {
+        use futures_util::{StreamExt, stream};
+
+        let chunks = stream::iter([Ok::<_, std::io::Error>(b"Caf\xc3".to_vec()), Ok(b"\xa9 au lait".to_vec())]);
+        let chunks = chunks.chain(stream::once(async { panic!("read beyond the diagnostic budget") }));
+        let response = reqwest::Response::from(http::Response::new(reqwest::Body::wrap_stream(chunks)));
+        assert_eq!(http_error_message(response, 5).await, "Café");
+    }
+
+    #[tokio::test]
+    async fn http_error_message_keeps_structured_diagnostics_and_text_charset() {
+        let json = r#"{"error":{"message":"Unknown thinking level"}}"#;
+        let response = http::Response::builder().status(400).body(json).unwrap().into();
+        assert_eq!(http_error_message(response, json.len()).await, "Unknown thinking level");
+
+        let response = http::Response::builder()
+            .header("content-type", "text/plain; charset=iso-8859-1")
+            .body(b"Caf\xe9".to_vec())
+            .unwrap()
+            .into();
+        assert_eq!(http_error_message(response, 8).await, "Café");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn http_error_dedicated_statuses_skip_the_body() {
+        for status in [401, 403, 404, 429] {
+            let unread = futures_util::stream::pending::<Result<Vec<u8>, std::io::Error>>();
+            let body = reqwest::Body::wrap_stream(unread);
+            let response = http::Response::builder().status(status).body(body).unwrap().into();
+            let error = tokio::time::timeout(Duration::from_secs(1), http_error("Server", "quill", response))
+                .await
+                .expect("read body for a dedicated HTTP status");
+            match (status, error) {
+                (401 | 403, ProviderError::Unauthorized) | (429, ProviderError::RateLimited) => {}
+                (404, ProviderError::ModelNotFound(model)) => assert_eq!(model, "quill"),
+                other => panic!("unexpected error mapping: {other:?}"),
+            }
+        }
+    }
 
     #[test]
     fn claude_auth_status_maps_to_a_problem_the_ui_words() {

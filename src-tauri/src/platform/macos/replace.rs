@@ -11,7 +11,7 @@ use super::keys::post_key;
 use super::seam::{Clock, Desktop, Field, Pasteboard, Services, System};
 use super::text::{html_with_code, is_invisible, is_line_break, markdown_with_code};
 use super::{Capture, accessibility_trusted, pasteboard, trace};
-use crate::platform::{PlatformError, ReplaceMethod, ReplaceOutcome, log_lines};
+use crate::platform::{PlatformError, ReplaceMethod, ReplaceMode, ReplaceOutcome, log_lines};
 use core_foundation::base::{CFType, TCFType};
 use core_graphics::event::{CGEvent, CGEventFlags};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
@@ -25,14 +25,19 @@ use supereditr_core::policy::{self, Selection};
 /// `proofread` with a few local changes is applied in place, one edit per change, so formatting
 /// around them is never touched; anything else, or an app that doesn't let SuperEditr move the
 /// selection, replaces the whole selection.
-pub fn replace(capture: &Capture, text: &str, proofread: bool) -> ReplaceOutcome {
-    ReplaceOutcome::from(replace_with(
+pub fn replace(capture: &Capture, text: &str, proofread: bool, mode: ReplaceMode<'_>) -> ReplaceOutcome {
+    let result = replace_with(
         &System::services(),
         capture,
         capture.element.as_ref().map(|element| element as &dyn Field),
         text,
         proofread,
-    ))
+        mode,
+    );
+    match result {
+        Err(error @ PlatformError::Stale) => mode.refusal(error),
+        result => ReplaceOutcome::from(result),
+    }
 }
 
 /// [`replace`], against `services` and `field`, the captured field.
@@ -42,7 +47,9 @@ pub(super) fn replace_with<D: Desktop, P: Pasteboard>(
     field: Option<&dyn Field>,
     text: &str,
     proofread: bool,
+    mode: ReplaceMode<'_>,
 ) -> Result<ReplaceMethod, PlatformError> {
+    mode.check()?;
     if !services.desktop.trusted() {
         return Err(PlatformError::NotTrusted);
     }
@@ -74,7 +81,7 @@ pub(super) fn replace_with<D: Desktop, P: Pasteboard>(
         match plan {
             None => {}
             Some(Ok(edits)) if !edits.is_empty() => {
-                if let Some(method) = replace_in_place(services, capture, field, text, &edits)? {
+                if let Some(method) = replace_in_place(services, capture, field, text, &edits, mode)? {
                     return Ok(method);
                 }
             }
@@ -85,6 +92,7 @@ pub(super) fn replace_with<D: Desktop, P: Pasteboard>(
         }
         if !capture.web && field.can_set_selected_text() {
             let before = field.value();
+            mode.check()?;
             if field.set_selected_text(text) {
                 if verify_replacement(
                     services.clock,
@@ -108,7 +116,7 @@ pub(super) fn replace_with<D: Desktop, P: Pasteboard>(
             }
         }
     }
-    paste(services, capture, field, text)
+    paste(services, capture, field, text, mode)
 }
 
 /// True while the captured selection is still exactly what the user selected, in the same place.
@@ -196,15 +204,20 @@ fn paste<D: Desktop, P: Pasteboard>(
     capture: &Capture,
     field: &dyn Field,
     text: &str,
+    mode: ReplaceMode<'_>,
 ) -> Result<ReplaceMethod, PlatformError> {
     let (desktop, pasteboard, clock) = (services.desktop, services.pasteboard, services.clock);
     let before = field.value();
-    let snapshot = pasteboard.snapshot();
+    let (snapshot, clipboard_before) = pasteboard.snapshot()?;
     // Code the app formatted is pasted as code again: a plain-text paste would turn it into prose.
     let code = supereditr_core::diff::carry_ranges(&capture.text, text, &capture.code);
     let html = (!code.is_empty()).then(|| html_with_code(text, &code));
     let plain = if code.is_empty() { text.to_string() } else { markdown_with_code(text, &code) };
-    let ours = pasteboard.write_transient(&plain, html.as_deref());
+    if !field.has_focus(capture.pid) || !selection_unchanged(capture, field) {
+        return Err(PlatformError::Stale);
+    }
+    mode.check()?;
+    let ours = pasteboard.write_transient(&plain, html.as_deref(), clipboard_before)?;
     let window = desktop.window_state(capture.pid);
     let started = clock.now();
     // Chrome 156 drops a paste when its asynchronous clipboard-change notice arrives after the
@@ -227,6 +240,13 @@ fn paste<D: Desktop, P: Pasteboard>(
                 || !selection_unchanged(capture, field)
                 || pasteboard.change_count() != ours)
         {
+            break;
+        }
+        if let Err(error) = mode.check() {
+            if attempts == 0 {
+                pasteboard.restore_soon(snapshot, ours);
+                return Err(error);
+            }
             break;
         }
         how = desktop.paste(capture.pid);
@@ -410,6 +430,7 @@ fn replace_in_place<D: Desktop, P: Pasteboard>(
     field: &dyn Field,
     text: &str,
     edits: &[supereditr_core::edits::Edit],
+    mode: ReplaceMode<'_>,
 ) -> Result<Option<ReplaceMethod>, PlatformError> {
     let clock = services.clock;
     let started = clock.now();
@@ -450,7 +471,7 @@ fn replace_in_place<D: Desktop, P: Pasteboard>(
     let select_text = |start: usize, text: &str, wait: Duration| {
         let deadline = clock.now() + wait;
         loop {
-            if !field.select(start, text.encode_utf16().count()) {
+            if mode.check().is_err() || !field.select(start, text.encode_utf16().count()) {
                 return false;
             }
             if wait_until(clock, Duration::from_millis(100), || field.selected().as_deref() == Some(text)) {
@@ -472,6 +493,7 @@ fn replace_in_place<D: Desktop, P: Pasteboard>(
                 && wait_until(clock, Duration::from_millis(200), || selection_unchanged(capture, field))
     };
     if !select(&places[0], Duration::from_millis(200)) {
+        mode.check()?;
         if !restore() {
             trace(format_args!("{}: in place: the selection couldn't be put back", capture.bundle_id));
             return Err(PlatformError::Stale);
@@ -487,6 +509,9 @@ fn replace_in_place<D: Desktop, P: Pasteboard>(
             return stopped(i, "the text to fix no longer matched");
         }
         let value = field.value();
+        if let Err(error) = mode.check() {
+            return if i == 0 { Err(error) } else { stopped(i, "the quick fix ended") };
+        }
         let wrote = if native {
             field.set_selected_text(&edit.new)
         } else {
@@ -507,7 +532,9 @@ fn replace_in_place<D: Desktop, P: Pasteboard>(
     // The caret after the fixed text, where replacing the whole selection leaves it.
     let grown: isize =
         edits.iter().map(|e| e.new.encode_utf16().count() as isize - e.old.encode_utf16().count() as isize).sum();
-    field.select((location + length).saturating_add_signed(grown), 0);
+    if mode.check().is_ok() {
+        field.select((location + length).saturating_add_signed(grown), 0);
+    }
     let verified = verify_replacement(clock, field, capture, Some(&before), text, None, AFTER_EDIT);
     let code = if capture.code.is_empty() {
         String::new()
@@ -735,6 +762,51 @@ mod tests {
         assert_eq!(world.field_text(), "Rhyan said they’re going to the store.");
         assert_eq!(world.clipboard_text(), "Rhyan's own copy");
         assert_eq!(world.clipboard_html().as_deref(), Some("<b>Rhyan's own copy</b>"), "every representation");
+    }
+
+    #[test]
+    fn an_unsaved_clipboard_blocks_a_paste_and_allows_an_accessibility_edit() {
+        use super::super::pasteboard::SnapshotError;
+
+        let world = notes().web().with_snapshot_error(SnapshotError::TimedOut);
+        let capture = world.capture();
+        let outcome = ReplaceOutcome::from(world.replace(&capture, "they’re going to"));
+        assert!(matches!(outcome, ReplaceOutcome::ClipboardKept(PlatformError::ClipboardNotKept(_))));
+        assert!(world.keys_sent().is_empty());
+        assert!(world.put_on_clipboard().is_empty());
+        assert_eq!(world.clipboard_text(), "Rhyan's own copy");
+
+        let world = notes().with_snapshot_error(SnapshotError::TimedOut);
+        assert!(matches!(world.replace(&world.capture(), "they’re going to"), Ok(ReplaceMethod::Accessibility)));
+        assert!(world.put_on_clipboard().is_empty());
+        assert_eq!(world.clipboard_text(), "Rhyan's own copy");
+    }
+
+    #[test]
+    fn a_copy_after_the_snapshot_prevents_a_paste() {
+        let world = notes().web();
+        let capture = world.capture();
+        world.after_snapshot(|world| world.user_copies("Brynlee's newer copy"));
+        let outcome = ReplaceOutcome::from(world.replace(&capture, "they’re going to"));
+        assert!(matches!(outcome, ReplaceOutcome::ClipboardKept(PlatformError::ClipboardNotKept(_))));
+        assert!(world.keys_sent().is_empty());
+        assert!(world.put_on_clipboard().is_empty());
+        assert_eq!(world.clipboard_text(), "Brynlee's newer copy");
+    }
+
+    #[test]
+    fn a_quick_fix_cancelled_during_the_snapshot_never_pastes() {
+        let world = notes().web();
+        let capture = world.capture();
+        let run =
+            std::sync::Arc::new(crate::platform::QuickFix::new(std::time::Instant::now() + Duration::from_secs(5)));
+        let old = run.clone();
+        world.after_snapshot(move |_| old.cancel());
+        assert!(matches!(world.quick_fix(&capture, "they’re going to", &run), Err(PlatformError::Cancelled)));
+        assert!(world.keys_sent().is_empty());
+        assert!(world.writes().is_empty());
+        assert!(world.put_on_clipboard().is_empty());
+        assert_eq!(world.clipboard_text(), "Rhyan's own copy");
     }
 
     #[test]

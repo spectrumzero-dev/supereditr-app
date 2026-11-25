@@ -8,10 +8,11 @@
 
 use super::ax::{CFRange, Element};
 use super::log::TRACE_ON;
+use super::pasteboard::SnapshotError;
 use super::seam::{App, Clock, Desktop, Field, Pasteboard, Services, System};
 use super::text::{code_ranges, visible_before};
 use super::{Capture, trace};
-use crate::platform::{PlatformError, Rect, log_lines};
+use crate::platform::{CaptureTarget, PlatformError, Rect, log_lines};
 use core_foundation::base::{CFType, TCFType};
 use core_foundation::string::{CFString, CFStringRef};
 use std::ffi::c_void;
@@ -90,13 +91,18 @@ fn why_copy_only<D: Desktop, A: App>(desktop: &D, app: &A, read: &Read<A::Node>,
 /// an automatic suggestion never copies, so the log calls the read "shortcut" or "automatic".
 /// With `select_sentence` and nothing selected, first selects the sentence before the caret,
 /// visibly, and reads that.
-pub fn capture(allow_clipboard: bool, select_sentence: bool) -> Result<Capture, PlatformError> {
-    capture_with(&System::services(), allow_clipboard, select_sentence).map(Read::into_capture)
+pub fn capture(
+    target: Option<CaptureTarget>,
+    allow_clipboard: bool,
+    select_sentence: bool,
+) -> Result<Capture, PlatformError> {
+    capture_with(&System::services(), target.as_ref(), allow_clipboard, select_sentence).map(Read::into_capture)
 }
 
 /// [`capture`], against `services`.
 pub(super) fn capture_with<'a, D: Desktop, P: Pasteboard>(
     services: &Services<'a, D, P>,
+    target: Option<&CaptureTarget>,
     allow_clipboard: bool,
     select_sentence: bool,
 ) -> Result<Read<NodeOf<'a, D>>, PlatformError> {
@@ -109,7 +115,13 @@ pub(super) fn capture_with<'a, D: Desktop, P: Pasteboard>(
         trace(format_args!("{source}: no app in front"));
         return Err(PlatformError::NoSelection);
     };
+    let target = target.ok_or(PlatformError::NoSelection)?;
     let (bundle_id, app_name) = desktop.app_identity(pid);
+    if pid != target.pid || bundle_id != target.bundle_id {
+        return Err(focus_changed());
+    }
+    // Accessibility can lag behind an app switch. Check the actual front app before reading a field.
+    ensure_frontmost(desktop, pid)?;
     // Nothing is ever read from a password manager, whatever the excluded apps say: not through
     // Accessibility, and not by copying.
     if supereditr_core::policy::is_password_manager(supereditr_core::policy::Os::MacOs, &bundle_id) {
@@ -119,7 +131,8 @@ pub(super) fn capture_with<'a, D: Desktop, P: Pasteboard>(
     let started = clock.now();
     let mut first = capture_ax(desktop, clock, &app, pid, &bundle_id, &app_name);
     if select_sentence && matches!(first, Err(PlatformError::NoSelection)) {
-        let caret = select_before_caret(clock, &app);
+        ensure_frontmost(desktop, pid)?;
+        let caret = select_before_caret(desktop, clock, &app, pid);
         trace(format_args!("{bundle_id}: nothing selected; {caret:?}"));
         if caret != CaretSelection::Nothing {
             first = capture_ax(desktop, clock, &app, pid, &bundle_id, &app_name);
@@ -172,6 +185,14 @@ pub(super) fn capture_with<'a, D: Desktop, P: Pasteboard>(
         )),
     }
     result
+}
+
+fn focus_changed() -> PlatformError {
+    PlatformError::Other("The focused app changed. Select the text and try again.".into())
+}
+
+fn ensure_frontmost(desktop: &impl Desktop, pid: i32) -> Result<(), PlatformError> {
+    if desktop.frontmost_pid() == Some(pid) { Ok(()) } else { Err(focus_changed()) }
 }
 
 /// One read of the selection: the element that owns it, and its text.
@@ -295,7 +316,7 @@ enum CaretSelection {
 
 /// With nothing selected, selects the text a review of "what I just wrote" should cover, so the
 /// user sees it and the usual capture, same-field and unchanged-selection checks apply to it.
-fn select_before_caret<A: App>(clock: &dyn Clock, app: &A) -> CaretSelection {
+fn select_before_caret(desktop: &impl Desktop, clock: &dyn Clock, app: &impl App, pid: i32) -> CaretSelection {
     let mut current = app.focused();
     for _ in 0..8 {
         let Some(element) = current else { break };
@@ -308,7 +329,7 @@ fn select_before_caret<A: App>(clock: &dyn Clock, app: &A) -> CaretSelection {
             let Some(sentence) = sentence_before(&value, location.max(0) as usize) else {
                 return CaretSelection::Nothing;
             };
-            if select_range(clock, &element, sentence) {
+            if desktop.frontmost_pid() == Some(pid) && select_range(clock, &element, sentence) {
                 return CaretSelection::Sentence;
             }
             break;
@@ -403,25 +424,21 @@ enum CopyRequest {
     KeyToApp,
 }
 
-/// Presses the app's own Copy menu item (⌘C with no other modifiers). Unlike a
-/// synthetic ⌘C, it doesn't depend on how the app treats posted keys or on modifier keys the user
-/// is still holding from the shortcut. Electron apps have a native menu bar even when their web
-/// content hides from Accessibility. Returns None when the app has no such item.
-fn press_copy_menu(app: &impl App) -> Option<CopyRequest> {
-    // A slow app can time out the press yet still copy, so it counts as sent either way; sending
-    // ⌘C as well could copy twice and land after the clipboard is restored.
-    app.press_menu_item("c").map(|pressed| if pressed { CopyRequest::Menu } else { CopyRequest::MenuDisabled })
-}
-
 /// Presses the menu item whose shortcut is ⌘ plus `key` alone, such as Edit ▸ Copy or Edit ▸ Paste.
 /// Returns Some(false) when the item is disabled and None when the app has no such item.
-pub(super) fn press_menu_item(app: &Element, key: &str) -> Option<bool> {
-    let item = menu_item(app, key)?;
+pub(super) fn press_menu_item(
+    app: &Element,
+    key: &str,
+    before_press: impl FnOnce() -> Result<(), PlatformError>,
+) -> Result<Option<bool>, PlatformError> {
+    let Some(item) = menu_item(app, key) else { return Ok(None) };
     if item.flag("AXEnabled") == Some(false) {
-        return Some(false);
+        return Ok(Some(false));
     }
+    before_press()?;
+    // A slow app can time out this press and still copy or paste. Count it as sent either way.
     item.press();
-    Some(true)
+    Ok(Some(true))
 }
 
 /// The menu item whose shortcut is ⌘ plus `key` alone, or None when the app has no such item or is
@@ -464,21 +481,30 @@ fn capture_clipboard<D: Desktop, P: Pasteboard, A: App>(
     app_name: String,
 ) -> Result<Read<A::Node>, PlatformError> {
     let (desktop, pasteboard, clock) = (services.desktop, services.pasteboard, services.clock);
-    let snapshot = pasteboard.snapshot();
-    let before = pasteboard.change_count();
-    // Exactly one copy request per read (see press_copy_menu). Without a Copy menu item, browsers
-    // and Electron apps in front get ⌘C as a keystroke, because some ignore keys sent to their
-    // process; other apps get it directly.
-    let request = press_copy_menu(app).unwrap_or_else(|| {
-        if desktop.browser_or_electron(&bundle_id, pid) && desktop.focused_app().is_some_and(|(_, front)| front == pid)
-        {
-            desktop.post_copy(0);
-            CopyRequest::Keystroke
-        } else {
-            desktop.post_copy(pid);
-            CopyRequest::KeyToApp
+    ensure_frontmost(desktop, pid)?;
+    let (snapshot, before) = pasteboard.snapshot()?;
+    let before_copy = || {
+        ensure_frontmost(desktop, pid)?;
+        if pasteboard.change_count() == before { Ok(()) } else { Err(SnapshotError::Changed.into()) }
+    };
+    // Exactly one copy request per read. The app’s menu works even in Electron apps that hide web
+    // content from Accessibility. Without it, browsers and Electron get a keystroke because some
+    // ignore keys sent to their process. Other apps get ⌘C directly.
+    let request = match app.press_copy_menu(before_copy)? {
+        Some(true) => CopyRequest::Menu,
+        Some(false) => CopyRequest::MenuDisabled,
+        None => {
+            let browser = desktop.browser_or_electron(&bundle_id, pid);
+            before_copy()?;
+            if browser {
+                desktop.post_copy(0);
+                CopyRequest::Keystroke
+            } else {
+                desktop.post_copy(pid);
+                CopyRequest::KeyToApp
+            }
         }
-    });
+    };
     if request == CopyRequest::MenuDisabled {
         trace(format_args!("{bundle_id}: Copy is disabled in the app's Edit menu"));
         return Err(PlatformError::NoSelection);
@@ -691,6 +717,19 @@ mod tests {
     }
 
     #[test]
+    fn a_switch_after_preflight_never_reads_or_selects_in_the_new_app() {
+        let target = notes().capture_target();
+        let world = World::new("com.quillpoint.private-notes").with_caret("Kyndal wrote to Rhyan.|");
+        for approved in [Some(target), Some(CaptureTarget { pid: 99, ..world.capture_target() }), None] {
+            assert!(world.read_for_target(approved.as_ref(), true, true).is_err());
+        }
+        assert_eq!(world.focused_reads(), 0, "the worker never asks for a field");
+        assert!(world.capture().text.is_empty(), "the caret stays where the user left it");
+        assert!(world.keys_sent().is_empty(), "the worker never requests a copy");
+        assert_eq!(world.clipboard_text(), "Rhyan's own copy");
+    }
+
+    #[test]
     fn a_password_manager_is_never_read_or_copied() {
         for app in
             ["com.1password.1password", "com.agilebits.onepassword7", "com.apple.Passwords", "com.bitwarden.desktop"]
@@ -868,6 +907,20 @@ mod tests {
         assert_eq!(world.keys_sent(), ["Copy menu item"], "exactly one copy request");
         assert_eq!(world.clipboard_text(), "Rhyan's own copy");
         assert_eq!(world.clipboard_html().as_deref(), Some("<b>Rhyan's own copy</b>"), "every representation");
+    }
+
+    #[test]
+    fn the_copy_fallback_preserves_an_incomplete_or_newer_clipboard() {
+        let world = notes().hiding_its_selection().with_snapshot_error(SnapshotError::Incomplete);
+        assert!(matches!(world.read_by_shortcut(), Err(PlatformError::ClipboardNotKept(_))));
+        assert!(world.keys_sent().is_empty());
+        assert_eq!(world.clipboard_text(), "Rhyan's own copy");
+
+        let world = notes().hiding_its_selection();
+        world.after_snapshot(|world| world.user_copies("Brynlee's newer copy"));
+        assert!(matches!(world.read_by_shortcut(), Err(PlatformError::ClipboardNotKept(_))));
+        assert!(world.keys_sent().is_empty());
+        assert_eq!(world.clipboard_text(), "Brynlee's newer copy");
     }
 
     #[test]

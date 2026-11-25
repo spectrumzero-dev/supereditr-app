@@ -317,7 +317,11 @@ pub fn input_idle() -> std::time::Duration {
 /// Reads the selection in the window in front: through UI Automation, or, with `allow_clipboard` (a
 /// shortcut press), a guarded copy. Selecting the sentence before the caret isn't done on Windows
 /// yet. Runs on a worker thread.
-pub fn capture(allow_clipboard: bool, _select_sentence: bool) -> Result<Capture, PlatformError> {
+pub fn capture(
+    _target: Option<super::CaptureTarget>,
+    allow_clipboard: bool,
+    _select_sentence: bool,
+) -> Result<Capture, PlatformError> {
     let _one_at_a_time = CHAIN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     *super::lock(&TARGET) = window::foreground().filter(|w| w.pid as i32 != own_pid());
     capture::capture(&services(), allow_clipboard)
@@ -332,20 +336,20 @@ pub fn focused_app_identity() -> Option<(i32, String, String)> {
 
 /// Pastes `text` over the captured selection. `_proofread` asks macOS to change only the words a
 /// proofread fixes; Windows replaces the whole selection. Runs on a worker thread.
-pub fn replace(capture: &Capture, text: &str, _proofread: bool) -> ReplaceOutcome {
-    replace_with(capture, text, replace::Clip::Restore)
+pub fn replace(capture: &Capture, text: &str, _proofread: bool, mode: super::ReplaceMode<'_>) -> ReplaceOutcome {
+    replace_with(capture, text, replace::Clip::Restore, mode)
 }
 
 /// Pastes `text` over the captured selection without putting the clipboard aside, after a
 /// replacement that couldn't (`PlatformError::ClipboardUnrestorable`): the fix stays on the
 /// clipboard. Every other check runs as for [`replace`]. Runs on a worker thread.
 pub fn replace_anyway(capture: &Capture, text: &str) -> ReplaceOutcome {
-    replace_with(capture, text, replace::Clip::Leave)
+    replace_with(capture, text, replace::Clip::Leave, super::ReplaceMode::Apply)
 }
 
-fn replace_with(capture: &Capture, text: &str, clip: replace::Clip) -> ReplaceOutcome {
+fn replace_with(capture: &Capture, text: &str, clip: replace::Clip, mode: super::ReplaceMode<'_>) -> ReplaceOutcome {
     let _one_at_a_time = CHAIN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    replace::replace(&services(), capture, text, clip)
+    replace::replace(&services(), capture, text, clip, mode)
 }
 
 /// Puts `text` on the clipboard for the user to paste. The copy is made on a thread of its own, one

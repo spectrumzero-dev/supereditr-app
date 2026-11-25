@@ -348,10 +348,7 @@ fn named_commands(
 fn on_second_launch(app: &AppHandle, args: &[String]) {
     match args.get(1).map(String::as_str) {
         Some("review") => review::on_review_hotkey(app),
-        Some("quick-fix") => {
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move { review::quick_fix(&app).await });
-        }
+        Some("quick-fix") => review::quick_fix(app),
         _ => show_settings(app, None),
     }
 }
@@ -631,6 +628,7 @@ pub fn run() {
         .invoke_handler(named_commands(tauri::generate_handler![
             commands::run_preset,
             commands::apply_text,
+            commands::check_protected_tokens,
             commands::dismiss,
             commands::copy_text,
             commands::resize_overlay,

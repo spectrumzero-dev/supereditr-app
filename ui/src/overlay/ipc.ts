@@ -30,6 +30,7 @@ export const ipc = {
   runPreset: (id: number, run: number, request: RunRequest) => invoke("run_preset", { id, run, ...request }),
   /** With `anyway`, the clipboard isn't put aside first and the fix stays on it (Windows). */
   apply: (id: number, text: string, anyway = false) => invoke<string>("apply_text", { id, text, anyway }),
+  checkProtectedTokens: (id: number, text: string) => invoke<string[]>("check_protected_tokens", { id, text }),
   dismiss: (id: number | null) => invoke("dismiss", { id }),
   copy: (text: string) => invoke("copy_text", { text }),
   resize: (height: number) => invoke("resize_overlay", { height }),

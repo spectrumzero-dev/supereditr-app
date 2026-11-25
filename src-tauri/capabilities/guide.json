@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "guide",
+  "description": "Permissions for the Accessibility guide",
+  "windows": ["guide"],
+  "permissions": [
+    "guide-commands",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
+}

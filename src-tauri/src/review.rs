@@ -7,15 +7,16 @@
 
 use crate::app_toggle;
 use crate::last_review::Finished;
-use crate::platform::{self, Capture, PlatformError, ReplaceOutcome, SelectionGesture, WatchEvent};
+use crate::platform::{self, Capture, CaptureTarget, PlatformError, ReplaceOutcome, SelectionGesture, WatchEvent};
 use crate::state::{AppState, Dismissal, Session};
 use serde::Serialize;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use supereditr_core::policy::{Os, is_password_manager};
 use supereditr_core::prompts::Preset;
 use supereditr_core::provider::ProviderProfile;
-use supereditr_core::{Config, Event, Job, sensitive};
+use supereditr_core::{Config, Event, Job, guard, sensitive};
 use tauri::{AppHandle, Manager};
 
 mod shell;
@@ -27,6 +28,7 @@ mod tests_runs;
 use shell::{Host, Live, Shell};
 
 const INITIAL_HEIGHT: f64 = 210.0;
+const QUICK_FIX_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The review's event handlers, over its state, its UI (`Shell`) and the platform and engine
 /// (`Host`). The app runs them on [`Live`] (see [`controller`]); tests on fakes that record each
@@ -105,7 +107,7 @@ pub struct StatusPayload {
 /// Decides, before any text is read, whether SuperEditr may act in the focused app. Returns a
 /// message to show when the user explicitly asked (shortcut) and the app is excluded.
 enum Target {
-    Allowed,
+    Allowed(Option<CaptureTarget>),
     Ignored,
     /// The message to show.
     Excluded(String),
@@ -183,14 +185,15 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
             Some((_, bundle_id, name)) if never_read(&config, &bundle_id) => {
                 Target::Excluded(excluded_message(&config, &bundle_id, &name))
             }
-            _ => Target::Allowed,
+            app => Target::Allowed(app.map(|(pid, bundle_id, _)| CaptureTarget { pid, bundle_id })),
         }
     }
 
     /// The review shortcut, with no automatic review to give the keys to (see [`start_manual`]).
     async fn start_manual(&self, preset_id: Option<String>) {
-        match self.check_target() {
-            Target::Allowed => {}
+        self.state.review.lock().unwrap().cancel_quick_fix();
+        let target = match self.check_target() {
+            Target::Allowed(target) => target,
             // In SuperEditr's own window, the shortcut reviews Settings' "Try it now" box, if focused.
             Target::Ignored => {
                 self.shell.emit("settings", "settings:review-shortcut", ());
@@ -198,10 +201,10 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
             }
             Target::Excluded(message) => return self.show_error(message),
             Target::NotTrusted => return self.show_error(NOT_TRUSTED.into()),
-        }
+        };
         self.host.warm_connection();
         let select_sentence = self.state.config().select_sentence;
-        match self.host.capture(true, select_sentence).await {
+        match self.host.capture(target, true, select_sentence).await {
             Ok(captured) => {
                 let _ = self.open(captured, false, preset_id);
             }
@@ -229,6 +232,7 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
     fn keys_to_automatic_review(&self) -> bool {
         let mut review = self.state.review.lock().unwrap();
         let Some(id) = review.take_keyboard() else { return false };
+        review.cancel_quick_fix();
         // Under the lock, so a dismissal can't put its hide ahead of this show and leave an empty
         // panel up.
         self.shell.show(true);
@@ -249,7 +253,7 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
             self.host.copy_to_clipboard(&suggestion);
         }
         match outcome {
-            ReplaceOutcome::Applied => None,
+            ReplaceOutcome::Applied | ReplaceOutcome::Cancelled => None,
             ReplaceOutcome::CopyOnly(error) => {
                 self.show_error(error.to_string());
                 Some(error.to_string())
@@ -257,6 +261,11 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
             ReplaceOutcome::Uncertain(error) | ReplaceOutcome::ClipboardKept(error) => {
                 self.show_notice(error.to_string(), Some(suggestion));
                 Some(error.to_string())
+            }
+            ReplaceOutcome::FocusMoved => {
+                let message = "The original selection changed or lost focus. Copy the suggestion from here.";
+                self.show_notice_with(message.into(), Some(suggestion), false);
+                Some(message.into())
             }
         }
     }
@@ -282,6 +291,16 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
     /// Opens the panel for a selection. Returns the review's number and style, for its first run,
     /// or why it didn't open, for an automatic suggestion's log line.
     fn begin(&self, captured: Capture, auto: bool, preset_id: Option<String>) -> Result<(u64, String), AutoOutcome> {
+        self.begin_for(captured, auto, preset_id, None)
+    }
+
+    fn begin_for(
+        &self,
+        captured: Capture,
+        auto: bool,
+        preset_id: Option<String>,
+        quick_fix: Option<&platform::QuickFix>,
+    ) -> Result<(u64, String), AutoOutcome> {
         let state = self.state;
         let config = state.config();
         if captured.pid == self.host.own_pid() && !captured.playground {
@@ -317,6 +336,9 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
             .unwrap_or_else(|| config.default_preset().id.clone());
         let id = state.next_session_id();
         let anchor = captured.bounds;
+        // A Quick Fix result that needs the author's judgment can arrive after a window switch.
+        // Opening it must leave keyboard focus in the window the author chose.
+        let keyboard = !auto && quick_fix.is_none();
         // The panel's keys are taken from this app only, not from a launcher opened over it. Does
         // nothing outside macOS.
         self.host.set_review_app(captured.pid);
@@ -329,7 +351,7 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
             app_name: captured.app_name.clone(),
             can_apply: captured.editable,
             copy_only_hint: captured.copy_only_hint(),
-            auto,
+            auto: !keyboard,
             preset_id: preset_id.clone(),
             presets: config.presets.iter().map(|p| PresetInfo { id: p.id.clone(), name: p.name.clone() }).collect(),
             show_timing: config.show_timing,
@@ -339,7 +361,7 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
         let session = Session {
             id,
             capture: captured,
-            keyboard: !auto,
+            keyboard,
             anchor,
             height: INITIAL_HEIGHT,
             task: None,
@@ -348,11 +370,21 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
             following,
         };
         // Dropped once the lock is released: that stops watching its window, through the platform.
-        let replaced = state.review.lock().unwrap().begin(session);
+        let replaced = {
+            let mut review = state.review.lock().unwrap();
+            if let Some(run) = quick_fix {
+                if run.is_cancelled() || run.expired() {
+                    return Err(AutoOutcome::Superseded);
+                }
+            } else if !auto {
+                review.cancel_quick_fix();
+            }
+            review.begin(session)
+        };
         self.shell.emit("overlay", "overlay:session", payload);
         drop(replaced);
         self.shell.position(anchor, INITIAL_HEIGHT);
-        self.shell.show(!auto);
+        self.shell.show(keyboard);
         self.shell.set_shortcuts(true);
         Ok((id, preset_id))
     }
@@ -593,26 +625,76 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
     }
 }
 
-/// Quick fix: proofread the selection and replace it directly, with no overlay.
-pub async fn quick_fix(app: &AppHandle) {
-    let _busy = crate::updater::busy();
-    let live = Live(app);
-    let controller = live_controller(app, &live);
-    controller.quick_fix().await;
+/// Proofread the selection and replace it when it can be written without a review.
+pub fn quick_fix(app: &AppHandle) {
+    // Reserve the run in shortcut delivery order, before the executor can reorder the tasks.
+    let run = controller(app, |c| c.reserve_quick_fix(QUICK_FIX_TIMEOUT));
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _busy = crate::updater::busy();
+        let live = Live(&app);
+        live_controller(&app, &live).execute_quick_fix(run).await;
+    });
 }
 
 impl<S: Shell, H: Host> Controller<'_, S, H> {
-    /// Quick fix (see [`quick_fix`]).
+    #[cfg(test)]
     async fn quick_fix(&self) {
-        match self.check_target() {
-            Target::Allowed => {}
+        self.quick_fix_with_timeout(QUICK_FIX_TIMEOUT).await;
+    }
+
+    #[cfg(test)]
+    async fn quick_fix_with_timeout(&self, timeout: Duration) {
+        self.execute_quick_fix(self.reserve_quick_fix(timeout)).await;
+    }
+
+    fn reserve_quick_fix(&self, timeout: Duration) -> Arc<platform::QuickFix> {
+        self.state.review.lock().unwrap().start_quick_fix(std::time::Instant::now() + timeout)
+    }
+
+    async fn execute_quick_fix(&self, run: Arc<platform::QuickFix>) {
+        if run.expired() {
+            self.quick_fix_timed_out(&run);
+        } else if !run.is_cancelled() {
+            self.run_quick_fix(&run).await;
+        }
+        self.state.review.lock().unwrap().finish_quick_fix(&run);
+    }
+
+    async fn until_quick_fix_deadline<T>(
+        &self,
+        run: &platform::QuickFix,
+        work: impl std::future::Future<Output = T>,
+    ) -> Option<T> {
+        tokio::select! {
+            biased;
+            _ = run.cancelled() => None,
+            _ = tokio::time::sleep_until(run.deadline.into()) => {
+                self.quick_fix_timed_out(run);
+                None
+            }
+            result = work => Some(result),
+        }
+    }
+
+    fn quick_fix_timed_out(&self, run: &platform::QuickFix) {
+        if !run.is_cancelled() {
+            self.show_notice_with("Quick Fix took too long. Try again.".into(), None, false);
+        }
+    }
+
+    async fn run_quick_fix(&self, run: &Arc<platform::QuickFix>) {
+        let target = match self.check_target() {
+            Target::Allowed(target) => target,
             Target::Ignored => return,
             Target::Excluded(message) => return self.show_error(message),
             Target::NotTrusted => return self.show_error(NOT_TRUSTED.into()),
-        }
+        };
         self.host.warm_connection();
         let state = self.state;
-        let captured = match self.host.capture(true, state.config().select_sentence).await {
+        let capture = self.host.capture(target, true, state.config().select_sentence);
+        let Some(captured) = self.until_quick_fix_deadline(run, capture).await else { return };
+        let captured = match captured {
             Ok(c) => c,
             Err(error) => return self.show_capture_error(error),
         };
@@ -625,17 +707,19 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
                 "Quick fix works in text you’re editing. Use your review shortcut to review this text instead.".into(),
             );
         }
+        let generation = state.last_review.generation();
         let job = job_for(&config, state.active_profile(), &captured, config.default_preset().clone(), None);
         let mut outcome = None;
         let mut failure = None;
-        for event in self.host.run_to_end(job).await {
+        let Some(events) = self.until_quick_fix_deadline(run, self.host.run_to_end(job.clone())).await else { return };
+        for event in events {
             match event {
                 Event::Done(done) => outcome = Some(done),
                 Event::Failed { message, .. } => failure = Some(message),
                 _ => {}
             }
         }
-        let Some(outcome) = outcome else {
+        let Some(mut outcome) = outcome else {
             return self.show_error(failure.unwrap_or_else(|| "Couldn’t check that text.".into()));
         };
         // Like the panel, leave out changes that would drop the author's own terms.
@@ -643,10 +727,34 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
         if revised == captured.text {
             return;
         }
+        outcome.changed_tokens = guard::changed_tokens(&captured.text, &revised);
+        if run.is_cancelled() {
+            return;
+        }
+        if run.expired() {
+            return self.quick_fix_timed_out(run);
+        }
+        if !outcome.changed_tokens.is_empty() {
+            let Ok((id, preset_id)) = self.begin_for(captured.clone(), false, Some(job.preset.id.clone()), Some(run))
+            else {
+                return;
+            };
+            if state.review.lock().unwrap().start_run(id, 0, is_proofread(&preset_id, None)).is_none() {
+                return;
+            }
+            let asked = Asked { id, preset_id, run: 0, generation, capture: captured, job };
+            self.engine_event(&asked, Event::Done(outcome));
+            return;
+        }
         state.review.lock().unwrap().start_quiet(self.host.now());
         let text = revised.clone();
         let proofread = config.keep_formatting && is_proofread(&config.default_preset().id, None);
-        match self.host.replace(captured, text, proofread).await {
+        let result = self.host.replace(captured, text, proofread, run.clone()).await;
+        if run.is_cancelled() {
+            return;
+        }
+        match result {
+            Ok(ReplaceOutcome::Cancelled) => self.quick_fix_timed_out(run),
             Ok(result) => {
                 self.show_outcome(result, revised);
             }
@@ -805,13 +913,13 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
         if state.watch_generation.load(Ordering::Relaxed) != generation {
             return self.trace_auto(gesture, None, &AutoOutcome::Superseded);
         }
-        match self.check_target() {
-            Target::Allowed => {}
+        let target = match self.check_target() {
+            Target::Allowed(target) => target,
             Target::Ignored => return self.trace_auto(gesture, None, &AutoOutcome::OwnWindow),
             Target::Excluded(_) => return self.trace_auto(gesture, None, &AutoOutcome::Excluded),
             Target::NotTrusted => return self.trace_auto(gesture, None, &AutoOutcome::NotTrusted),
-        }
-        let mut captured = self.host.capture(false, false).await;
+        };
+        let mut captured = self.host.capture(target.clone(), false, false).await;
         // After ⌘A, some apps (Electron ones especially) take a moment to report the new
         // selection through Accessibility. Try again briefly; never fall back to ⌘C.
         if gesture == SelectionGesture::SelectAll {
@@ -822,7 +930,7 @@ impl<S: Shell, H: Host> Controller<'_, S, H> {
                 if state.watch_generation.load(Ordering::Relaxed) != generation {
                     return self.trace_auto(gesture, None, &AutoOutcome::Superseded);
                 }
-                captured = self.host.capture(false, false).await;
+                captured = self.host.capture(target.clone(), false, false).await;
             }
         }
         let captured = match captured {

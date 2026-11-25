@@ -5,14 +5,16 @@
 //! [`Desktop`] that finds the app and takes key events, the [`Pasteboard`], and a [`Clock`] for every
 //! wait. [`System`] and [`Element`] are the real ones.
 
-use super::apps::{app_identity, enable_web_accessibility, focused_app, is_browser_or_electron, is_chromium_based};
+use super::apps::{
+    app_identity, enable_web_accessibility, focused_app, frontmost_pid, is_browser_or_electron, is_chromium_based,
+};
 use super::ax::{AXUIElementCreateApplication, Element, to_rect};
 use super::capture::{cut_enabled, press_menu_item};
 use super::keys::{Key, post_command_key};
 use super::replace::{field_focused, key_window_state, set_selection, type_text};
 use super::text::{Formatting, code_in};
 use super::{accessibility_trusted, pasteboard};
-use crate::platform::Rect;
+use crate::platform::{PlatformError, Rect};
 use core_foundation::base::TCFType;
 use core_foundation::string::CFString;
 use std::time::{Duration, Instant};
@@ -78,9 +80,12 @@ pub(super) trait App {
     /// Asks a web view for its accessibility tree, and returns when reads should stop waiting for
     /// it ([`enable_web_accessibility`]).
     fn ask_for_tree(&self, pid: i32, bundle_id: &str) -> Instant;
-    /// Presses the menu item whose shortcut is ⌘ plus `key` alone ([`press_menu_item`]): Some(false)
-    /// when it is disabled, None when the app has no such item.
-    fn press_menu_item(&self, key: &str) -> Option<bool>;
+    /// Presses the Copy menu item after checking `before_press`: Some(false) when it is disabled,
+    /// None when the app has no such item.
+    fn press_copy_menu(
+        &self,
+        before_press: impl FnOnce() -> Result<(), PlatformError>,
+    ) -> Result<Option<bool>, PlatformError>;
     /// Whether the app's own Cut menu item is enabled ([`cut_enabled`]).
     fn cut_enabled(&self) -> bool;
 }
@@ -95,6 +100,8 @@ pub(super) trait Desktop {
     fn trusted(&self) -> bool;
     /// The app that owns keyboard focus, and its process.
     fn focused_app(&self) -> Option<(Self::App<'_>, i32)>;
+    /// The front app's process, as the window server reports it.
+    fn frontmost_pid(&self) -> Option<i32>;
     /// The app `pid`'s bundle ID and name.
     fn app_identity(&self, pid: i32) -> (String, String);
     /// Safari, Firefox, and Chromium browsers and apps.
@@ -115,10 +122,16 @@ pub(super) trait Desktop {
 pub(super) trait Pasteboard {
     /// Everything on the clipboard, to put back after a paste or a copy.
     type Snapshot;
-    fn snapshot(&self) -> Self::Snapshot;
+    /// A complete snapshot and its change count. Failure leaves the clipboard alone.
+    fn snapshot(&self) -> Result<(Self::Snapshot, isize), pasteboard::SnapshotError>;
     /// Writes the fix, marked transient, with an HTML version when given one. Returns the change
-    /// count after the write.
-    fn write_transient(&self, text: &str, html: Option<&str>) -> isize;
+    /// count after the write, or fails if the clipboard changed after the snapshot.
+    fn write_transient(
+        &self,
+        text: &str,
+        html: Option<&str>,
+        before: isize,
+    ) -> Result<isize, pasteboard::SnapshotError>;
     fn change_count(&self) -> isize;
     /// The clipboard's plain text.
     fn read_string(&self) -> Option<String>;
@@ -246,8 +259,11 @@ impl App for Element {
         enable_web_accessibility(self, pid, bundle_id)
     }
 
-    fn press_menu_item(&self, key: &str) -> Option<bool> {
-        press_menu_item(self, key)
+    fn press_copy_menu(
+        &self,
+        before_press: impl FnOnce() -> Result<(), PlatformError>,
+    ) -> Result<Option<bool>, PlatformError> {
+        press_menu_item(self, "c", before_press)
     }
 
     fn cut_enabled(&self) -> bool {
@@ -264,6 +280,10 @@ impl Desktop for System {
 
     fn focused_app(&self) -> Option<(Element, i32)> {
         focused_app()
+    }
+
+    fn frontmost_pid(&self) -> Option<i32> {
+        frontmost_pid()
     }
 
     fn app_identity(&self, pid: i32) -> (String, String) {
@@ -287,7 +307,7 @@ impl Desktop for System {
     /// drop a posted ⌘V, but a menu item acts on the app's main window.
     fn paste(&self, pid: i32) -> &'static str {
         let app = Element::from_create(unsafe { AXUIElementCreateApplication(pid) });
-        if app.as_ref().and_then(|app| press_menu_item(app, "v")) == Some(true) {
+        if app.as_ref().is_some_and(|app| matches!(press_menu_item(app, "v", || Ok(())), Ok(Some(true)))) {
             "the app's Paste menu item"
         } else {
             post_command_key(pid, Key::V);
@@ -307,12 +327,17 @@ impl Desktop for System {
 impl Pasteboard for System {
     type Snapshot = pasteboard::Snapshot;
 
-    fn snapshot(&self) -> pasteboard::Snapshot {
+    fn snapshot(&self) -> Result<(pasteboard::Snapshot, isize), pasteboard::SnapshotError> {
         pasteboard::Snapshot::take()
     }
 
-    fn write_transient(&self, text: &str, html: Option<&str>) -> isize {
-        pasteboard::write_transient_string(text, html)
+    fn write_transient(
+        &self,
+        text: &str,
+        html: Option<&str>,
+        before: isize,
+    ) -> Result<isize, pasteboard::SnapshotError> {
+        pasteboard::write_transient_string(text, html, before)
     }
 
     fn change_count(&self) -> isize {

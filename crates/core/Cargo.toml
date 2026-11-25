@@ -10,6 +10,7 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 reqwest.workspace = true
+http = "1"
 futures-util.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -18,6 +19,7 @@ whatlang = "0.18"
 harper-core = { version = "2.13", default-features = false, features = ["concurrent"] }
 unicode-segmentation = "1"
 regex = "1.11"
+tempfile = "3.27"
 # TypeScript definitions of the types the app sends to its UI, written by the app's tests (see the
 # `ts` feature). Release builds leave it out.
 ts-rs = { version = "12", optional = true }
@@ -29,6 +31,9 @@ ts = ["dep:ts-rs"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_SystemServices"] }
 
 [dev-dependencies]
 regex-syntax = "0.8"

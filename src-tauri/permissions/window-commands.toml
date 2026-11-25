@@ -1,0 +1,63 @@
+# Tauri loads these into the app ACL manifest. Commands without a matching grant are denied.
+[[permission]]
+identifier = "guide-commands"
+description = "Close the Accessibility guide or start its native file drag."
+commands.allow = ["close_guide", "drag_app"]
+
+[[permission]]
+identifier = "overlay-commands"
+description = "Run and apply a review and operate the review overlay."
+commands.allow = [
+  "add_word",
+  "apply_text",
+  "check_protected_tokens",
+  "copy_text",
+  "dismiss",
+  "focus_overlay",
+  "hide_tips",
+  "open_settings",
+  "overlay_typing",
+  "resize_overlay",
+  "run_preset",
+]
+
+[[permission]]
+identifier = "settings-commands"
+description = "Read and save settings, configure providers, and use the review playground."
+commands.allow = [
+  "accessibility_status",
+  "activate_provider",
+  "add_provider",
+  "adopt_candidate",
+  "app_info",
+  "builtin_ai",
+  "check_provider",
+  "check_shortcut",
+  "claude_sign_in",
+  "default_presets",
+  "dismiss",
+  "fit_settings_height",
+  "get_settings",
+  "guide_accessibility",
+  "launch_at_login",
+  "linux_setup",
+  "open_apple_intelligence_settings",
+  "password_managers",
+  "pause_shortcuts",
+  "pick_apps",
+  "pull_ollama_model",
+  "remove_omarchy_setup",
+  "remove_provider",
+  "review_playground",
+  "save_settings",
+  "scan_accounts",
+  "set_api_key",
+  "set_launch_at_login",
+  "set_up_omarchy",
+  "test_provider",
+]
+
+[[permission]]
+identifier = "update-commands"
+description = "Read update status, act on an update, or close the update window."
+commands.allow = ["close_update_window", "update_now", "update_status"]

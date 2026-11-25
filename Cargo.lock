@@ -6947,8 +6947,6 @@ dependencies = [
  "tokio",
  "ts-rs",
  "unicode-segmentation",
- "wayland-client",
- "wayland-protocols-wlr",
  "webview2-com",
  "windows 0.62.2",
  "windows-registry",
@@ -6971,6 +6969,7 @@ version = "0.2.0"
 dependencies = [
  "futures-util",
  "harper-core",
+ "http",
  "libc",
  "regex",
  "regex-syntax",
@@ -6978,12 +6977,14 @@ dependencies = [
  "serde",
  "serde_json",
  "similar",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
  "ts-rs",
  "unicode-segmentation",
  "whatlang",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -5,16 +5,16 @@
 //! process start-up per review, and `warm` asks it to load the model ahead of the first request.
 
 use super::{ChatRequest, ProviderError, ProviderProfile, Providers};
-use crate::sse::LineParser;
+use crate::sse::{FrameTooLarge, LineParser};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, watch};
 
 const HELPER_NAME: &str = "supereditr-fm";
@@ -71,14 +71,58 @@ pub fn helper_path(configured: &str) -> Option<PathBuf> {
     beside.is_file().then_some(beside)
 }
 
-type Routes = Arc<Mutex<HashMap<u64, mpsc::UnboundedSender<Value>>>>;
+type Reply = Result<Value, FrameTooLarge>;
+
+enum Routes {
+    Running(HashMap<u64, mpsc::UnboundedSender<Reply>>),
+    Stopped(Option<FrameTooLarge>),
+}
+
+async fn read_messages(
+    mut stdout: impl AsyncRead + Unpin,
+    mut parser: LineParser,
+    routes: &Mutex<Routes>,
+    status: &watch::Sender<Option<AppleStatus>>,
+) {
+    let mut buffer = [0u8; 8192];
+    let failure = 'read: loop {
+        let read = match stdout.read(&mut buffer).await {
+            Ok(0) | Err(_) => break None,
+            Ok(n) => n,
+        };
+        for line in parser.push(&buffer[..read]) {
+            let line = match line {
+                Ok(line) => line,
+                Err(error) => break 'read Some(error),
+            };
+            let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
+            if message["type"] == "hello" {
+                let _ = status.send(Some(parse_status(&message)));
+                continue;
+            }
+            let Some(id) = message["id"].as_u64() else { continue };
+            if let Routes::Running(pending) = &*routes.lock().unwrap()
+                && let Some(route) = pending.get(&id)
+            {
+                let _ = route.send(Ok(message));
+            }
+        }
+    };
+    // Preserve a framing failure for requests already waiting and calls racing with shutdown.
+    let pending = std::mem::replace(&mut *routes.lock().unwrap(), Routes::Stopped(failure));
+    if let (Routes::Running(pending), Some(error)) = (pending, failure) {
+        for route in pending.into_values() {
+            let _ = route.send(Err(error));
+        }
+    }
+    let _ = status.send(Some(AppleStatus { available: false, reason: Some("stopped".into()) }));
+}
 
 /// A running helper process.
 pub(super) struct Helper {
     lines: mpsc::UnboundedSender<String>,
-    routes: Routes,
+    routes: Arc<Mutex<Routes>>,
     status: watch::Receiver<Option<AppleStatus>>,
-    alive: Arc<AtomicBool>,
     next_id: AtomicU64,
     path: PathBuf,
     _child: tokio::process::Child,
@@ -94,11 +138,10 @@ impl Helper {
             .spawn()
             .map_err(|e| ProviderError::Process(format!("Couldn’t start the Apple Intelligence helper: {e}")))?;
         let mut stdin = child.stdin.take().expect("stdin is piped");
-        let mut stdout = child.stdout.take().expect("stdout is piped");
+        let stdout = child.stdout.take().expect("stdout is piped");
         let (lines, mut outgoing) = mpsc::unbounded_channel::<String>();
-        let routes: Routes = Arc::default();
+        let routes = Arc::new(Mutex::new(Routes::Running(HashMap::new())));
         let (status_tx, status) = watch::channel(None);
-        let alive = Arc::new(AtomicBool::new(true));
 
         tokio::spawn(async move {
             while let Some(line) = outgoing.recv().await {
@@ -110,34 +153,11 @@ impl Helper {
         });
 
         let reader_routes = routes.clone();
-        let reader_alive = alive.clone();
         tokio::spawn(async move {
-            let mut parser = LineParser::default();
-            let mut buffer = [0u8; 8192];
-            loop {
-                let read = match stdout.read(&mut buffer).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => n,
-                };
-                for line in parser.push(&buffer[..read]) {
-                    let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
-                    if message["type"] == "hello" {
-                        let _ = status_tx.send(Some(parse_status(&message)));
-                        continue;
-                    }
-                    let Some(id) = message["id"].as_u64() else { continue };
-                    if let Some(route) = reader_routes.lock().unwrap().get(&id) {
-                        let _ = route.send(message);
-                    }
-                }
-            }
-            // Dropping every route ends any request still waiting.
-            reader_alive.store(false, Ordering::Relaxed);
-            reader_routes.lock().unwrap().clear();
-            let _ = status_tx.send(Some(AppleStatus { available: false, reason: Some("stopped".into()) }));
+            read_messages(stdout, LineParser::default(), &reader_routes, &status_tx).await;
         });
 
-        Ok(Arc::new(Self { lines, routes, status, alive, next_id: AtomicU64::new(1), path, _child: child }))
+        Ok(Arc::new(Self { lines, routes, status, next_id: AtomicU64::new(1), path, _child: child }))
     }
 
     /// Sends a message that expects replies, returning a guard that receives them and cancels the
@@ -146,9 +166,21 @@ impl Helper {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         message["id"] = json!(id);
         let (tx, rx) = mpsc::unbounded_channel();
-        self.routes.lock().unwrap().insert(id, tx);
-        let _ = self.lines.send(message.to_string());
+        match &mut *self.routes.lock().unwrap() {
+            Routes::Running(pending) => {
+                pending.insert(id, tx);
+                self.send(message);
+            }
+            Routes::Stopped(Some(error)) => {
+                let _ = tx.send(Err(*error));
+            }
+            Routes::Stopped(None) => {}
+        }
         Pending { id, rx, helper: self.clone(), finished: false }
+    }
+
+    fn is_alive(&self) -> bool {
+        matches!(*self.routes.lock().unwrap(), Routes::Running(_))
     }
 
     fn send(&self, message: Value) {
@@ -158,9 +190,9 @@ impl Helper {
     /// Asks the helper now, because availability changes while SuperEditr runs (Apple Intelligence
     /// turned on, its model finishing a download). Falls back to the startup report.
     async fn status(self: &Arc<Self>) -> AppleStatus {
-        if self.alive.load(Ordering::Relaxed) {
+        if self.is_alive() {
             let mut pending = self.call(json!({"type": "status"}));
-            if let Ok(Some(reply)) = tokio::time::timeout(Duration::from_secs(1), pending.rx.recv()).await {
+            if let Ok(Some(Ok(reply))) = tokio::time::timeout(Duration::from_secs(1), pending.rx.recv()).await {
                 pending.finished = true;
                 return parse_status(&reply);
             }
@@ -177,16 +209,18 @@ impl Helper {
 
 struct Pending {
     id: u64,
-    rx: mpsc::UnboundedReceiver<Value>,
+    rx: mpsc::UnboundedReceiver<Reply>,
     helper: Arc<Helper>,
     finished: bool,
 }
 
 impl Drop for Pending {
     fn drop(&mut self) {
-        self.helper.routes.lock().unwrap().remove(&self.id);
-        if !self.finished {
-            self.helper.send(json!({"type": "cancel", "id": self.id}));
+        if let Routes::Running(pending) = &mut *self.helper.routes.lock().unwrap() {
+            pending.remove(&self.id);
+            if !self.finished {
+                self.helper.send(json!({"type": "cancel", "id": self.id}));
+            }
         }
     }
 }
@@ -214,7 +248,7 @@ impl Providers {
     pub(super) async fn apple_helper(&self, profile: &ProviderProfile) -> Result<Arc<Helper>, ProviderError> {
         let path = helper_path(&profile.base_url).ok_or_else(|| ProviderError::Process(reason_message("missing")))?;
         let mut slot = self.apple.lock().await;
-        if let Some(helper) = slot.as_ref().filter(|h| h.alive.load(Ordering::Relaxed) && h.path == path) {
+        if let Some(helper) = slot.as_ref().filter(|h| h.is_alive() && h.path == path) {
             return Ok(helper.clone());
         }
         let helper = Helper::spawn(path)?;
@@ -249,7 +283,7 @@ pub(super) async fn stream(
         let message = tokio::time::timeout(Duration::from_secs(60), pending.rx.recv())
             .await
             .map_err(|_| ProviderError::Network("Apple’s on-device model timed out".into()))?
-            .ok_or_else(|| ProviderError::Process("The Apple Intelligence helper stopped unexpectedly.".into()))?;
+            .ok_or_else(|| ProviderError::Process("The Apple Intelligence helper stopped unexpectedly.".into()))??;
         match message["type"].as_str() {
             Some("delta") => {
                 if let Some(text) = message["text"].as_str() {
@@ -287,5 +321,29 @@ pub(super) async fn list_models(
 pub(super) async fn warm(providers: &Providers, profile: &ProviderProfile) {
     if let Ok(helper) = providers.apple_helper(profile).await {
         helper.send(json!({"type": "prewarm"}));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn frame_error_reaches_pending_apple_requests() {
+        let delta = r#"{"type":"delta","id":1,"text":"Café"}"#;
+        let done = r#"{"type":"done","id":1,"text":"Café bookings are confirmed."}"#;
+        let body = [delta.as_bytes(), b"\n", done.as_bytes(), b"\n"].concat();
+        let (first, mut first_rx) = mpsc::unbounded_channel();
+        let (second, mut second_rx) = mpsc::unbounded_channel();
+        let routes = Mutex::new(Routes::Running(HashMap::from([(1, first), (2, second)])));
+        let (status, _) = watch::channel(None);
+
+        read_messages(body.as_slice(), LineParser::with_limit(delta.len()), &routes, &status).await;
+
+        let error = FrameTooLarge { frame: "JSON line", limit: delta.len() };
+        assert_eq!(first_rx.recv().await.unwrap().unwrap()["text"], "Café");
+        assert_eq!(first_rx.recv().await, Some(Err(error)));
+        assert_eq!(second_rx.recv().await, Some(Err(error)));
+        assert!(matches!(*routes.lock().unwrap(), Routes::Stopped(Some(found)) if found == error));
     }
 }

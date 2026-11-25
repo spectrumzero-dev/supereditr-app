@@ -33,8 +33,9 @@
 //! functions at compile time.
 
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Locks `mutex` even if a thread panicked while holding it. The platform's statics hold plain
 /// values that stay usable after a panic, so one panic mustn't make every later use panic too.
@@ -67,7 +68,8 @@ mod unsupported;
 pub use unsupported::*;
 
 // The contract's signatures, checked against whichever module was chosen above.
-const _: fn(&Capture, &str, bool) -> ReplaceOutcome = replace;
+const _: fn(Option<CaptureTarget>, bool, bool) -> Result<Capture, PlatformError> = capture;
+const _: fn(&Capture, &str, bool, ReplaceMode<'_>) -> ReplaceOutcome = replace;
 #[cfg(windows)]
 const _: fn(&Capture, &str) -> ReplaceOutcome = replace_anyway;
 const _: fn(&tauri::WebviewWindow) = init_overlay;
@@ -76,6 +78,13 @@ const _: fn(&str) -> bool = lasting_app_path;
 const _: fn() = reload_autostart;
 const _: fn() -> bool = desktop_set_up;
 const _: fn() -> Option<i32> = run_helper_command;
+
+/// The app approved for capture before the capture worker starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureTarget {
+    pub pid: i32,
+    pub bundle_id: String,
+}
 
 /// Screen rectangle, origin at the top-left of the primary display: in points on macOS, in
 /// physical pixels on Windows.
@@ -129,13 +138,16 @@ pub enum PlatformError {
     /// nothing was written: a paste could have landed somewhere else.
     #[error("SuperEditr couldn’t get back to the text you selected, so the suggestion is on your clipboard.")]
     FocusNotReturned,
+    /// The Quick Fix expired or a newer request cancelled it before the write.
+    #[error("Quick Fix ended before the write.")]
+    Cancelled,
     /// An input method is still composing text in the field. Taking focus from it would commit the
     /// composition, so the panel doesn't.
     #[cfg_attr(not(windows), allow(dead_code))]
     #[error("Finish what you’re typing first: your input method is still composing it.")]
     Composing,
     /// The clipboard couldn't be put aside to paste through, so nothing was written.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
     #[error("{0}")]
     ClipboardNotKept(String),
     /// Like `ClipboardNotKept`, from a platform whose panel then offers to replace anyway, leaving
@@ -243,6 +255,71 @@ pub enum ReplaceMethod {
     Typing,
 }
 
+/// Whether the user asked to return focus or to fix the current selection in place.
+#[derive(Clone, Copy)]
+pub enum ReplaceMode<'a> {
+    /// The user accepted the result in the panel. Return focus to the original field if needed.
+    Apply,
+    /// The shortcut only writes in the originally focused window and field.
+    QuickFix(&'a QuickFix),
+}
+
+impl ReplaceMode<'_> {
+    pub fn is_quick_fix(self) -> bool {
+        matches!(self, Self::QuickFix(_))
+    }
+
+    /// Check on the worker, where a newer review can have arrived while this write was queued.
+    pub fn check(self) -> Result<(), PlatformError> {
+        if let Self::QuickFix(run) = self
+            && (run.is_cancelled() || run.expired())
+        {
+            return Err(PlatformError::Cancelled);
+        }
+        Ok(())
+    }
+
+    pub fn refusal(self, error: PlatformError) -> ReplaceOutcome {
+        match error {
+            PlatformError::Cancelled => ReplaceOutcome::Cancelled,
+            PlatformError::Stale | PlatformError::FocusNotReturned if self.is_quick_fix() => ReplaceOutcome::FocusMoved,
+            error => ReplaceOutcome::CopyOnly(error),
+        }
+    }
+}
+
+/// The current Quick Fix, shared by the review and its native worker.
+pub struct QuickFix {
+    pub deadline: Instant,
+    cancelled: AtomicBool,
+    changed: tokio::sync::Notify,
+}
+
+impl QuickFix {
+    pub fn new(deadline: Instant) -> Self {
+        Self { deadline, cancelled: AtomicBool::new(false), changed: tokio::sync::Notify::new() }
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.changed.notify_one();
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    pub fn expired(&self) -> bool {
+        Instant::now() >= self.deadline
+    }
+
+    pub async fn cancelled(&self) {
+        if !self.is_cancelled() {
+            self.changed.notified().await;
+        }
+    }
+}
+
 /// How an attempt to replace the selection ended. Every attempt ends in exactly one of these, and
 /// each tells the caller what to do with the suggestion.
 #[derive(Debug)]
@@ -257,6 +334,10 @@ pub enum ReplaceOutcome {
     /// Nothing was written, because the user's clipboard couldn't be put aside and restored. The
     /// suggestion stays on screen to copy; the clipboard is left alone.
     ClipboardKept(PlatformError),
+    /// The captured window or selection lost focus during Quick Fix. Offer an explicit copy.
+    FocusMoved,
+    /// A Quick Fix was superseded or ran out of time before it wrote.
+    Cancelled,
 }
 
 /// How a write that reports only success or an error ends, for a platform whose replacement returns
@@ -267,6 +348,7 @@ impl From<Result<ReplaceMethod, PlatformError>> for ReplaceOutcome {
         match result {
             Ok(_) => Self::Applied,
             Err(error @ (PlatformError::Unverified | PlatformError::Partial { .. })) => Self::Uncertain(error),
+            Err(PlatformError::Cancelled) => Self::Cancelled,
             Err(error @ (PlatformError::ClipboardNotKept(_) | PlatformError::ClipboardUnrestorable(_))) => {
                 Self::ClipboardKept(error)
             }

@@ -15,6 +15,7 @@
   /** The run of this session the panel shows: 0 for the one the session starts with, then one more
    *  for each style run the panel asks for. Other runs' engine events are dropped. */
   let run = 0;
+  let protectedCheck = 0;
   let review = $state<Review>(emptyReview());
   let notice = $state("");
   /** A suggestion the notice offers to copy: one that may or may not have gone into the app. */
@@ -118,6 +119,15 @@
     const next = new Set(rejected);
     next.has(id) ? next.delete(id) : next.add(id);
     rejected = next;
+    if (!session || !view || !review.complete) return;
+    const sessionId = session.id;
+    const checkedRun = run;
+    const check = ++protectedCheck;
+    ipc.checkProtectedTokens(sessionId, applyView(view, next)).then((changedTokens) => {
+      if (changedTokens && session?.id === sessionId && run === checkedRun && check === protectedCheck) {
+        review = { ...review, changedTokens };
+      }
+    }).catch(() => {});
   }
 
   async function apply() {

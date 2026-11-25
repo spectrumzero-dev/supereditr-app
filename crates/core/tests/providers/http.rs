@@ -169,6 +169,18 @@ async fn ollama_streams_ndjson_and_keeps_model_loaded() {
 }
 
 #[tokio::test]
+async fn ollama_pull_streams_progress() {
+    let body = "{\"status\":\"pulling a model layer\",\"completed\":1,\"total\":4}\n{\"status\":\"success\"}\n";
+    let (url, _) = mock_server(vec![(200, "application/x-ndjson", body.into())]).await;
+    let mut progress = Vec::new();
+    Providers::new()
+        .ollama_pull(&url, "quill", &mut |p| progress.push((p.status, p.completed, p.total)))
+        .await
+        .unwrap();
+    assert_eq!(progress, [("pulling a model layer".into(), 1, 4), ("success".into(), 0, 0)]);
+}
+
+#[tokio::test]
 async fn auth_errors_are_typed() {
     let (url, _) = mock_server(vec![(401, "application/json", r#"{"error":{"message":"bad key"}}"#.into())]).await;
     let error = Providers::new()

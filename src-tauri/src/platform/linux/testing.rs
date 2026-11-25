@@ -319,12 +319,35 @@ impl World {
 
     /// Replaces the selection with a rewrite of it.
     pub fn replace(&self, capture: &Capture, text: &str) -> ReplaceOutcome {
-        tauri::async_runtime::block_on(replace::replace(&self.services(), capture, text, false))
+        tauri::async_runtime::block_on(replace::replace(
+            &self.services(),
+            capture,
+            text,
+            false,
+            crate::platform::ReplaceMode::Apply,
+        ))
     }
 
     /// Replaces the selection with a proofread of it.
     pub fn proofread(&self, capture: &Capture, text: &str) -> ReplaceOutcome {
-        tauri::async_runtime::block_on(replace::replace(&self.services(), capture, text, true))
+        tauri::async_runtime::block_on(replace::replace(
+            &self.services(),
+            capture,
+            text,
+            true,
+            crate::platform::ReplaceMode::Apply,
+        ))
+    }
+
+    pub fn quick_fix(&self, capture: &Capture, text: &str) -> ReplaceOutcome {
+        let run = crate::platform::QuickFix::new(std::time::Instant::now() + Duration::from_secs(5));
+        tauri::async_runtime::block_on(replace::replace(
+            &self.services(),
+            capture,
+            text,
+            true,
+            crate::platform::ReplaceMode::QuickFix(&run),
+        ))
     }
 
     pub fn keys_sent(&self) -> Vec<String> {

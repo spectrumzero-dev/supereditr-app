@@ -29,7 +29,7 @@ use super::clipboard::{self, Incomplete, Limits, Raw, Restore, Snapshot, WriteEr
 use super::uia::{CONTEXT, Field, ReadError};
 use super::window::WindowRef;
 use super::{Capture, Source, trace};
-use crate::platform::{PlatformError, ReplaceOutcome};
+use crate::platform::{PlatformError, ReplaceMode, ReplaceOutcome};
 use std::time::{Duration, Instant};
 use supereditr_core::policy::{self, Selection};
 
@@ -53,9 +53,15 @@ pub enum Clip {
     Leave,
 }
 
-pub fn replace<R: Raw>(services: &Services<'_, R>, capture: &Capture, text: &str, clip: Clip) -> ReplaceOutcome {
+pub fn replace<R: Raw>(
+    services: &Services<'_, R>,
+    capture: &Capture,
+    text: &str,
+    clip: Clip,
+    mode: ReplaceMode<'_>,
+) -> ReplaceOutcome {
     let started = Instant::now();
-    let outcome = attempt(services, capture, text, clip);
+    let outcome = attempt(services, capture, text, clip, mode);
     trace(format_args!(
         "{}",
         crate::platform::log_lines::Replaced {
@@ -95,11 +101,11 @@ fn unchanged<R: Raw>(services: &Services<'_, R>, window: WindowRef, field: &Fiel
     if !in_front() {
         return Err(PlatformError::FocusNotReturned);
     }
-    same_selection(services, field)?;
+    let selection = same_selection(services, field);
     if !in_front() {
         return Err(PlatformError::FocusNotReturned);
     }
-    Ok(())
+    selection
 }
 
 /// Chromium can answer without its field's text for a moment after its window comes back to the
@@ -126,23 +132,38 @@ fn same_selection<R: Raw>(services: &Services<'_, R>, field: &Field) -> Result<(
     }
 }
 
-fn attempt<R: Raw>(services: &Services<'_, R>, capture: &Capture, text: &str, clip: Clip) -> ReplaceOutcome {
-    let copy_only = |error| ReplaceOutcome::CopyOnly(error);
+fn attempt<R: Raw>(
+    services: &Services<'_, R>,
+    capture: &Capture,
+    text: &str,
+    clip: Clip,
+    mode: ReplaceMode<'_>,
+) -> ReplaceOutcome {
+    let copy_only = |error| mode.refusal(error);
+    let unchecked_selection = |error| {
+        if mode.is_quick_fix() { ReplaceOutcome::FocusMoved } else { copy_only(error) }
+    };
+    if let Err(error) = mode.check() {
+        return copy_only(error);
+    }
     let (Some(window), Some(field)) = (capture.window, capture.field.as_ref()) else {
         return copy_only(PlatformError::CopyOnly);
     };
     if capture.source != Source::Uia || !capture.editable || capture.class != Some(Class::KnownSafe) {
         return copy_only(PlatformError::CopyOnly);
     }
+    if mode.is_quick_fix() && services.desktop.foreground() != Some(window) {
+        return ReplaceOutcome::FocusMoved;
+    }
     if !services.desktop.alive(window) || services.desktop.elevated(window.pid) {
         return copy_only(PlatformError::CopyOnly);
     }
-    if !hand_back(services, window, field) {
+    if !mode.is_quick_fix() && !hand_back(services, window, field) {
         return copy_only(PlatformError::FocusNotReturned);
     }
     // Coming back can move the caret or the selection.
     if let Err(error) = unchanged(services, window, field) {
-        return copy_only(error);
+        return unchecked_selection(error);
     }
     let snapshot = match clip {
         Clip::Leave => None,
@@ -153,7 +174,7 @@ fn attempt<R: Raw>(services: &Services<'_, R>, capture: &Capture, text: &str, cl
     };
     // Reading a slow clipboard can take a while, and the user may have moved on meanwhile.
     if let Err(error) = unchanged(services, window, field) {
-        return copy_only(error);
+        return unchecked_selection(error);
     }
     let pasted = windows_line_endings(text);
     let html = if web_field(field) { clipboard::html_paragraphs(text) } else { None };
@@ -162,6 +183,9 @@ fn attempt<R: Raw>(services: &Services<'_, R>, capture: &Capture, text: &str, cl
             "replace: the fix goes on the clipboard as text{}",
             if html.is_some() { " and HTML" } else { " only: HTML would change its spaces" }
         ));
+    }
+    if let Err(error) = mode.check() {
+        return copy_only(error);
     }
     let written = match &snapshot {
         Some(snapshot) => services.clipboard.write_text(snapshot.sequence, &pasted, html.as_deref()),
@@ -190,15 +214,23 @@ fn attempt<R: Raw>(services: &Services<'_, R>, capture: &Capture, text: &str, cl
     };
     // The user may still hold the apply key's modifiers, and waiting for them takes time in which
     // they can switch windows or copy, so the last checks come after it, right before the paste.
+    if let Err(error) = mode.check() {
+        give_back(services, snapshot, ours);
+        return copy_only(error);
+    }
     services.desktop.release_modifiers();
     if let Err(error) = unchanged(services, window, field) {
         give_back(services, snapshot, ours);
-        return copy_only(error);
+        return unchecked_selection(error);
     }
     if services.clipboard.sequence() != ours {
         // A copy since SuperEditr wrote the clipboard is what Ctrl+V would paste. It's the user's:
         // it stays, and nothing is pasted.
         return newer_copy();
+    }
+    if let Err(error) = mode.check() {
+        give_back(services, snapshot, ours);
+        return copy_only(error);
     }
     if !services.desktop.send_ctrl(Key::V) {
         give_back(services, snapshot, ours);
@@ -364,6 +396,43 @@ mod tests {
         assert!(matches!(outcome, ReplaceOutcome::CopyOnly(PlatformError::FocusNotReturned)), "{outcome:?}");
         assert!(world.keys_sent().is_empty());
         assert_eq!(world.clipboard_writes(), 0);
+    }
+
+    #[test]
+    fn quick_fix_keeps_focus_and_clipboard_after_the_user_switches_windows() {
+        let world = World::new("notepad.exe").with_document("Their going.", "Their");
+        let capture = world.capture(true).unwrap();
+        world.other_window_in_front();
+        assert!(matches!(world.quick_fix(&capture, "They’re"), ReplaceOutcome::FocusMoved));
+        assert_eq!(world.focus_requests(), 0);
+        assert!(world.keys_sent().is_empty());
+        assert_eq!(world.clipboard_writes(), 0);
+        assert_eq!(world.document(), "Their going.");
+        assert_eq!(world.clipboard_text().as_deref(), Some("Rhyan's own copy"));
+        assert!(matches!(world.replace(&capture, "They’re"), ReplaceOutcome::Applied));
+        assert_eq!(world.focus_requests(), 1);
+    }
+
+    #[test]
+    fn quick_fix_writes_in_the_focused_window_without_requesting_focus() {
+        let world = World::new("notepad.exe").with_document("Their going.", "Their");
+        let capture = world.capture(true).unwrap();
+        assert!(matches!(world.quick_fix(&capture, "They’re"), ReplaceOutcome::Applied));
+        assert_eq!(world.focus_requests(), 0);
+        assert_eq!(world.document(), "They’re going.");
+    }
+
+    #[test]
+    fn a_quick_fix_cancelled_before_the_paste_returns_the_clipboard() {
+        let world = World::new("notepad.exe").with_document("Their going.", "Their");
+        let capture = world.capture(true).unwrap();
+        let run = std::sync::Arc::new(crate::platform::QuickFix::new(Instant::now() + Duration::from_secs(5)));
+        let old = run.clone();
+        world.while_modifiers_held(move |_| old.cancel());
+        assert!(matches!(world.quick_fix_run(&capture, "They’re", &run), ReplaceOutcome::Cancelled));
+        assert!(world.keys_sent().is_empty());
+        assert_eq!(world.document(), "Their going.");
+        assert_eq!(world.clipboard_text().as_deref(), Some("Rhyan's own copy"));
     }
 
     #[test]

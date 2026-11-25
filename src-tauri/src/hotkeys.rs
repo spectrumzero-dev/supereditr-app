@@ -77,10 +77,7 @@ pub fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 fn run(app: &AppHandle, action: Action) {
     match action {
         Action::Review => review::on_review_hotkey(app),
-        Action::QuickFix => {
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move { review::quick_fix(&app).await });
-        }
+        Action::QuickFix => review::quick_fix(app),
         Action::Preset(id) => {
             let app = app.clone();
             tauri::async_runtime::spawn(async move { review::start_manual(&app, Some(id)).await });

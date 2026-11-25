@@ -116,7 +116,11 @@ pub fn own_pid() -> i32 {
     std::process::id() as i32
 }
 
-pub fn capture(_allow_clipboard: bool, _select_sentence: bool) -> Result<Capture, PlatformError> {
+pub fn capture(
+    _target: Option<super::CaptureTarget>,
+    _allow_clipboard: bool,
+    _select_sentence: bool,
+) -> Result<Capture, PlatformError> {
     Err(PlatformError::Other("This platform isn’t supported yet.".into()))
 }
 
@@ -132,7 +136,7 @@ pub fn focused_app_identity() -> Option<(i32, String, String)> {
     None
 }
 
-pub fn replace(_capture: &Capture, _text: &str, _proofread: bool) -> ReplaceOutcome {
+pub fn replace(_capture: &Capture, _text: &str, _proofread: bool, _mode: super::ReplaceMode<'_>) -> ReplaceOutcome {
     ReplaceOutcome::CopyOnly(PlatformError::ReplaceFailed)
 }
 

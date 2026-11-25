@@ -83,6 +83,7 @@ async fn read_stream(
     let mut bytes = response.bytes_stream();
     while let Some(chunk) = bytes.next().await {
         for event in parser.push(&chunk?) {
+            let event = event?;
             if event.data == "[DONE]" {
                 return finish(finish_reason.as_deref(), true, output);
             }

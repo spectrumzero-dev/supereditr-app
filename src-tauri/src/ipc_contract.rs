@@ -1,26 +1,35 @@
 //! The names the UI calls and listens for, and the TypeScript definitions of what it receives.
 //!
-//! tests/contracts/ipc-names.json lists every command the app registers and every event it emits;
-//! ui/src/lib/contracts.test.ts checks that ui/src/lib/ipc-names.ts names the same ones, and the UI's
-//! `invoke` and `listen` wrappers take only those names. These tests check the Rust side: the
-//! commands in `generate_handler!` (lib.rs) and the event names in the app's source.
+//! tests/contracts/ipc-names.json lists the commands each window calls and the app's events.
+//! ui/src/lib/contracts.test.ts checks the frontend call sites and names. These tests check the
+//! registered commands, the grants Tauri enforces for each window, and the emitted events.
 //!
 //! The payload types derive `ts_rs::TS` in tests, and each one marked `ts(export)` has a test that
 //! writes its definition, and those of the types it uses, to ui/src/lib/generated (the directory is
 //! set in .cargo/config.toml). `scripts/check.sh` fails when the committed files differ.
 
-use serde_json::Value;
-use std::collections::BTreeSet;
+use serde::Deserialize;
+use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use tauri::ipc::{CallbackFn, InvokeResponseBody};
+use tauri::test::{INVOKE_KEY, MockRuntime, get_ipc_response, mock_builder, noop_assets};
+use tauri::webview::InvokeRequest;
+use tauri::{Context, Url, WebviewWindow, WebviewWindowBuilder};
 use ts_rs::TS;
 
 /// String literals shaped like an event name that aren't one: credential account names in tests.
 const NOT_EVENTS: [&str; 2] = ["anthropic:anthropic", "gemini:gemini"];
 
-fn fixture(list: &str) -> BTreeSet<String> {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/contracts/ipc-names.json");
-    let names: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    names[list].as_array().unwrap().iter().map(|name| name.as_str().unwrap().to_string()).collect()
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IpcNames {
+    window_commands: BTreeMap<String, BTreeSet<String>>,
+    events: BTreeSet<String>,
+}
+
+fn fixture() -> IpcNames {
+    serde_json::from_str(include_str!("../../tests/contracts/ipc-names.json")).unwrap()
 }
 
 fn source(path: &Path) -> String {
@@ -91,18 +100,113 @@ fn a_misspelt_window_is_still_an_event_name() {
 fn the_fixture_lists_every_registered_command() {
     assert_eq!(
         registered_commands(),
-        fixture("commands"),
+        fixture().window_commands.into_values().flatten().collect(),
         "update tests/contracts/ipc-names.json and ui/src/lib/ipc-names.ts"
     );
 }
 
 #[test]
 fn the_fixture_lists_every_event_the_app_emits() {
-    assert_eq!(
-        emitted_events(),
-        fixture("events"),
-        "update tests/contracts/ipc-names.json and ui/src/lib/ipc-names.ts"
-    );
+    assert_eq!(emitted_events(), fixture().events, "update tests/contracts/ipc-names.json and ui/src/lib/ipc-names.ts");
+}
+
+fn acl_context() -> Context<MockRuntime> {
+    tauri::generate_context!("tauri.conf.json", assets = noop_assets(), test = true)
+}
+
+fn invoke(
+    window: &WebviewWindow<MockRuntime>,
+    url: &Url,
+    command: &str,
+    body: Value,
+) -> Result<InvokeResponseBody, Value> {
+    get_ipc_response(
+        window,
+        InvokeRequest {
+            cmd: command.into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: url.clone(),
+            body: body.into(),
+            headers: Default::default(),
+            invoke_key: INVOKE_KEY.into(),
+        },
+    )
+}
+
+fn assert_denied(result: Result<InvokeResponseBody, Value>, window: &str, command: &str) {
+    let error = result.unwrap_err();
+    assert!(error.as_str().is_some_and(|message| message.contains("not allowed")), "{window}: {command}: {error}");
+}
+
+#[test]
+fn window_commands_are_authorized_by_tauri() {
+    let names = fixture();
+    let mut commands = registered_commands();
+    commands.insert("unlisted_command".into());
+
+    // Every app command has a harmless handler. A denial must come from Tauri before dispatch.
+    let app = mock_builder()
+        .invoke_handler(|invoke| {
+            invoke.resolver.resolve(());
+            true
+        })
+        .build(acl_context())
+        .unwrap();
+    let remote = "https://example.invalid/".parse().unwrap();
+
+    for label in names.window_commands.keys().map(String::as_str).chain(["unlisted-window"]) {
+        let window = WebviewWindowBuilder::new(&app, label, Default::default()).build().unwrap();
+        let local = window.url().unwrap();
+        for command in &commands {
+            let result = invoke(&window, &local, command, json!({}));
+            if names.window_commands.get(label).is_some_and(|allowed| allowed.contains(command)) {
+                assert!(result.is_ok(), "{label}: {command}: {result:?}");
+                assert_denied(invoke(&window, &remote, command, json!({})), label, command);
+            } else {
+                assert_denied(result, label, command);
+            }
+        }
+    }
+}
+
+#[test]
+fn windows_keep_their_required_plugin_permissions() {
+    let app = mock_builder().build(acl_context()).unwrap();
+    for label in fixture().window_commands.keys() {
+        let window = WebviewWindowBuilder::new(&app, label, Default::default()).build().unwrap();
+        let local = window.url().unwrap();
+        let listen = invoke(
+            &window,
+            &local,
+            "plugin:event|listen",
+            json!({"event": "acl-test", "target": {"kind": "Any"}, "handler": 2}),
+        )
+        .unwrap();
+        let event_id = listen.deserialize::<u32>().unwrap();
+        invoke(&window, &local, "plugin:event|unlisten", json!({"event": "acl-test", "eventId": event_id})).unwrap();
+        let emit = "plugin:event|emit";
+        assert_denied(invoke(&window, &local, emit, json!({"event": "acl-test"})), label, emit);
+
+        for command in ["plugin:window|start_dragging", "plugin:window|internal_toggle_maximize"] {
+            let result = invoke(&window, &local, command, json!({}));
+            if label == "settings" {
+                assert!(result.is_ok(), "{label}: {command}: {result:?}");
+            } else {
+                assert_denied(result, label, command);
+            }
+        }
+
+        // Inspect the URL scope so the test never opens a browser.
+        let opener = window.resolve_command_scope::<Value>("opener", "open_url").unwrap();
+        if label == "settings" {
+            let scope = opener.unwrap();
+            let allowed: Vec<_> = scope.command_scope().allows().iter().map(|value| value.as_ref()).collect();
+            assert_eq!(allowed, [&json!({"url": "https://*"})]);
+        } else {
+            assert!(opener.is_none(), "{label} can open URLs");
+        }
+    }
 }
 
 /// Payloads from the core crate that no exported type here contains.

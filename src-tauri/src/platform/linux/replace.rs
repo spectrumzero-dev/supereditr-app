@@ -19,7 +19,7 @@ use super::capture::Services;
 use super::clipboard::{ClipboardError, Limits, Restore, Transaction};
 use super::desktop::{Desktop, Shortcut, WindowRef};
 use super::{Capture, Source, trace};
-use crate::platform::{PlatformError, ReplaceOutcome, log_lines};
+use crate::platform::{PlatformError, ReplaceMode, ReplaceOutcome, log_lines};
 use std::time::{Duration, Instant};
 use supereditr_core::policy::{self, Selection};
 use supereditr_core::rich::Step;
@@ -40,7 +40,13 @@ const SELECTION_SETTLE: Duration = Duration::from_millis(if cfg!(test) { 0 } els
 /// How long a paste gets to show up in the field.
 const PASTE_WAIT: Duration = Duration::from_millis(if cfg!(test) { 60 } else { 1000 });
 
-pub async fn replace(services: &Services<'_>, capture: &Capture, text: &str, proofread: bool) -> ReplaceOutcome {
+pub async fn replace(
+    services: &Services<'_>,
+    capture: &Capture,
+    text: &str,
+    proofread: bool,
+    mode: ReplaceMode<'_>,
+) -> ReplaceOutcome {
     let started = Instant::now();
     // While a replacement runs, the app reports its text and selection changes, so each wait for one
     // ends the moment it happens.
@@ -48,7 +54,7 @@ pub async fn replace(services: &Services<'_>, capture: &Capture, text: &str, pro
     if reported {
         services.fields.report_changes(true).await;
     }
-    let outcome = attempt(services, capture, text, proofread).await;
+    let outcome = attempt(services, capture, text, proofread, mode).await;
     if reported {
         services.fields.report_changes(false).await;
     }
@@ -59,31 +65,37 @@ pub async fn replace(services: &Services<'_>, capture: &Capture, text: &str, pro
     outcome
 }
 
-async fn attempt(services: &Services<'_>, capture: &Capture, text: &str, proofread: bool) -> ReplaceOutcome {
+async fn attempt(
+    services: &Services<'_>,
+    capture: &Capture,
+    text: &str,
+    proofread: bool,
+    mode: ReplaceMode<'_>,
+) -> ReplaceOutcome {
     let copy_only = || ReplaceOutcome::CopyOnly(PlatformError::CopyOnly);
+    let unchecked_selection = |error| {
+        if mode.is_quick_fix() { ReplaceOutcome::FocusMoved } else { mode.refusal(error) }
+    };
+    if let Err(error) = mode.check() {
+        return mode.refusal(error);
+    }
     let (Some(window), Some(field)) = (&capture.window, &capture.field) else { return copy_only() };
     if capture.source != Source::Atspi || !capture.editable {
         return copy_only();
     }
     let capabilities = services.desktop.capabilities(window).await;
-    if !capabilities.send_keys || !capabilities.focus {
+    if !capabilities.send_keys || (!mode.is_quick_fix() && !capabilities.focus) {
         return copy_only();
     }
-    if !bring_back(services.desktop, window).await {
+    if mode.is_quick_fix() && !in_front(services.desktop, window) {
+        return ReplaceOutcome::FocusMoved;
+    }
+    if !mode.is_quick_fix() && !bring_back(services.desktop, window).await {
         trace(format_args!("replace {}: the window didn’t come back to the front", capture.bundle_id));
         return copy_only();
     }
-    // The same field with the same selection offsets and text. AT-SPI's read has no text around the
-    // selection to compare.
-    match services.fields.focused(window.pid).await {
-        Ok(Some(now))
-            if policy::selection_unchanged(
-                now.id == field.id && (now.start, now.end) == (field.start, field.end),
-                Selection::text(field.selected.as_str()),
-                Selection::text(now.selected.as_str()),
-            ) => {}
-        Ok(_) => return ReplaceOutcome::CopyOnly(PlatformError::Stale),
-        Err(_) => return copy_only(),
+    if let Err(error) = check_selection(services, window, field).await {
+        return unchecked_selection(error);
     }
     let limits = Limits::default();
     let transaction = match Transaction::begin(services.clipboard, &limits) {
@@ -102,7 +114,7 @@ async fn attempt(services: &Services<'_>, capture: &Capture, text: &str, proofre
     let html = formatting.and_then(|rich| supereditr_core::rich::html(&capture.text, rich, text));
     let steps = formatting.and_then(|_| steps(capture, field, text, proofread));
     if let Some((steps, changes)) = &steps {
-        match in_place(services, capture, window, field, steps, *changes, &transaction).await {
+        match in_place(services, capture, window, field, (steps, *changes), &transaction, mode).await {
             InPlace::Untouched => {}
             InPlace::Stopped(outcome) => {
                 transaction.restore();
@@ -130,12 +142,30 @@ async fn attempt(services: &Services<'_>, capture: &Capture, text: &str, proofre
     if formatting.is_some() {
         trace(format_args!("{}", log_lines::PastedFormatting { app: &capture.bundle_id, html: html.is_some() }));
     }
+    if mode.is_quick_fix()
+        && let Err(error) = check_selection(services, window, field).await
+    {
+        return unchecked_selection(error);
+    }
+    if let Err(error) = mode.check() {
+        return mode.refusal(error);
+    }
     if transaction.put_text(text, html.as_deref()).is_err() {
         transaction.restore();
         return copy_only();
     }
     super::wait_for_shortcut_release();
     tokio::time::sleep(CLIPBOARD_SETTLE).await;
+    if mode.is_quick_fix()
+        && let Err(error) = check_selection(services, window, field).await
+    {
+        transaction.restore();
+        return unchecked_selection(error);
+    }
+    if let Err(error) = mode.check() {
+        transaction.restore();
+        return mode.refusal(error);
+    }
     if services.desktop.send_shortcut(window, Shortcut::ctrl("V")).await.is_err() {
         transaction.restore();
         return ReplaceOutcome::CopyOnly(PlatformError::ReplaceFailed);
@@ -151,6 +181,29 @@ async fn attempt(services: &Services<'_>, capture: &Capture, text: &str, proofre
         other => trace(format_args!("replace {}: clipboard {other:?}", capture.bundle_id)),
     }
     ReplaceOutcome::Applied
+}
+
+/// AT-SPI reports the focused field, selected text and offsets, without surrounding text.
+async fn check_selection(
+    services: &Services<'_>,
+    window: &WindowRef,
+    field: &super::atspi::Field,
+) -> Result<(), PlatformError> {
+    let now = services.fields.focused(window.pid).await.map_err(|_| PlatformError::CopyOnly)?;
+    let same = now.is_some_and(|now| {
+        policy::selection_unchanged(
+            now.id == field.id && (now.start, now.end) == (field.start, field.end),
+            Selection::text(field.selected.as_str()),
+            Selection::text(now.selected.as_str()),
+        )
+    });
+    if !in_front(services.desktop, window) {
+        return Err(PlatformError::FocusNotReturned);
+    }
+    if !same {
+        return Err(PlatformError::Stale);
+    }
+    Ok(())
 }
 
 /// The writes that apply `text` in place, when it is a proofread of a few local changes and each
@@ -200,10 +253,11 @@ async fn in_place(
     capture: &Capture,
     window: &WindowRef,
     field: &super::atspi::Field,
-    steps: &[Step],
-    changes: usize,
+    plan: (&[Step], usize),
     transaction: &Transaction<'_>,
+    mode: ReplaceMode<'_>,
 ) -> InPlace {
+    let (steps, changes) = plan;
     let started = Instant::now();
     let untouched = |why: &str| {
         trace(format_args!("{}", log_lines::PastedWhole { app: &capture.bundle_id, why: &why }));
@@ -231,10 +285,20 @@ async fn in_place(
                 applied => PlatformError::Partial { applied, total: steps.len() },
             })
         };
+        let cancelled = || match i {
+            0 => ReplaceOutcome::Cancelled,
+            _ => stopped("the quick fix ended"),
+        };
         let id = &field.objects[step.object];
         let (start, end) = range(step);
-        let in_front = services.desktop.front_window().is_ok_and(|front| front.handle == window.handle);
-        let moved = match in_front {
+        let focused = in_front(services.desktop, window);
+        if !focused && i == 0 && mode.is_quick_fix() {
+            return InPlace::Stopped(ReplaceOutcome::FocusMoved);
+        }
+        if mode.check().is_err() {
+            return InPlace::Stopped(cancelled());
+        }
+        let moved = match focused {
             true => services.fields.select(id, start, end).await.unwrap_or(Moved::Unconfirmed),
             false => Moved::Refused,
         };
@@ -258,7 +322,7 @@ async fn in_place(
                 true => untouched("the app doesn’t let SuperEditr move the selection"),
                 false => {
                     trace(format_args!("paste {}: nothing written: the selection may have moved", capture.bundle_id));
-                    InPlace::Stopped(ReplaceOutcome::CopyOnly(PlatformError::Stale))
+                    InPlace::Stopped(mode.refusal(PlatformError::Stale))
                 }
             };
         }
@@ -268,20 +332,26 @@ async fn in_place(
         if i == 0 {
             super::wait_for_shortcut_release();
         }
+        if mode.check().is_err() {
+            return InPlace::Stopped(cancelled());
+        }
         if transaction.put_text(&step.new, None).is_err() {
             return InPlace::Stopped(stopped("the clipboard didn’t take the fix"));
         }
         tokio::time::sleep(SELECTION_SETTLE).await;
-        if !services.fields.selected(id, start, end).await {
+        if !services.fields.selected(id, start, end).await || !in_front(services.desktop, window) {
             // The first paste never goes over anything but the words; later ones can't be undone
             // by replacing everything, so they stop too.
             return match i {
                 0 => {
                     trace(format_args!("paste {}: nothing written: the selection moved again", capture.bundle_id));
-                    InPlace::Stopped(ReplaceOutcome::CopyOnly(PlatformError::Stale))
+                    InPlace::Stopped(mode.refusal(PlatformError::Stale))
                 }
                 _ => InPlace::Stopped(stopped("the selection moved off the words to fix")),
             };
+        }
+        if mode.check().is_err() {
+            return InPlace::Stopped(cancelled());
         }
         if services.desktop.send_shortcut(window, Shortcut::ctrl("V")).await.is_err() {
             return InPlace::Stopped(stopped("the paste couldn’t be sent"));
@@ -301,6 +371,8 @@ async fn in_place(
     // The caret after the fixed text, where replacing the whole selection leaves it.
     if let Some((object, end)) = supereditr_core::rich::end_after(&field.runs, steps)
         && let Some(id) = field.objects.get(object)
+        && in_front(services.desktop, window)
+        && mode.check().is_ok()
     {
         let _ = services.fields.select(id, end as i32, end as i32).await;
     }
@@ -318,8 +390,7 @@ async fn in_place(
 
 /// Focuses `window` if it isn't in front, and waits until the desktop says it is.
 async fn bring_back(desktop: &dyn Desktop, window: &WindowRef) -> bool {
-    let in_front = || desktop.front_window().is_ok_and(|front| front.handle == window.handle);
-    if in_front() {
+    if in_front(desktop, window) {
         return true;
     }
     if desktop.focus(window).await.is_err() {
@@ -327,12 +398,16 @@ async fn bring_back(desktop: &dyn Desktop, window: &WindowRef) -> bool {
     }
     let started = Instant::now();
     while started.elapsed() < FOCUS_WAIT {
-        if in_front() {
+        if in_front(desktop, window) {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(15)).await;
     }
     false
+}
+
+fn in_front(desktop: &dyn Desktop, window: &WindowRef) -> bool {
+    desktop.front_window().is_ok_and(|front| front.handle == window.handle && front.pid == window.pid)
 }
 
 /// Whether the field now holds `text` where the selection began. In a field of embedded objects
@@ -401,6 +476,30 @@ mod tests {
         assert!(matches!(world.replace(&capture, "They’re going"), ReplaceOutcome::CopyOnly(PlatformError::CopyOnly)));
         assert!(world.keys_sent().is_empty());
         assert_eq!(world.clipboard_offers(), 0);
+    }
+
+    #[test]
+    fn quick_fix_keeps_focus_and_clipboard_after_the_user_switches_windows() {
+        let world = World::new("gedit").with_field(field("Their going")).pasting();
+        let capture = captured(&world);
+        world.put_panel_in_front();
+        assert!(matches!(world.quick_fix(&capture, "They’re going"), ReplaceOutcome::FocusMoved));
+        assert_eq!(world.focus_requests(), 0);
+        assert!(world.keys_sent().is_empty());
+        assert_eq!(world.clipboard_offers(), 0);
+        assert!(world.field_text().starts_with("Their going"));
+        assert_eq!(world.clipboard.get("text/plain;charset=utf-8").unwrap(), b"Rhyan's own copy");
+        assert!(matches!(world.replace(&capture, "They’re going"), ReplaceOutcome::Applied));
+        assert_eq!(world.focus_requests(), 1);
+    }
+
+    #[test]
+    fn quick_fix_writes_in_the_focused_window_without_requesting_focus() {
+        let world = World::new("gedit").with_field(field("Their going")).pasting();
+        let capture = captured(&world);
+        assert!(matches!(world.quick_fix(&capture, "They’re going"), ReplaceOutcome::Applied));
+        assert_eq!(world.focus_requests(), 0);
+        assert!(world.field_text().starts_with("They’re going"));
     }
 
     #[test]

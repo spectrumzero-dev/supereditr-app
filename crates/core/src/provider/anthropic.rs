@@ -76,6 +76,7 @@ async fn read_stream(
     let mut bytes = response.bytes_stream();
     while let Some(chunk) = bytes.next().await {
         for event in parser.push(&chunk?) {
+            let event = event?;
             let Ok(value) = serde_json::from_str::<Value>(&event.data) else { continue };
             match value["type"].as_str() {
                 Some("content_block_delta") if value["delta"]["type"] == "text_delta" => {

@@ -56,6 +56,7 @@ pub(super) async fn stream(
         let mut bytes = response.bytes_stream();
         while let Some(chunk) = bytes.next().await {
             for event in parser.push(&chunk?) {
+                let event = event?;
                 let Ok(value) = serde_json::from_str::<Value>(&event.data) else { continue };
                 if let Some(message) = value.pointer("/error/message").and_then(Value::as_str) {
                     return Err(ProviderError::Protocol(message.to_string()));

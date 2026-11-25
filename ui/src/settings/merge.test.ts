@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderProfile } from "../lib/types";
-import { mergeUnsaved, saveUntilCurrent } from "./merge";
+import { mergeUnsaved, needsRepairBeforeMerge, saveUntilCurrent } from "./merge";
 
 const base = { style_notes: "", auto_popup: true, excluded_apps: ["com.1password.1password"], words: ["Rhyan"] };
 
@@ -62,6 +62,28 @@ describe("mergeUnsaved", () => {
       providers: [{ ...kept, model: "new-model", base_url: "http://127.0.0.1:11435" }, provider("other"), provider("local")],
       active_provider: null,
     });
+  });
+
+  it("defers only when the edited profile is unavailable or its removal can't be established", () => {
+    const profile: ProviderProfile = {
+      id: "kept", kind: "ollama", label: "Ollama", base_url: "http://127.0.0.1:11434", model: "original",
+    };
+    const original = { ...base, providers: [profile], active_provider: null };
+    const unsaved = { ...original, words: [...original.words, "Brynlee"], providers: [{ ...profile, model: "new-model" }] };
+    const config = { ...original, providers: [] };
+    const recovery = {
+      path: "/example/settings.json", issues: ["providers"], writable: true,
+      exclusionsSafe: true, destinationSafe: true, unavailableProviderIds: ["other"], providerIdsComplete: true,
+    };
+
+    expect(needsRepairBeforeMerge(original, unsaved, { config, recovery })).toBe(false);
+    expect(mergeUnsaved(original, unsaved, config)).toEqual({ ...config, words: ["Rhyan", "Brynlee"] });
+    expect(needsRepairBeforeMerge(original, unsaved, {
+      config, recovery: { ...recovery, unavailableProviderIds: [profile.id] },
+    })).toBe(true);
+    expect(needsRepairBeforeMerge(original, unsaved, {
+      config, recovery: { ...recovery, providerIdsComplete: false },
+    })).toBe(true);
   });
 });
 

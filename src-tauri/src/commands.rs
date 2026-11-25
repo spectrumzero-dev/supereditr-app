@@ -137,15 +137,24 @@ struct SettingsRecovery {
     writable: bool,
     exclusions_safe: bool,
     destination_safe: bool,
+    unavailable_provider_ids: Vec<String>,
+    provider_ids_complete: bool,
 }
 
 fn recovery(state: &AppState, settings: &ConfigFile) -> Option<SettingsRecovery> {
-    (!settings.issues.is_empty()).then(|| SettingsRecovery {
-        path: state.config_path.display().to_string(),
-        issues: settings.issues.clone(),
-        writable: settings.status() != LoadStatus::Unreadable,
-        exclusions_safe: settings.exclusions_safe,
-        destination_safe: settings.destination_safe,
+    (!settings.issues.is_empty()).then(|| {
+        let mut unavailable_provider_ids: Vec<_> =
+            settings.unavailable_provider_ids().into_iter().map(str::to_owned).collect();
+        unavailable_provider_ids.sort_unstable();
+        SettingsRecovery {
+            path: state.config_path.display().to_string(),
+            issues: settings.issues.clone(),
+            writable: settings.status() != LoadStatus::Unreadable,
+            exclusions_safe: settings.exclusions_safe,
+            destination_safe: settings.destination_safe,
+            unavailable_provider_ids,
+            provider_ids_complete: settings.provider_ids_complete(),
+        }
     })
 }
 
@@ -586,7 +595,7 @@ pub(crate) async fn activate(state: &AppState, servers: &impl Servers, profile_i
 fn unique_id(state: &AppState, kind: ProviderKind) -> String {
     let base = ProviderProfile::new(kind).id;
     state.read_settings(|settings, _| {
-        let unavailable = settings.unavailable_provider_ids();
+        let unavailable = settings.reserved_provider_ids();
         let mut id = base.clone();
         let mut n = 2;
         while unavailable.contains(id.as_str()) || settings.config.providers.iter().any(|p| p.id == id) {

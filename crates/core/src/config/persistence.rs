@@ -74,12 +74,27 @@ impl ConfigFile {
         }
     }
 
-    /// An unavailable provider record can still own an ID and an OS-stored credential.
+    /// IDs whose provider records exist in the file but couldn't be read.
     pub fn unavailable_provider_ids(&self) -> HashSet<&str> {
         let Source::Document { fields, .. } = &self.source else { return HashSet::new() };
         let usable = record_ids::<ProviderProfile>(fields.get("providers"));
-        let mut unavailable: HashSet<_> =
-            entries(fields.get("providers")).iter().filter_map(id).filter(|id| !usable.contains(id)).collect();
+        entries(fields.get("providers")).iter().filter_map(id).filter(|id| !usable.contains(id)).collect()
+    }
+
+    /// Whether absence from the readable and unreadable IDs means a profile was removed.
+    pub fn provider_ids_complete(&self) -> bool {
+        self.providers_editable()
+            && match &self.source {
+                Source::Document { fields, .. } => {
+                    entries(fields.get("providers")).iter().all(|entry| id(entry).is_some())
+                }
+                _ => true,
+            }
+    }
+
+    /// An unresolved active choice also reserves its ID, so a new profile can't take it over.
+    pub fn reserved_provider_ids(&self) -> HashSet<&str> {
+        let mut unavailable = self.unavailable_provider_ids();
         if !self.destination_safe
             && let Some(active) = self.config.active_provider.as_deref()
         {
@@ -118,7 +133,10 @@ impl ConfigFile {
         if !self.providers_editable() && config.providers != self.config.providers {
             return Err(io::Error::other("Repair the providers in the settings file and retry loading it."));
         }
-        let reserved_ids = self.unavailable_provider_ids();
+        if self.issues.contains(&"words") && config.words != self.config.words {
+            return Err(io::Error::other("Repair the dictionary in the settings file and retry loading it."));
+        }
+        let reserved_ids = self.reserved_provider_ids();
         if config.providers.iter().any(|provider| reserved_ids.contains(provider.id.as_str())) {
             return Err(io::Error::other("This provider ID belongs to an unavailable provider."));
         }
@@ -254,6 +272,11 @@ fn recover(fields: &Fields) -> (Config, Vec<&'static str>) {
             config.set_excluded(app, true);
         }
     }
+    if issues.contains(&"words")
+        && let Some(words) = fields.get("words").and_then(Value::as_array)
+    {
+        config.words = words.iter().filter_map(Value::as_str).map(str::to_owned).collect();
+    }
     if let Some(raw) = fields.get(HOTKEYS_KEY) {
         if let Some(hotkeys) = raw.as_object() {
             let mut shortcut_issues = Vec::new();
@@ -323,7 +346,7 @@ fn render(mut fields: Fields, config: &Config, original: &ConfigFile) -> io::Res
             "providers" if !original.providers_editable() => continue,
             "providers" => value = merge_records::<ProviderProfile>(previous, value, &["extra_body", "api_key"], true),
             "presets" => value = merge_records::<Preset>(previous, value, &["shortcut"], false),
-            "excluded_apps" | "offered_exclusions" if original.issues.contains(&key.as_str()) => continue,
+            "excluded_apps" | "offered_exclusions" | "words" if original.issues.contains(&key.as_str()) => continue,
             _ => {}
         }
         fields.insert(key, value);

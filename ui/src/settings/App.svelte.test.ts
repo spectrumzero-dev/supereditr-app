@@ -75,6 +75,8 @@ it("offers to reload an unreadable settings file and restores controls when it i
     writable: false,
     exclusionsSafe: false,
     destinationSafe: false,
+    unavailableProviderIds: [],
+    providerIdsComplete: false,
   };
   const get = vi.spyOn(api, "get").mockResolvedValue({ ...original, recovery });
   const save = vi.spyOn(api, "save");
@@ -92,9 +94,11 @@ it("offers to reload an unreadable settings file and restores controls when it i
 it("keeps a model edit pending until the affected profile can be recovered", async () => {
   const original = await api.get();
   const profile = original.config.providers[0];
+  const other = { ...profile, id: "quillpoint", label: "QuillPoint" };
+  const restored = { ...other, label: "Brynlee", model: "recovered-model" };
   const fresh = {
     ...original,
-    config: { ...original.config, onboarded: true, active_provider: profile.id },
+    config: { ...original.config, onboarded: true, active_provider: profile.id, providers: [profile, other] },
     revision: 1,
   };
   const get = vi.spyOn(api, "get").mockResolvedValue(fresh);
@@ -111,25 +115,62 @@ it("keeps a model edit pending until the affected profile can be recovered", asy
   get.mockImplementation(async () => ({
     ...fresh,
     revision: 2,
-    config: { ...fresh.config, providers: [] },
+    config: { ...fresh.config, providers: [restored] },
     recovery: {
       path: "/example/settings.json", issues: ["providers", "active_provider"],
       writable: true, exclusionsSafe: true, destinationSafe: false,
+      unavailableProviderIds: [profile.id], providerIdsComplete: true,
     },
   }));
   await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
   expect(await screen.findByText(/Your changes are still pending/)).toBeTruthy();
   expect(save).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
 
   get.mockResolvedValue({
     ...fresh, revision: 3,
-    config: { ...fresh.config, providers: [{ ...profile, label: "QuillPoint" }] },
+    config: { ...fresh.config, providers: [{ ...profile, label: "QuillPoint" }, restored] },
   });
   await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
   await screen.findByText("Saved");
   expect(save).toHaveBeenLastCalledWith(expect.objectContaining({
-    providers: [{ ...profile, label: "QuillPoint", model: "new-model" }],
+    providers: [{ ...profile, label: "QuillPoint", model: "new-model" }, restored],
   }), 3);
+});
+
+it("keeps a pending dictionary spelling through an unreadable list and saves it after repair", async () => {
+  const original = await api.get();
+  const fresh = { ...original, revision: 1, config: { ...original.config, words: ["Rhyan"] } };
+  const get = vi.spyOn(api, "get").mockImplementation(async () => ({ ...fresh }));
+  const save = vi.spyOn(api, "save")
+    .mockRejectedValueOnce("The settings file changed on disk.")
+    .mockResolvedValueOnce({ revision: 4, problems: [], recovery: null });
+  render(App);
+  await fireEvent.click(await screen.findByRole("button", { name: "Dictionary" }));
+  await fireEvent.click(await screen.findByRole("button", { name: "Remove Rhyan" }));
+  await fireEvent.input(screen.getByPlaceholderText(/Rhyan/), { target: { value: "rhyan" } });
+  await fireEvent.click(screen.getByRole("button", { name: "Add" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Couldn’t save your changes.");
+
+  get.mockResolvedValue({
+    ...fresh,
+    revision: 2,
+    recovery: {
+      path: "/example/settings.json", issues: ["words"], writable: true,
+      exclusionsSafe: true, destinationSafe: true, unavailableProviderIds: [], providerIdsComplete: true,
+    },
+  });
+  await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByText(/Your changes are still pending/)).toBeTruthy();
+  expect(save).toHaveBeenCalledTimes(1);
+
+  get.mockResolvedValue({
+    ...fresh, revision: 3, config: { ...fresh.config, words: ["Rhyan", "Brynlee"] },
+  });
+  await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await screen.findByText("Saved");
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ words: ["rhyan", "Brynlee"] }), 3);
 });
 
 it("shows Retry when adding or removing a profile fails", async () => {

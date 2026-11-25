@@ -10,18 +10,22 @@ export function wordIdentity(word: string): string {
 }
 
 /** During recovery a missing entry may be unreadable, so its absence can't settle a pending edit. */
-export function needsRepairBeforeMerge(base: Config, unsaved: Config, fresh: SettingsPayload): boolean {
+export function needsRepairBeforeMerge(
+  base: Mergeable, unsaved: Mergeable, fresh: { config: Mergeable; recovery: SettingsPayload["recovery"] },
+): boolean {
   const recovery = fresh.recovery;
   if (!recovery) return false;
   if (!recovery.writable) return true;
   if (!recovery.exclusionsSafe && !sameValue(base.excluded_apps, unsaved.excluded_apps)) return true;
-  if (!recovery.issues.includes("providers")) return false;
+  if (recovery.issues.includes("words") && !sameValue(base.words, unsaved.words)) return true;
+  if (recovery.providerIdsComplete && !recovery.unavailableProviderIds.length) return false;
 
   const changedChoice = unsaved.active_provider !== base.active_provider;
   return base.providers.some((old) => {
     const edit = unsaved.providers.find((p) => p.id === old.id);
     const affected = !sameValue(old, edit) || (changedChoice && unsaved.active_provider === old.id);
-    return affected && !fresh.config.providers.some((p) => p.id === old.id && p.kind === old.kind);
+    return affected && (recovery.unavailableProviderIds.includes(old.id)
+      || (!recovery.providerIdsComplete && !fresh.config.providers.some((p) => p.id === old.id)));
   });
 }
 

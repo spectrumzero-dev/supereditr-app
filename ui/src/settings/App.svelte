@@ -34,7 +34,7 @@
   let saved = $state(false);
   let failure = $state("");
   let retrying = $state(false);
-  let waitingForRepair = false;
+  let waitingForRepair = $state(false);
   let timer: ReturnType<typeof setTimeout> | undefined;
   /** The config as Settings last loaded or saved it: what the user's unsaved changes are measured from. */
   let base: Config | null = null;
@@ -70,6 +70,7 @@
       const unsaved = $state.snapshot(config) as Config;
       if (needsRepairBeforeMerge(base, unsaved, fresh)) {
         waitingForRepair = true;
+        failure = "Your changes are still pending. Repair the affected settings and select Retry.";
         payload = fresh;
         return;
       }
@@ -254,7 +255,7 @@
         <button class="btn small" disabled={retrying} onclick={retry}>Retry</button>
       </section>
     {/if}
-    {#if config && payload && payload.recovery?.writable !== false}
+    {#if config && payload && !retrying && !waitingForRepair && payload.recovery?.writable !== false}
       {#if section === "welcome"}
         <Welcome bind:config accessibility={payload.accessibility} {saveNow} {finish} openModels={() => (section = "models")} {findAccounts} />
       {:else if section === "models"}

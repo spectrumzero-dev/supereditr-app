@@ -152,18 +152,41 @@ fn an_unknown_or_ambiguous_active_profile_stays_inactive() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.json");
     let profile = ProviderProfile::new(ProviderKind::Ollama);
-    for providers in [
-        json!([{ "id": "ollama", "kind": "future_ai" }]),
-        json!([profile, { "id": "ollama", "kind": "future_ai" }]),
-        json!([]),
+    for (providers, ids_complete, unavailable) in [
+        (json!([{ "id": "ollama", "kind": "future_ai" }]), true, true),
+        (json!([profile, { "id": "ollama", "kind": "future_ai" }]), true, true),
+        (json!([{ "id": false, "kind": "future_ai" }]), false, false),
+        (json!({}), false, false),
+        (json!([]), true, false),
     ] {
         let raw = json!({"active_provider": "ollama", "providers": providers});
         fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
         let loaded = ConfigFile::load(&path);
         assert!(!loaded.destination_safe);
         assert!(loaded.config.active_profile().is_none());
-        assert!(loaded.unavailable_provider_ids().contains("ollama"));
+        assert!(loaded.reserved_provider_ids().contains("ollama"));
+        assert_eq!(loaded.provider_ids_complete(), ids_complete);
+        assert_eq!(loaded.unavailable_provider_ids().contains("ollama"), unavailable);
     }
+}
+
+#[test]
+fn malformed_dictionary_entries_keep_readable_words_and_survive_unrelated_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    fs::write(&path, br#"{"words":["Rhyan",false]}"#).unwrap();
+    let mut loaded = ConfigFile::load(&path);
+    assert_eq!(loaded.config.words, ["Rhyan"]);
+    assert!(loaded.issues.contains(&"words"));
+    let mut edited = loaded.config.clone();
+    edited.words.push("Brynlee".into());
+    assert!(loaded.save(&path, edited).is_err());
+    let mut edited = loaded.config.clone();
+    edited.style_notes = "Short sentences.".into();
+    loaded.save(&path, edited).unwrap();
+    let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved["words"], json!(["Rhyan", false]));
+    assert_eq!(saved["style_notes"], "Short sentences.");
 }
 
 #[test]

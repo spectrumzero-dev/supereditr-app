@@ -91,6 +91,8 @@ impl Display for Replaced<'_> {
             ReplaceOutcome::CopyOnly(why) => write!(f, "copy-only ({why})")?,
             ReplaceOutcome::Uncertain(why) => write!(f, "uncertain ({why})")?,
             ReplaceOutcome::ClipboardKept(why) => write!(f, "clipboard kept ({why})")?,
+            ReplaceOutcome::FocusMoved => write!(f, "focus moved")?,
+            ReplaceOutcome::Cancelled => write!(f, "cancelled")?,
         }
         write!(f, " in {:?}", self.took)
     }

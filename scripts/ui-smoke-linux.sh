@@ -485,27 +485,38 @@ chromium_plain_case() {
 }
 
 foot_case() {
-  begin_case foot "foot: a terminal, read with a guarded copy, copy-only"
+  begin_case foot "foot: a fresh terminal selection, read with a guarded copy, copy-only"
   vm "pkill -x foot; echo 'Their going to love this, and it work good.' > /tmp/smoke-foot.txt
     d_exec \"foot -T smoke-foot -e sh -c 'cat /tmp/smoke-foot.txt; exec sh'\""
-  local f
+  local f before mark during after read text
   f="$(vm 'wait_for_window "^foot \| smoke-foot" 10')"
+  # Nothing is selected in the new terminal. Give it a recent copy made outside foot.
+  vm "d_focus $f; sleep 0.5"
+  set_clipboard text
+  check "foot: the clipboard holds unrelated text before the shortcut" "$(ok is "$(vm clip_text)" "Rhyan wrote this himself.")"
+  before="$(vm clip_digest)"
+  mark="$(vm log_mark)"
+  key meta_l-alt-e
+  text="$(vm "wait_panel_text 'hold Shift' 5")"
+  read="$(vm "wait_log $mark 'shortcut foot: ' 3")"
+  check "foot: a recent copy without a terminal selection shows selection guidance" "$(ok both has "$text" "hold Shift" has "$read" "hold Shift")" "${read#* }"
+  clip_same "$before" "$(vm clip_digest)" "foot: the recent clipboard copy survives the timeout"
+  key esc
+  vm 'wait_closed 3' || true
+
   # foot's keyboard search selects text: Ctrl+Shift+R, the first word, then Ctrl+W per extra word.
   vm "d_focus $f; sleep 0.5; d_keys $f 'CTRL SHIFT' R; sleep 0.2; for k in T h e i r; do d_keys $f '' \$k; done
     for _ in 1 2 3 4; do d_keys $f CTRL W; done; sleep 0.2; d_keys $f '' Return; sleep 0.3"
   set_clipboard image
   vm "d_focus $f; sleep 0.3"
-  local before mark during after
   before="$(vm clip_digest)"
   mark="$(vm log_mark)"
   key meta_l-alt-e
   vm 'wait_panel 6' > /dev/null || true
-  local read
   read="$(vm "wait_log $mark 'shortcut foot: ' 3")"
   check "foot: read with a guarded copy (Ctrl+Insert), copy-only" "$(ok has "$read" "guarded copy.*copy-only")" "${read#* }"
   during="$(vm 'sleep 0.5; clip_digest')"
   clip_same "$before" "$during" "foot: the clipboard is restored after the copy, every type"
-  local text
   text="$(vm "wait_panel_text '[0-9]+ changes?' 15")"
   check "foot: the panel shows a fix" "$(ok has "$text" "[0-9]+ changes?")" "${text:0:100}"
   vm 'shot 30-foot-review'

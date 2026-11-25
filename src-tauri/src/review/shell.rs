@@ -12,10 +12,11 @@
 
 use super::Asked;
 use crate::follow::Following;
-use crate::platform::{self, Capture, PlatformError, Rect, ReplaceOutcome};
+use crate::platform::{self, Capture, CaptureTarget, PlatformError, QuickFix, Rect, ReplaceMode, ReplaceOutcome};
 use crate::state::{AppState, Task};
 use serde::Serialize;
 use std::future::Future;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use supereditr_core::provider::{ProviderKind, ProviderProfile};
 use supereditr_core::{Event, Job};
@@ -70,6 +71,7 @@ pub(crate) trait Host: Engine + Sync {
     /// Reads the selection off the calling thread. `select_sentence` is for the shortcuts only.
     fn capture(
         &self,
+        target: Option<CaptureTarget>,
         allow_clipboard: bool,
         select_sentence: bool,
     ) -> impl Future<Output = Result<Capture, PlatformError>> + Send;
@@ -90,6 +92,7 @@ pub(crate) trait Host: Engine + Sync {
         captured: Capture,
         text: String,
         proofread: bool,
+        run: Arc<QuickFix>,
     ) -> impl Future<Output = Result<ReplaceOutcome, String>> + Send;
     fn copy_to_clipboard(&self, text: &str);
     fn now(&self) -> Instant;
@@ -198,10 +201,11 @@ impl Host for Live<'_> {
 
     fn capture(
         &self,
+        target: Option<CaptureTarget>,
         allow_clipboard: bool,
         select_sentence: bool,
     ) -> impl Future<Output = Result<Capture, PlatformError>> + Send {
-        capture(self.0, allow_clipboard, select_sentence)
+        capture(self.0, target, allow_clipboard, select_sentence)
     }
 
     fn write(
@@ -231,8 +235,11 @@ impl Host for Live<'_> {
         captured: Capture,
         text: String,
         proofread: bool,
+        run: Arc<QuickFix>,
     ) -> impl Future<Output = Result<ReplaceOutcome, String>> + Send {
-        let replaced = tauri::async_runtime::spawn_blocking(move || platform::replace(&captured, &text, proofread));
+        let replaced = tauri::async_runtime::spawn_blocking(move || {
+            platform::replace(&captured, &text, proofread, ReplaceMode::QuickFix(&run))
+        });
         async move { replaced.await.map_err(|e| e.to_string()) }
     }
 
@@ -289,7 +296,12 @@ impl Engine for Live<'_> {
 /// Reads the selection on a worker thread. AX calls can block on a busy app; they must never
 /// run on the UI thread. `select_sentence` is for the shortcuts only: an automatic suggestion
 /// never changes what the user selected.
-async fn capture(app: &AppHandle, allow_clipboard: bool, select_sentence: bool) -> Result<Capture, PlatformError> {
+async fn capture(
+    app: &AppHandle,
+    target: Option<CaptureTarget>,
+    allow_clipboard: bool,
+    select_sentence: bool,
+) -> Result<Capture, PlatformError> {
     #[cfg(target_os = "macos")]
     {
         // Keyboard-layout lookups must happen on the main thread.
@@ -301,7 +313,7 @@ async fn capture(app: &AppHandle, allow_clipboard: bool, select_sentence: bool) 
         let _ = tokio::time::timeout(Duration::from_millis(100), rx).await;
     }
     let _ = app;
-    tauri::async_runtime::spawn_blocking(move || platform::capture(allow_clipboard, select_sentence))
+    tauri::async_runtime::spawn_blocking(move || platform::capture(target, allow_clipboard, select_sentence))
         .await
         .unwrap_or_else(|e| Err(PlatformError::Other(e.to_string())))
 }
@@ -315,5 +327,5 @@ fn replace_text(captured: &Capture, text: &str, proofread: bool, anyway: bool) -
     }
     #[cfg(not(windows))]
     let _ = anyway;
-    platform::replace(captured, text, proofread)
+    platform::replace(captured, text, proofread, ReplaceMode::Apply)
 }

@@ -3,10 +3,17 @@
 
 // --- Pasteboard -----------------------------------------------------------------------------
 
-use objc2::rc::Retained;
+use crate::platform::PlatformError;
+use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSPasteboardWriting};
 use objc2_foundation::{NSArray, NSData, NSString};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_millis(600);
+static SNAPSHOT_READING: AtomicBool = AtomicBool::new(false);
 
 fn general() -> Retained<NSPasteboard> {
     NSPasteboard::generalPasteboard()
@@ -29,9 +36,7 @@ pub fn write_string(text: &str) -> isize {
 
 /// Writes text marked transient so clipboard managers skip it (nspasteboard.org convention),
 /// with an HTML version when given one, which rich editors paste with its formatting.
-pub fn write_transient_string(text: &str, html: Option<&str>) -> isize {
-    let pb = general();
-    pb.clearContents();
+pub(super) fn write_transient_string(text: &str, html: Option<&str>, before: isize) -> Result<isize, SnapshotError> {
     let item = NSPasteboardItem::new();
     item.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString });
     if let Some(html) = html {
@@ -42,12 +47,74 @@ pub fn write_transient_string(text: &str, html: Option<&str>) -> isize {
     }
     let objects: Retained<NSArray<ProtocolObject<dyn NSPasteboardWriting>>> =
         NSArray::from_retained_slice(&[ProtocolObject::from_retained(item)]);
+    let pb = general();
+    if pb.changeCount() != before {
+        return Err(SnapshotError::Changed);
+    }
+    pb.clearContents();
     pb.writeObjects(&objects);
-    pb.changeCount()
+    Ok(pb.changeCount())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(super) enum SnapshotError {
+    #[error("the clipboard’s contents couldn’t all be saved")]
+    Incomplete,
+    #[error("the clipboard changed while SuperEditr was saving it")]
+    Changed,
+    #[error("the clipboard didn’t answer in time")]
+    TimedOut,
+    #[error("an earlier clipboard read hasn’t finished")]
+    Busy,
+    #[error("the clipboard couldn’t be read")]
+    Unavailable,
+}
+
+impl From<SnapshotError> for PlatformError {
+    fn from(error: SnapshotError) -> Self {
+        Self::ClipboardNotKept(format!("SuperEditr left the clipboard as it was because {error}."))
+    }
+}
+
+struct ReadSlot(&'static AtomicBool);
+
+impl Drop for ReadSlot {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+/// A promised representation can keep AppKit waiting for its provider for minutes. The slot stays
+/// with the read until it finishes, even after the caller times out. The worker only reads.
+fn bounded_read<T: Send + 'static>(
+    slot: &'static AtomicBool,
+    timeout: Duration,
+    read: impl FnOnce(Instant) -> Result<T, SnapshotError> + Send + 'static,
+) -> Result<T, SnapshotError> {
+    let deadline = Instant::now() + timeout;
+    slot.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).map_err(|_| SnapshotError::Busy)?;
+    let permit = ReadSlot(slot);
+    let (send, receive) = mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("pasteboard snapshot".into())
+        .spawn(move || {
+            let _permit = permit;
+            let result = autoreleasepool(|_| check_deadline(deadline).and_then(|()| read(deadline)));
+            let _ = send.send(result);
+        })
+        .map_err(|_| SnapshotError::Unavailable)?;
+    receive.recv_timeout(deadline.saturating_duration_since(Instant::now())).map_err(|error| match error {
+        mpsc::RecvTimeoutError::Timeout => SnapshotError::TimedOut,
+        mpsc::RecvTimeoutError::Disconnected => SnapshotError::Unavailable,
+    })?
+}
+
+fn check_deadline(deadline: Instant) -> Result<(), SnapshotError> {
+    if Instant::now() >= deadline { Err(SnapshotError::TimedOut) } else { Ok(()) }
 }
 
 /// Every item and representation on the clipboard, so it can be put back exactly.
-pub struct Snapshot {
+pub(super) struct Snapshot {
     items: Vec<Vec<(Retained<NSString>, Retained<NSData>)>>,
 }
 
@@ -56,45 +123,231 @@ pub struct Snapshot {
 unsafe impl Send for Snapshot {}
 
 impl Snapshot {
-    pub fn take() -> Self {
-        let pb = general();
+    pub(super) fn take() -> Result<(Self, isize), SnapshotError> {
+        bounded_read(&SNAPSHOT_READING, SNAPSHOT_TIMEOUT, |deadline| {
+            // An AppKit pasteboard communication exception is a failed read too.
+            objc2::exception::catch(|| Self::read(&general(), deadline)).unwrap_or(Err(SnapshotError::Unavailable))
+        })
+    }
+
+    fn read(pb: &NSPasteboard, deadline: Instant) -> Result<(Self, isize), SnapshotError> {
+        check_deadline(deadline)?;
+        let before = pb.changeCount();
+        check_deadline(deadline)?;
         let mut items = Vec::new();
-        if let Some(list) = pb.pasteboardItems() {
-            for item in list.iter() {
-                let mut reps = Vec::new();
-                for kind in item.types().iter() {
-                    if let Some(data) = item.dataForType(&kind) {
-                        reps.push((kind.clone(), data));
-                    }
-                }
-                items.push(reps);
+        let list = pb.pasteboardItems().ok_or(SnapshotError::Incomplete)?;
+        for item in list.iter() {
+            check_deadline(deadline)?;
+            let types = item.types();
+            if types.is_empty() {
+                return Err(SnapshotError::Incomplete);
             }
+            let mut reps = Vec::new();
+            for kind in types.iter() {
+                check_deadline(deadline)?;
+                let data = item.dataForType(&kind).ok_or(SnapshotError::Incomplete)?;
+                reps.push((kind, data));
+            }
+            items.push(reps);
         }
-        Self { items }
+        check_deadline(deadline)?;
+        if pb.changeCount() != before {
+            return Err(SnapshotError::Changed);
+        }
+        Ok((Self { items }, before))
     }
 
     /// Restores the snapshot unless something else has written to the clipboard since
     /// `expected_change_count`.
-    pub fn restore_if_unchanged_since(self, expected_change_count: isize) {
-        let pb = general();
+    pub(super) fn restore_if_unchanged_since(self, expected_change_count: isize) {
+        self.restore_on(&general(), expected_change_count);
+    }
+
+    fn restore_on(self, pb: &NSPasteboard, expected_change_count: isize) {
+        let mut restored: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = Vec::new();
+        for reps in self.items {
+            let item = NSPasteboardItem::new();
+            for (kind, data) in reps {
+                if !item.setData_forType(&data, &kind) {
+                    return;
+                }
+            }
+            restored.push(ProtocolObject::from_retained(item));
+        }
         if pb.changeCount() != expected_change_count {
             return;
         }
         pb.clearContents();
-        if self.items.is_empty() {
-            return;
+        if !restored.is_empty() {
+            pb.writeObjects(&NSArray::from_retained_slice(&restored));
         }
-        let restored: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = self
-            .items
-            .into_iter()
-            .map(|reps| {
-                let item = NSPasteboardItem::new();
-                for (kind, data) in reps {
-                    item.setData_forType(&data, &kind);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use objc2::runtime::{NSObject, NSObjectProtocol};
+    use objc2::{AnyThread, DefinedClass, define_class, msg_send};
+    use objc2_app_kit::NSPasteboardItemDataProvider;
+    use std::sync::Mutex;
+
+    struct PrivatePasteboard(Retained<NSPasteboard>);
+
+    impl PrivatePasteboard {
+        fn new() -> Self {
+            Self(NSPasteboard::pasteboardWithUniqueName())
+        }
+    }
+
+    impl Drop for PrivatePasteboard {
+        fn drop(&mut self) {
+            // SAFETY: this name is private to the test, and releaseGlobally has no return value.
+            unsafe { msg_send![&*self.0, releaseGlobally] }
+        }
+    }
+
+    struct StalledProvider {
+        entered: mpsc::Sender<()>,
+        resume: Mutex<mpsc::Receiver<()>>,
+    }
+
+    define_class!(
+        // SAFETY: NSObject has no subclassing requirements.
+        #[unsafe(super(NSObject))]
+        #[name = "SuperEditrMissingPasteboardData"]
+        #[ivars = Option<StalledProvider>]
+        struct MissingData;
+
+        unsafe impl NSObjectProtocol for MissingData {}
+
+        unsafe impl NSPasteboardItemDataProvider for MissingData {
+            #[unsafe(method(pasteboard:item:provideDataForType:))]
+            fn pasteboard_item_provideDataForType(&self, _: Option<&NSPasteboard>, _: &NSPasteboardItem, _: &NSString) {
+                if let Some(stall) = self.ivars() {
+                    let _ = stall.entered.send(());
+                    let _ = stall.resume.lock().unwrap().recv_timeout(Duration::from_secs(3));
                 }
-                ProtocolObject::from_retained(item)
-            })
-            .collect();
-        pb.writeObjects(&NSArray::from_retained_slice(&restored));
+            }
+        }
+    );
+
+    impl MissingData {
+        fn new(stall: Option<StalledProvider>) -> Retained<Self> {
+            // SAFETY: initialises an allocated NSObject subclass with the inherited initializer.
+            unsafe { msg_send![super(Self::alloc().set_ivars(stall)), init] }
+        }
+    }
+
+    fn write_items(pb: &NSPasteboard, items: Vec<Retained<NSPasteboardItem>>) -> isize {
+        let items: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> =
+            items.into_iter().map(ProtocolObject::from_retained).collect();
+        pb.clearContents();
+        assert!(pb.writeObjects(&NSArray::from_retained_slice(&items)));
+        pb.changeCount()
+    }
+
+    fn item_with_data(kind: &NSString, bytes: &[u8]) -> Retained<NSPasteboardItem> {
+        let item = NSPasteboardItem::new();
+        assert!(item.setData_forType(&NSData::with_bytes(bytes), kind));
+        item
+    }
+
+    fn offer_promise(item: &NSPasteboardItem, kind: &str, provider: &MissingData) {
+        let kind = NSString::from_str(kind);
+        assert!(item.setDataProvider_forTypes(ProtocolObject::from_ref(provider), &NSArray::from_slice(&[&*kind])));
+    }
+
+    fn read_private(pb: &NSPasteboard) -> Result<(Snapshot, isize), SnapshotError> {
+        Snapshot::read(pb, Instant::now() + Duration::from_secs(1))
+    }
+
+    #[test]
+    fn private_pasteboard_snapshots_restore_every_item_and_preserve_markers() {
+        autoreleasepool(|_| {
+            let board = PrivatePasteboard::new();
+            let pb = &board.0;
+            pb.clearContents();
+            assert!(read_private(pb).unwrap().0.items.is_empty());
+
+            let text = unsafe { NSPasteboardTypeString };
+            let hint = NSString::from_str("org.nspasteboard.ConcealedType");
+            let html = NSString::from_str("public.html");
+            let rich = NSString::from_str("com.quillpoint.rich-notes");
+            let first = item_with_data(text, b"Kyndal's notes");
+            assert!(first.setData_forType(&NSData::new(), &hint));
+            assert!(first.setData_forType(&NSData::with_bytes(b"<b>Kyndal's notes</b>"), &html));
+            let second = item_with_data(&rich, &[1, 4, 9]);
+            write_items(pb, vec![first, second]);
+            let (snapshot, _) = read_private(pb).unwrap();
+
+            let ours = write_items(pb, vec![item_with_data(text, b"Temporary copy")]);
+            snapshot.restore_on(pb, ours);
+            let restored = pb.pasteboardItems().unwrap();
+            assert_eq!(restored.len(), 2);
+            assert_eq!(restored.objectAtIndex(0).dataForType(text).unwrap().to_vec(), b"Kyndal's notes");
+            assert_eq!(restored.objectAtIndex(0).dataForType(&html).unwrap().to_vec(), b"<b>Kyndal's notes</b>");
+            assert!(restored.objectAtIndex(0).dataForType(&hint).unwrap().to_vec().is_empty());
+            assert_eq!(restored.objectAtIndex(1).dataForType(&rich).unwrap().to_vec(), [1, 4, 9]);
+
+            let (snapshot, old) = read_private(pb).unwrap();
+            let newer = write_items(pb, vec![item_with_data(text, b"Brynlee's newer copy")]);
+            snapshot.restore_on(pb, old);
+            assert_eq!(pb.changeCount(), newer);
+            assert_eq!(pb.dataForType(text).unwrap().to_vec(), b"Brynlee's newer copy");
+        });
+    }
+
+    #[test]
+    fn a_private_pasteboard_with_missing_representations_cannot_be_saved() {
+        autoreleasepool(|_| {
+            let board = PrivatePasteboard::new();
+            let pb = &board.0;
+            let provider = MissingData::new(None);
+            let text = unsafe { NSPasteboardTypeString };
+            for kind in ["public.html", "com.quillpoint.rich-notes", "org.nspasteboard.ConcealedType"] {
+                let item = item_with_data(text, b"Rhyan's own copy");
+                offer_promise(&item, kind, &provider);
+                let before = write_items(pb, vec![item]);
+                assert!(matches!(read_private(pb), Err(SnapshotError::Incomplete)));
+                assert_eq!(pb.changeCount(), before);
+                assert_eq!(pb.dataForType(text).unwrap().to_vec(), b"Rhyan's own copy");
+            }
+        });
+    }
+
+    #[test]
+    fn a_stalled_private_pasteboard_uses_one_worker_and_writes_nothing() {
+        static SLOT: AtomicBool = AtomicBool::new(false);
+        autoreleasepool(|_| {
+            let board = PrivatePasteboard::new();
+            let pb = &board.0;
+            let (entered, entered_rx) = mpsc::channel();
+            let (resume_tx, resume) = mpsc::channel();
+            let provider = MissingData::new(Some(StalledProvider { entered, resume: Mutex::new(resume) }));
+            let text = unsafe { NSPasteboardTypeString };
+            let item = item_with_data(text, b"Rhyan's own copy");
+            offer_promise(&item, "public.html", &provider);
+            let before = write_items(pb, vec![item]);
+            let name = pb.name().to_string();
+
+            let first = bounded_read(&SLOT, Duration::from_millis(200), move |deadline| {
+                let pb = NSPasteboard::pasteboardWithName(&NSString::from_str(&name));
+                Snapshot::read(&pb, deadline)
+            });
+            assert!(matches!(first, Err(SnapshotError::TimedOut)));
+            entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            for _ in 0..3 {
+                assert_eq!(bounded_read(&SLOT, Duration::from_secs(1), |_| Ok(())), Err(SnapshotError::Busy));
+            }
+            resume_tx.send(()).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while SLOT.load(Ordering::Acquire) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert_eq!(bounded_read(&SLOT, Duration::from_secs(1), |_| Ok(())), Ok(()));
+            assert_eq!(pb.changeCount(), before);
+            assert_eq!(pb.dataForType(text).unwrap().to_vec(), b"Rhyan's own copy");
+        });
     }
 }

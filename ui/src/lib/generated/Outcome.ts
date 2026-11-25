@@ -4,7 +4,7 @@ import type { KeptTerm } from "./KeptTerm";
 
 export type Outcome = { view: DiffView, text: string, source: string, firstTokenMs: number | null, totalMs: number, 
 /**
- * Links, mentions, numbers or code from the original that the revision changed.
+ * Links, mentions, numbers or code changed by the edits initially accepted in the panel.
  */
 changedTokens: Array<string>, 
 /**

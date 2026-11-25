@@ -32,6 +32,7 @@ semver = "1"
 # The tests write the TypeScript definitions of the IPC payloads to ui/src/lib/generated (the
 # directory is set in .cargo/config.toml); scripts/check.sh fails when the committed ones are stale.
 [dev-dependencies]
+tauri = { version = "2.12", features = ["test"] }
 ts-rs = "12"
 supereditr-core = { workspace = true, features = ["ts"] }
 # tests/contracts/log-lines.json: the end-to-end drivers' patterns, checked against the log lines.
@@ -77,9 +78,6 @@ zbus = { version = "5", features = ["tokio"] }
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts"] }
 # The clipboard through data-control, without focus: read, snapshot every type and restore.
 wl-clipboard-rs = "0.9"
-# Hears when the clipboard changes, without reading it.
-wayland-client = "0.31"
-wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 futures-util = "0.3"
 # Sentence boundaries, for selecting the sentence before the caret.
 unicode-segmentation = "1"
@@ -95,7 +93,7 @@ core-foundation = "0.10"
 core-graphics = { version = "0.25", features = ["elcapitan"] }
 # The raw event pointer, for Core Graphics calls the core-graphics crate doesn't wrap.
 foreign-types = "0.5"
-objc2 = "0.6"
+objc2 = { version = "0.6", features = ["exception"] }
 objc2-foundation = { version = "0.3", features = ["NSString", "NSData", "NSArray", "NSURL", "NSGeometry", "NSNotification", "NSDictionary", "NSOperation", "NSBundle", "NSFileManager", "block2"] }
 objc2-app-kit = { version = "0.3", features = ["NSPasteboard", "NSPasteboardItem", "NSRunningApplication", "NSEvent", "NSResponder", "NSApplication", "NSWindow", "NSGraphics", "NSWorkspace", "NSScreen", "NSOpenPanel", "NSImage", "NSBitmapImageRep", "NSGraphicsContext", "objc2-uniform-type-identifiers", "block2"] }
 # The Privacy page's app picker shows only apps.

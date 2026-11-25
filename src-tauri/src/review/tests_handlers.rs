@@ -152,6 +152,7 @@ pub(super) struct Fake<'a> {
     pub(super) replaced: Mutex<Option<Result<ReplaceOutcome, String>>>,
     /// The events quick fix's engine run sends.
     pub(super) events: Mutex<Vec<Event>>,
+    pub(super) pending_events: Mutex<Option<tokio::sync::oneshot::Receiver<Vec<Event>>>>,
     /// The runs the engine started, in order, for a test to send their events.
     pub(super) runs: Mutex<Vec<Asked>>,
     /// Each run cancelled, by review and run number.
@@ -178,6 +179,7 @@ impl<'a> Fake<'a> {
             while_writing: None,
             replaced: Mutex::default(),
             events: Mutex::default(),
+            pending_events: Mutex::default(),
             runs: Mutex::default(),
             cancelled: Arc::default(),
             ahead: Mutex::default(),
@@ -269,9 +271,14 @@ impl Host for Fake<'_> {
     }
     fn capture(
         &self,
+        target: Option<CaptureTarget>,
         allow_clipboard: bool,
         select_sentence: bool,
     ) -> impl Future<Output = Result<Capture, PlatformError>> + Send {
+        assert_eq!(
+            target,
+            self.front.as_ref().map(|(pid, bundle_id, _)| CaptureTarget { pid: *pid, bundle_id: bundle_id.clone() })
+        );
         self.record(ReadSelection { allow_clipboard, select_sentence });
         if let Some(meanwhile) = &self.while_reading {
             meanwhile(self.state);
@@ -283,7 +290,11 @@ impl Host for Fake<'_> {
         _captured: Capture,
         text: String,
         proofread: bool,
+        run: Arc<crate::platform::QuickFix>,
     ) -> impl Future<Output = Result<ReplaceOutcome, String>> + Send {
+        if run.is_cancelled() || run.expired() {
+            return std::future::ready(Ok(ReplaceOutcome::Cancelled));
+        }
         self.record(Replace { text, proofread });
         std::future::ready(self.replaced.lock().unwrap().take().unwrap_or(Ok(ReplaceOutcome::Applied)))
     }
@@ -336,7 +347,14 @@ impl Engine for Fake<'_> {
     }
     fn run_to_end(&self, job: Job) -> impl Future<Output = Vec<Event>> + Send {
         self.record(RunToEnd(job.text));
-        std::future::ready(std::mem::take(&mut *self.events.lock().unwrap()))
+        let pending = self.pending_events.lock().unwrap().take();
+        let events = std::mem::take(&mut *self.events.lock().unwrap());
+        async move {
+            match pending {
+                Some(pending) => pending.await.unwrap_or_default(),
+                None => events,
+            }
+        }
     }
 }
 
@@ -605,7 +623,7 @@ fn a_new_review_hides_the_notice_and_opens_the_panel_with_the_keys() {
     let calls = fake.take();
     // The panel's keys come from the reviewed app only, and its window is watched, before the panel
     // gets the review.
-    assert_eq!(calls[..2], [SetReviewApp(REVIEWED), Follow(id)]);
+    assert_eq!(calls[..2], [Follow(id), SetReviewApp(REVIEWED)]);
     let Emit { window, event, payload } = &calls[2] else { panic!("{calls:?}") };
     assert_eq!((window.as_str(), event.as_str()), ("overlay", "overlay:session"));
     assert_eq!(payload["id"], json!(id));

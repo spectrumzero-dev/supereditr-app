@@ -2,42 +2,108 @@
 //! a readability grade so rewrites can show whether they actually got simpler.
 
 use serde::Serialize;
+use std::collections::BTreeMap;
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Spans a writing edit should never alter: links, e-mail addresses, @mentions, #channels,
 /// inline code, template placeholders, and numbers.
 pub fn protected_tokens(text: &str) -> Vec<String> {
     let mut out = Vec::new();
-    // Inline code spans first, so their contents aren't also split into words.
-    let mut rest = text;
-    while let Some(start) = rest.find('`') {
-        let after = &rest[start + 1..];
-        match after.find('`') {
-            Some(end) => {
-                out.push(format!("`{}`", &after[..end]));
-                rest = &after[end + 1..];
-            }
-            None => break,
+    let spans = code_spans(text);
+    if spans.is_empty() {
+        prose_tokens(text, &mut out);
+    } else {
+        let offsets: Vec<_> = text.char_indices().map(|(i, _)| i).chain([text.len()]).collect();
+        let mut previous = 0;
+        for (start, end) in spans {
+            let (start, end) = (offsets[start], offsets[end]);
+            prose_tokens(&text[previous..start], &mut out);
+            out.push(text[start..end].to_owned());
+            previous = end;
         }
+        prose_tokens(&text[previous..], &mut out);
     }
-    for word in text.split_whitespace() {
-        let trimmed = word.trim_matches(|c: char| {
-            matches!(c, '(' | ')' | ',' | '.' | ';' | ':' | '!' | '?' | '"' | '\'' | '“' | '”')
-        });
-        let is_url = trimmed.starts_with("http://") || trimmed.starts_with("https://") || trimmed.starts_with("www.");
+    out.sort_unstable();
+    out
+}
+
+fn prose_tokens(text: &str, out: &mut Vec<String>) {
+    let mut words = text.split_whitespace().peekable();
+    while let Some(word) = words.next() {
+        if let Some(link) = url_token(word) {
+            out.push(link.to_owned());
+            continue;
+        }
+        // A leading decimal point belongs to the value. A trailing period can end the sentence.
+        let trimmed = word
+            .trim_start_matches(['(', '[', ',', ';', ':', '!', '?', '"', '\'', '“', '‘'])
+            .trim_end_matches([')', ']', ',', '.', ';', ':', '!', '?', '"', '\'', '”', '’']);
+        let (clock, attached) =
+            trimmed.split_at(trimmed.find(|c: char| c.is_ascii_alphabetic()).unwrap_or(trimmed.len()));
+        if is_clock_time(clock) {
+            let suffix = if attached.is_empty() && word.ends_with(clock) {
+                words.peek().copied().unwrap_or_default()
+            } else {
+                attached
+            };
+            let marker = suffix.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '"', '\'', '”', '’']);
+            let period = if marker.eq_ignore_ascii_case("am") || marker.eq_ignore_ascii_case("a.m") {
+                Some("am")
+            } else if marker.eq_ignore_ascii_case("pm") || marker.eq_ignore_ascii_case("p.m") {
+                Some("pm")
+            } else {
+                None
+            };
+            if let Some(period) = period {
+                if attached.is_empty() {
+                    words.next();
+                }
+                out.push(format!("{clock} {period}"));
+                continue;
+            }
+        }
         let is_email = trimmed.contains('@') && trimmed.contains('.') && !trimmed.starts_with('@');
         let is_mention = (trimmed.starts_with('@') || trimmed.starts_with('#')) && trimmed.len() > 1;
         let is_placeholder = (trimmed.starts_with("{{") && trimmed.ends_with("}}"))
             || (trimmed.starts_with('{') && trimmed.ends_with('}') && trimmed.len() > 2);
         let is_number = trimmed.chars().any(|c| c.is_ascii_digit())
-            && trimmed.chars().all(|c| c.is_ascii_digit() || matches!(c, '.' | ',' | '%' | '$' | '-' | '/' | ':'));
-        if is_url || is_email || is_mention || is_placeholder || is_number {
+            && trimmed.chars().all(|c| {
+                c.is_ascii_digit() || matches!(c, '.' | ',' | '%' | '$' | '€' | '£' | '¥' | '+' | '-' | '/' | ':')
+            });
+        if is_email || is_mention || is_placeholder || is_number {
             out.push(trimmed.to_string());
         }
     }
-    out.sort();
-    out.dedup();
-    out
+}
+
+/// A clock value that can be qualified by AM or PM.
+fn is_clock_time(clock: &str) -> bool {
+    let (hour, minute) = clock.split_once(':').map_or((clock, None), |(h, m)| (h, Some(m)));
+    hour.len() <= 2
+        && hour.bytes().all(|b| b.is_ascii_digit())
+        && matches!(hour.parse::<u8>(), Ok(1..=12))
+        && minute.is_none_or(|m| {
+            m.len() == 2 && m.bytes().all(|b| b.is_ascii_digit()) && matches!(m.parse::<u8>(), Ok(0..=59))
+        })
+}
+
+fn url_token(word: &str) -> Option<&str> {
+    // Link labels can contain spaces. Only the final word before the URL needs to contain the
+    // Markdown delimiter. Balanced parentheses can also belong to the URL itself.
+    let word = word.rsplit_once("](").map_or(word, |(_, url)| url);
+    let mut url = word
+        .trim_start_matches(['(', '[', '<', '"', '\'', '“', '‘'])
+        .trim_end_matches([']', '>', '"', '\'', '”', '’', '.', ',', ';', ':', '!', '?']);
+    if !url.starts_with("http://") && !url.starts_with("https://") && !url.starts_with("www.") {
+        return None;
+    }
+    let opens = url.bytes().filter(|&byte| byte == b'(').count();
+    let closes = url.bytes().filter(|&byte| byte == b')').count();
+    for _ in 0..closes.saturating_sub(opens) {
+        let Some(without_end) = url.strip_suffix(')') else { break };
+        url = without_end;
+    }
+    Some(url)
 }
 
 /// Character ranges of code in `text`, delimiters included: fenced blocks (a line starting with
@@ -106,9 +172,33 @@ pub fn code_spans(text: &str) -> Vec<(usize, usize)> {
     spans
 }
 
-/// Protected tokens from `original` that no longer appear in `revised`.
+/// Protected tokens whose occurrence count decreased. Reports each affected value once.
 pub fn missing_tokens(original: &str, revised: &str) -> Vec<String> {
-    protected_tokens(original).into_iter().filter(|t| !revised.contains(t.as_str())).collect()
+    let revised_counts = token_counts(revised);
+    token_counts(original)
+        .into_iter()
+        .filter_map(|(token, count)| (count > revised_counts.get(&token).copied().unwrap_or_default()).then_some(token))
+        .collect()
+}
+
+/// Protected values whose occurrence counts differ, including values introduced by the edit.
+pub fn changed_tokens(original: &str, revised: &str) -> Vec<String> {
+    let mut revised_counts = token_counts(revised);
+    let mut changed: Vec<_> = token_counts(original)
+        .into_iter()
+        .filter_map(|(token, count)| (count != revised_counts.remove(&token).unwrap_or_default()).then_some(token))
+        .collect();
+    changed.extend(revised_counts.into_keys());
+    changed.sort_unstable();
+    changed
+}
+
+fn token_counts(text: &str) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for token in protected_tokens(text) {
+        *counts.entry(token).or_default() += 1;
+    }
+    counts
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
@@ -152,6 +242,49 @@ mod tests {
         let original = "See https://example.com and ask @sam.";
         assert!(missing_tokens(original, "See https://example.com and ask @sam!").is_empty());
         assert_eq!(missing_tokens(original, "See the site and ask Sam."), vec!["@sam", "https://example.com"]);
+    }
+
+    #[test]
+    fn compares_complete_tokens_and_counts_repeated_values() {
+        let original = "Rhyan paid $4.50 for 12 items, then sent 12 to @brynlee at https://example.com/a.";
+        let changed = "Rhyan paid $4.500 for 120 items, then sent 12 to @brynlee2 at https://example.com/ab.";
+        assert_eq!(missing_tokens(original, changed), ["$4.50", "12", "@brynlee", "https://example.com/a"]);
+        assert_eq!(missing_tokens("12 12", "120"), ["12"]);
+        assert_eq!(missing_tokens("Use `12`. Send 12.", "Use `12`."), ["12"]);
+        assert_eq!(missing_tokens("Keep `x` and `x`.", "Keep `x`."), ["`x`"]);
+    }
+
+    #[test]
+    fn surrounding_prose_punctuation_leaves_tokens_intact() {
+        let original = "See (https://example.com/a?b=1) and ask “@brynlee”. Send [$4.50] for 12.";
+        let revised = "See https://example.com/a?b=1, ask @brynlee, and send $4.50 for 12!";
+        assert!(missing_tokens(original, revised).is_empty());
+        assert!(
+            changed_tokens(
+                "See the [design doc](https://example.com/a_(b)).",
+                "See https://example.com/a_(b) for details."
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn reports_new_protected_values_and_additional_occurrences() {
+        assert_eq!(changed_tokens("Send 12.", "Send 12 or 20."), ["20"]);
+        assert_eq!(changed_tokens("Send 12.", "Send 12 and 12."), ["12"]);
+        assert_eq!(changed_tokens("Send 12.", "Send 120."), ["12", "120"]);
+        assert_eq!(changed_tokens("Use (.5).", "Use 5."), [".5", "5"]);
+    }
+
+    #[test]
+    fn time_notation_preserves_the_hour_minutes_and_period() {
+        assert!(changed_tokens("Meet at 10am and 5:30pm.", "Meet at 10 a.m. and 5:30 P.M.!").is_empty());
+        assert_eq!(changed_tokens("5pm", "5 AM"), ["5 am", "5 pm"]);
+        assert_eq!(changed_tokens("10am", "11am"), ["10 am", "11 am"]);
+        assert_eq!(changed_tokens("5:30pm", "5:35 pm"), ["5:30 pm", "5:35 pm"]);
+        assert_eq!(changed_tokens("1pm and 1 PM", "1 p.m."), ["1 pm"]);
+        assert!(!changed_tokens("Score: 5.", "Score: 5 pm.").is_empty());
+        assert!(changed_tokens("Meet at 5. Am I late?", "Am I late? Meet at 5.").is_empty());
     }
 
     /// The text of each code span.

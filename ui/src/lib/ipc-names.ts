@@ -13,6 +13,7 @@ export const commands = [
   "app_info",
   "apply_text",
   "builtin_ai",
+  "check_protected_tokens",
   "check_provider",
   "check_shortcut",
   "claude_sign_in",

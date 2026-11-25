@@ -32,6 +32,18 @@ pub async fn apply_text(app: AppHandle, id: u64, text: String, anyway: Option<bo
 }
 
 #[tauri::command]
+pub async fn check_protected_tokens(state: State<'_, AppState>, id: u64, text: String) -> CmdResult<Vec<String>> {
+    let original = state
+        .review
+        .lock()
+        .unwrap()
+        .current(id)
+        .map(|session| session.capture.text.clone())
+        .ok_or("This review has ended.")?;
+    Ok(supereditr_core::guard::changed_tokens(&original, &text))
+}
+
+#[tauri::command]
 pub fn dismiss(app: AppHandle, id: Option<u64>) {
     review::dismiss(&app, id);
 }

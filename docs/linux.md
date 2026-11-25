@@ -31,7 +31,7 @@ Settings → Set up Omarchy lists what it will change before it does: it adds `-
 
 The shortcuts and setup above differ from the Mac's too. Beyond them:
 
-- SuperEditr reads text through the AT-SPI accessibility bus. Where an app exposes no text, such as a terminal, it copies the selection and puts your clipboard back afterwards; it can't replace text there, so Ctrl+C in the panel copies the fix.
+- SuperEditr reads text through the AT-SPI accessibility bus. In a terminal enabled for review, the shortcut asks the terminal to copy its current selection and restores your clipboard afterwards. If the program handles mouse selections itself, hold Shift while selecting to use the terminal’s selection, or paste the text into Settings → Try it now. Press Ctrl+C in the panel to copy the fix.
 - API keys are saved in the Secret Service keyring (GNOME Keyring on Omarchy), not in SuperEditr's settings. Omarchy's default keyring has no password, so any program you run can read them; Settings → Desktop setup says so, and Seahorse (Passwords and Keys) can set one.
 - There are no in-app updates: the package manager installs new versions, and SuperEditr never contacts the update server.
 - The diagnostic log is `~/.local/state/supereditr/capture.log`.

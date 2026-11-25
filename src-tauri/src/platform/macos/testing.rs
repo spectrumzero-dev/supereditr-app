@@ -5,10 +5,11 @@
 
 use super::Capture;
 use super::capture::{Read, capture_with};
+use super::pasteboard::SnapshotError;
 use super::replace::replace_with;
 use super::seam::{App, Clock, Desktop, Field, Pasteboard, Services};
 use super::text::Formatting;
-use crate::platform::{PlatformError, Rect, ReplaceMethod};
+use crate::platform::{CaptureTarget, PlatformError, Rect, ReplaceMethod};
 use std::cell::{Cell, RefCell};
 use std::time::{Duration, Instant};
 
@@ -117,6 +118,7 @@ pub struct World {
     /// still building its accessibility tree.
     tree_ready: Cell<Duration>,
     asked_for_tree: Cell<usize>,
+    focused_reads: Cell<usize>,
     formatting_reads: Cell<usize>,
     selection_bounds: Cell<Option<Rect>>,
     marker_bounds: Cell<Option<Rect>>,
@@ -141,6 +143,8 @@ pub struct World {
     drops_empty_paragraphs: Cell<bool>,
     clipboard: RefCell<Clip>,
     change_count: Cell<isize>,
+    snapshot_error: Cell<Option<SnapshotError>>,
+    after_snapshot: RefCell<Option<Hook>>,
     after_paste: RefCell<Option<Hook>>,
     after_write: RefCell<Option<Hook>>,
     keys: RefCell<Vec<String>>,
@@ -175,6 +179,7 @@ impl World {
             hides_selection: Cell::new(false),
             tree_ready: Cell::new(Duration::ZERO),
             asked_for_tree: Cell::new(0),
+            focused_reads: Cell::new(0),
             formatting_reads: Cell::new(0),
             selection_bounds: Cell::new(Some(SELECTION_BOUNDS)),
             marker_bounds: Cell::new(Some(MARKER_BOUNDS)),
@@ -192,6 +197,8 @@ impl World {
             drops_empty_paragraphs: Cell::new(false),
             clipboard: RefCell::new(("Rhyan's own copy".into(), Some("<b>Rhyan's own copy</b>".into()))),
             change_count: Cell::new(1),
+            snapshot_error: Cell::new(None),
+            after_snapshot: RefCell::default(),
             after_paste: RefCell::default(),
             after_write: RefCell::default(),
             keys: RefCell::default(),
@@ -377,6 +384,15 @@ impl World {
         *self.after_write.borrow_mut() = Some(Box::new(act));
     }
 
+    pub fn with_snapshot_error(self, error: SnapshotError) -> Self {
+        self.snapshot_error.set(Some(error));
+        self
+    }
+
+    pub fn after_snapshot(&self, act: impl FnOnce(&World) + 'static) {
+        *self.after_snapshot.borrow_mut() = Some(Box::new(act));
+    }
+
     /// What SuperEditr reads from the field as it is now.
     pub fn capture(&self) -> Capture {
         let (start, length) = self.selection.get();
@@ -408,7 +424,20 @@ impl World {
 
     /// Reads the selection, by a shortcut when `allow_clipboard` is set and automatically otherwise.
     pub fn read(&self, allow_clipboard: bool, select_sentence: bool) -> Result<Read<Ui<'_>>, PlatformError> {
-        capture_with(&self.services(), allow_clipboard, select_sentence)
+        self.read_for_target(Some(&self.capture_target()), allow_clipboard, select_sentence)
+    }
+
+    pub fn capture_target(&self) -> CaptureTarget {
+        CaptureTarget { pid: PID, bundle_id: self.bundle_id.clone() }
+    }
+
+    pub fn read_for_target(
+        &self,
+        target: Option<&CaptureTarget>,
+        allow_clipboard: bool,
+        select_sentence: bool,
+    ) -> Result<Read<Ui<'_>>, PlatformError> {
+        capture_with(&self.services(), target, allow_clipboard, select_sentence)
     }
 
     /// Reads the selection for a shortcut, which may copy.
@@ -423,17 +452,33 @@ impl World {
 
     /// Replaces the selection with a rewrite.
     pub fn replace(&self, capture: &Capture, text: &str) -> Result<ReplaceMethod, PlatformError> {
-        replace_with(&self.services(), capture, Some(&self.field()), text, false)
+        replace_with(&self.services(), capture, Some(&self.field()), text, false, crate::platform::ReplaceMode::Apply)
+    }
+
+    pub fn quick_fix(
+        &self,
+        capture: &Capture,
+        text: &str,
+        run: &crate::platform::QuickFix,
+    ) -> Result<ReplaceMethod, PlatformError> {
+        replace_with(
+            &self.services(),
+            capture,
+            Some(&self.field()),
+            text,
+            false,
+            crate::platform::ReplaceMode::QuickFix(run),
+        )
     }
 
     /// Replaces the selection with a proofread, which may be applied in place.
     pub fn proofread(&self, capture: &Capture, text: &str) -> Result<ReplaceMethod, PlatformError> {
-        replace_with(&self.services(), capture, Some(&self.field()), text, true)
+        replace_with(&self.services(), capture, Some(&self.field()), text, true, crate::platform::ReplaceMode::Apply)
     }
 
     /// Replaces with no field to write into, as for text that was copied.
     pub fn replace_without_a_field(&self, capture: &Capture, text: &str) -> Result<ReplaceMethod, PlatformError> {
-        replace_with(&self.services(), capture, None, text, false)
+        replace_with(&self.services(), capture, None, text, false, crate::platform::ReplaceMode::Apply)
     }
 
     /// The user selects UTF-16 units `start..start + length`.
@@ -483,6 +528,10 @@ impl World {
     /// How many times SuperEditr asked the app for its accessibility tree.
     pub fn asked_for_tree(&self) -> usize {
         self.asked_for_tree.get()
+    }
+
+    pub fn focused_reads(&self) -> usize {
+        self.focused_reads.get()
     }
 
     /// How many times SuperEditr looked for code and other formatting in the field.
@@ -709,6 +758,7 @@ impl App for Ui<'_> {
 
     fn focused(&self) -> Option<Self> {
         let world = self.world;
+        world.focused_reads.set(world.focused_reads.get() + 1);
         if world.elapsed.get() < world.tree_ready.get() {
             return None;
         }
@@ -721,17 +771,18 @@ impl App for Ui<'_> {
         self.world.now() + Duration::from_secs(4)
     }
 
-    fn press_menu_item(&self, key: &str) -> Option<bool> {
-        if key != "c" {
-            return None;
-        }
+    fn press_copy_menu(
+        &self,
+        before_press: impl FnOnce() -> Result<(), PlatformError>,
+    ) -> Result<Option<bool>, PlatformError> {
         match self.world.copy_item.get() {
-            Item::Missing => None,
-            Item::Disabled => Some(false),
+            Item::Missing => Ok(None),
+            Item::Disabled => Ok(Some(false)),
             Item::Enabled => {
+                before_press()?;
                 self.world.keys.borrow_mut().push("Copy menu item".into());
                 self.world.copy();
-                Some(true)
+                Ok(Some(true))
             }
         }
     }
@@ -750,6 +801,10 @@ impl Desktop for World {
 
     fn focused_app(&self) -> Option<(Ui<'_>, i32)> {
         self.in_front.get().then_some((Ui { world: self, id: APP }, PID))
+    }
+
+    fn frontmost_pid(&self) -> Option<i32> {
+        self.in_front.get().then_some(PID)
     }
 
     fn app_identity(&self, _pid: i32) -> (String, String) {
@@ -803,16 +858,24 @@ impl Desktop for World {
 impl Pasteboard for World {
     type Snapshot = Clip;
 
-    fn snapshot(&self) -> Clip {
-        self.clipboard.borrow().clone()
+    fn snapshot(&self) -> Result<(Clip, isize), SnapshotError> {
+        if let Some(error) = self.snapshot_error.get() {
+            return Err(error);
+        }
+        let snapshot = (self.clipboard.borrow().clone(), self.change_count.get());
+        self.run(&self.after_snapshot);
+        Ok(snapshot)
     }
 
-    fn write_transient(&self, text: &str, html: Option<&str>) -> isize {
+    fn write_transient(&self, text: &str, html: Option<&str>, before: isize) -> Result<isize, SnapshotError> {
+        if self.change_count.get() != before {
+            return Err(SnapshotError::Changed);
+        }
         let clip: Clip = (text.into(), html.map(str::to_string));
         self.put_on_clipboard.borrow_mut().push(clip.clone());
         *self.clipboard.borrow_mut() = clip;
         self.change_count.set(self.change_count.get() + 1);
-        self.change_count.get()
+        Ok(self.change_count.get())
     }
 
     fn change_count(&self) -> isize {

@@ -44,7 +44,7 @@ pub struct Outcome {
     pub source: String,
     pub first_token_ms: Option<u64>,
     pub total_ms: u64,
-    /// Links, mentions, numbers or code from the original that the revision changed.
+    /// Links, mentions, numbers or code changed by the edits initially accepted in the panel.
     pub changed_tokens: Vec<String>,
     /// Readability grade before and after, for selections long enough to score.
     pub grade_before: Option<i32>,
@@ -79,7 +79,7 @@ impl Outcome {
         total_ms: u64,
     ) -> Self {
         Self {
-            changed_tokens: guard::missing_tokens(original, &text),
+            changed_tokens: guard::changed_tokens(original, &text),
             grade_before: guard::readability(original).map(|r| r.grade),
             grade_after: guard::readability(&text).map(|r| r.grade),
             view,
@@ -151,6 +151,9 @@ impl Outcome {
             self.kept_terms.push(KeptTerm { term, changes });
         }
         self.kept.sort_unstable();
+        if !self.kept.is_empty() {
+            self.changed_tokens = guard::changed_tokens(original, &self.kept_text());
+        }
     }
 
     /// The revision with the changes in `kept` left out: what quick fix and the CLI apply.

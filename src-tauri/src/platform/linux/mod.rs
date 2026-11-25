@@ -206,7 +206,6 @@ pub fn start(on_shortcut: impl Fn(Action) + Send + Sync + 'static) {
         }
     });
     tauri::async_runtime::spawn(quit_on_signal());
-    clipboard::watch_changes();
     match hyprland() {
         Some(hyprland) => {
             for check in hyprland.setup_status() {
@@ -383,7 +382,11 @@ fn services<'a>(desktop: &'a dyn Desktop, clipboard: &'a clipboard::Wayland) -> 
 /// Reads the selection in the window in front: through AT-SPI, or, with `allow_clipboard` (a
 /// shortcut press), a guarded copy. With `select_sentence` and nothing selected, first selects the
 /// sentence before the caret. Runs on a worker thread.
-pub fn capture(allow_clipboard: bool, select_sentence: bool) -> Result<Capture, PlatformError> {
+pub fn capture(
+    _target: Option<super::CaptureTarget>,
+    allow_clipboard: bool,
+    select_sentence: bool,
+) -> Result<Capture, PlatformError> {
     let _one_at_a_time = CHAIN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let desktop = desktop();
     *super::lock(&TARGET) = desktop.front_window().ok().filter(|window| window.pid != own_pid());
@@ -404,11 +407,17 @@ pub fn focused_app_identity() -> Option<(i32, String, String)> {
 /// Pastes `text` over the captured selection. A `proofread` of formatted text in a web editor
 /// changes only the words it fixes, where the app lets SuperEditr select them; anything else
 /// replaces the whole selection. Runs on a worker thread.
-pub fn replace(capture: &Capture, text: &str, proofread: bool) -> ReplaceOutcome {
+pub fn replace(capture: &Capture, text: &str, proofread: bool, mode: super::ReplaceMode<'_>) -> ReplaceOutcome {
     let _one_at_a_time = CHAIN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let desktop = desktop();
     let clipboard = clipboard::Wayland;
-    tauri::async_runtime::block_on(replace::replace(&services(desktop.as_ref(), &clipboard), capture, text, proofread))
+    tauri::async_runtime::block_on(replace::replace(
+        &services(desktop.as_ref(), &clipboard),
+        capture,
+        text,
+        proofread,
+        mode,
+    ))
 }
 
 /// Puts a suggestion on the clipboard, marked sensitive so clipboard history skips it.

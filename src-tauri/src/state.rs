@@ -1,9 +1,9 @@
-use crate::platform::{Capture, Rect};
+use crate::platform::{Capture, QuickFix, Rect};
 use crate::secrets::{self, CredentialStore, Secrets};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use supereditr_core::config::{ConfigFile, LoadStatus};
 use supereditr_core::detect::Candidate;
@@ -97,6 +97,7 @@ pub const QUIET: Duration = Duration::from_millis(800);
 /// the lock is released, such as dropping the review that ended, which stops watching its window.
 pub struct ReviewState {
     session: Option<Session>,
+    quick_fix: Option<Arc<QuickFix>>,
     /// A standalone notice (no review) is on screen.
     notice: bool,
     /// Selection events are ignored until this moment (just after we replaced text).
@@ -123,7 +124,24 @@ pub struct Applying {
 
 impl ReviewState {
     pub fn new(now: Instant) -> Self {
-        Self { session: None, notice: false, quiet_until: now }
+        Self { session: None, quick_fix: None, notice: false, quiet_until: now }
+    }
+
+    pub fn start_quick_fix(&mut self, deadline: Instant) -> Arc<QuickFix> {
+        self.cancel_quick_fix();
+        let run = Arc::new(QuickFix::new(deadline));
+        self.quick_fix = Some(run.clone());
+        run
+    }
+
+    pub fn finish_quick_fix(&mut self, run: &Arc<QuickFix>) {
+        self.quick_fix.take_if(|current| Arc::ptr_eq(current, run));
+    }
+
+    pub fn cancel_quick_fix(&mut self) {
+        if let Some(run) = self.quick_fix.take() {
+            run.cancel();
+        }
     }
 
     pub fn session(&self) -> Option<&Session> {
@@ -173,6 +191,9 @@ impl ReviewState {
     /// The user accepted review `id`: its run stops and the panel closes for good, though the review
     /// stays until the text is written (`end`). None when the review has ended.
     pub fn apply(&mut self, id: u64) -> Option<Applying> {
+        if self.current(id).is_some() {
+            self.cancel_quick_fix();
+        }
         let current = self.current_mut(id)?;
         current.cancel();
         Some(Applying {
@@ -203,6 +224,7 @@ impl ReviewState {
         if id.is_some() && self.session.as_ref().map(|s| s.id) != id {
             return Dismissal::NotCurrent;
         }
+        self.cancel_quick_fix();
         let ended = self.take_cancelled();
         self.notice = false;
         Dismissal::Close(ended)

@@ -286,11 +286,16 @@ fn the_shortcut_reads_the_selection_and_opens_a_review_of_it() {
     select(&fake, Ok(capture(TEXT, false)));
     block_on(fake.controller().start_manual(Some("polish".into())));
     let calls = fake.take();
-    assert_eq!(
-        calls[..3],
-        [WarmConnection, ReadSelection { allow_clipboard: true, select_sentence: true }, SetReviewApp(REVIEWED)]
-    );
     let id = showing(&state).unwrap();
+    assert_eq!(
+        calls[..4],
+        [
+            WarmConnection,
+            ReadSelection { allow_clipboard: true, select_sentence: true },
+            Follow(id),
+            SetReviewApp(REVIEWED)
+        ]
+    );
     assert_eq!(
         calls.last(),
         Some(&StartRun { id, run: 0, text: TEXT.into(), preset_id: "polish".into(), steer: None })
@@ -424,6 +429,136 @@ fn quick_fix_says_why_the_engine_failed() {
     let id = state.next_id.load(Ordering::Relaxed);
     block_on(fake.controller().quick_fix());
     assert_eq!(fake.take()[3..], notice_shown(id, message, None, true));
+}
+
+#[test]
+fn quick_fix_opens_the_finished_result_for_any_protected_value_change() {
+    for (text, fixed, changes) in [
+        ("Send 12 today.", "Send 120 today.", vec!["12".to_string(), "120".to_string()]),
+        ("Send 12 today.", "Send 12 or 20 today.", vec!["20".to_string()]),
+    ] {
+        let state = test_state();
+        let fake = Fake::new(&state);
+        select(&fake, Ok(capture(text, false)));
+        let mut result = outcome(text, fixed);
+        *fake.events.lock().unwrap() = vec![Event::Done(result.clone())];
+        block_on(fake.controller().quick_fix());
+        let id = showing(&state).unwrap();
+        let calls = fake.take();
+        assert_eq!(calls.iter().filter(|call| matches!(call, ReadSelection { .. })).count(), 1);
+        assert_eq!(calls.iter().filter(|call| matches!(call, RunToEnd(_))).count(), 1);
+        assert!(!calls.iter().any(|call| matches!(call, Replace { .. } | StartRun { .. })));
+        assert!(calls.contains(&Show { keys: false }), "the panel leaves keyboard focus where the user put it");
+        result.changed_tokens = changes;
+        assert_eq!(calls.last(), Some(&engine(id, 0, &Event::Done(result), false)));
+        assert!(state.review.lock().unwrap().current(id).unwrap().proofread);
+    }
+}
+
+#[test]
+fn quick_fix_checks_the_text_after_rejected_edits_are_removed() {
+    let state = test_state();
+    let fake = Fake::new(&state);
+    let text = "Send 12 today. Check teh date.";
+    let mut result = outcome(text, "Send 120 today. Check the date.");
+    result.kept = vec![0];
+    assert_eq!(result.kept_text(), "Send 12 today. Check the date.");
+    select(&fake, Ok(capture(text, false)));
+    *fake.events.lock().unwrap() = vec![Event::Done(result)];
+    block_on(fake.controller().quick_fix());
+    assert_eq!(fake.take().last(), Some(&Replace { text: "Send 12 today. Check the date.".into(), proofread: true }));
+    assert_eq!(showing(&state), None);
+}
+
+#[test]
+fn a_superseded_quick_fix_cannot_claim_the_panels_keyboard_target() {
+    let state = test_state();
+    let fake = Fake::new(&state);
+    let controller = fake.controller();
+    let old = controller.reserve_quick_fix(QUICK_FIX_TIMEOUT);
+    let _new = controller.reserve_quick_fix(QUICK_FIX_TIMEOUT);
+    assert!(matches!(
+        controller.begin_for(capture(TEXT, false), false, None, Some(&old)),
+        Err(AutoOutcome::Superseded)
+    ));
+    assert!(fake.take().iter().all(|call| !matches!(call, SetReviewApp(_) | Show { .. })));
+    assert_eq!(showing(&state), None);
+}
+
+#[test]
+fn a_quick_fix_with_moved_focus_offers_to_copy_and_keeps_the_clipboard() {
+    let state = test_state();
+    let fake = Fake::new(&state);
+    select(&fake, Ok(capture(TEXT, false)));
+    *fake.events.lock().unwrap() = vec![done()];
+    *fake.replaced.lock().unwrap() = Some(Ok(ReplaceOutcome::FocusMoved));
+    let id = state.next_id.load(Ordering::Relaxed);
+    block_on(fake.controller().quick_fix());
+    let message = "The original selection changed or lost focus. Copy the suggestion from here.";
+    assert_eq!(fake.take()[4..], notice_shown(id, message, Some(FIXED), false));
+}
+
+#[test]
+fn a_new_quick_fix_cancels_a_pending_result_and_only_writes_the_new_fix() {
+    let state = test_state();
+    let fake = Fake::new(&state);
+    select(&fake, Ok(capture(TEXT, false)));
+    let (send_old, old_events) = tokio::sync::oneshot::channel();
+    *fake.pending_events.lock().unwrap() = Some(old_events);
+    block_on(async {
+        let controller = fake.controller();
+        let first = controller.quick_fix();
+        tokio::pin!(first);
+        tokio::select! {
+            biased;
+            _ = &mut first => panic!("the first run should be waiting"),
+            _ = tokio::task::yield_now() => {}
+        }
+        let next = "Brynlee checked teh draft.";
+        let fixed = "Brynlee checked the draft.";
+        select(&fake, Ok(capture(next, false)));
+        *fake.events.lock().unwrap() = vec![Event::Done(outcome(next, fixed))];
+        controller.quick_fix().await;
+        first.await;
+        assert!(send_old.send(vec![done()]).is_err(), "the pending engine future was dropped");
+        let calls = fake.take();
+        let writes: Vec<_> = calls.into_iter().filter(|call| matches!(call, Replace { .. })).collect();
+        assert_eq!(writes, [Replace { text: fixed.into(), proofread: true }]);
+    });
+}
+
+#[test]
+fn a_quick_fix_whose_task_starts_late_never_touches_the_selection() {
+    let state = test_state();
+    let fake = Fake::new(&state);
+    let controller = fake.controller();
+    let older = controller.reserve_quick_fix(QUICK_FIX_TIMEOUT);
+    let newer = controller.reserve_quick_fix(QUICK_FIX_TIMEOUT);
+    select(&fake, Ok(capture(TEXT, false)));
+    *fake.events.lock().unwrap() = vec![done()];
+    block_on(controller.execute_quick_fix(newer));
+    assert_eq!(fake.take().last(), Some(&Replace { text: FIXED.into(), proofread: true }));
+    block_on(controller.execute_quick_fix(older));
+    assert!(fake.take().is_empty(), "a superseded task never starts capture");
+}
+
+#[test]
+fn a_timed_out_quick_fix_drops_the_engine_and_the_next_request_can_write() {
+    let state = test_state();
+    let fake = Fake::new(&state);
+    select(&fake, Ok(capture(TEXT, false)));
+    let (send, events) = tokio::sync::oneshot::channel();
+    *fake.pending_events.lock().unwrap() = Some(events);
+    let id = state.next_id.load(Ordering::Relaxed);
+    block_on(fake.controller().quick_fix_with_timeout(Duration::from_millis(30)));
+    let calls = fake.take();
+    assert!(calls.contains(&RunToEnd(TEXT.into())));
+    assert_eq!(calls[3..], notice_shown(id, "Quick Fix took too long. Try again.", None, false));
+    assert!(send.send(vec![done()]).is_err(), "the pending engine future was dropped");
+    select(&fake, Ok(capture(TEXT, false)));
+    *fake.events.lock().unwrap() = vec![done()];
+    block_on(fake.controller().quick_fix());
+    assert_eq!(fake.take().last(), Some(&Replace { text: FIXED.into(), proofread: true }));
 }
 
 #[test]

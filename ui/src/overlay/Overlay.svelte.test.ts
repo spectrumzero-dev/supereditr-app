@@ -12,6 +12,7 @@ vi.mock("./ipc", () => ({
   ipc: {
     runPreset: vi.fn(),
     apply: vi.fn(async () => undefined),
+    checkProtectedTokens: vi.fn(async () => [] as string[]),
     dismiss: vi.fn(),
     copy: vi.fn(async () => undefined),
     resize: vi.fn(),
@@ -58,7 +59,7 @@ const fixes: DiffView = {
   pending: "",
   changeCount: 1,
 };
-const done = (view: DiffView): EngineEvent => ({
+const done = (view: DiffView): Extract<EngineEvent, { type: "done" }> => ({
   type: "done",
   view,
   text: "",
@@ -74,10 +75,10 @@ const done = (view: DiffView): EngineEvent => ({
   learnable: [],
 });
 
-async function openReview() {
+async function openReview(next = session) {
   render(Overlay);
   await act();
-  await act(() => app.handlers!.session(session));
+  await act(() => app.handlers!.session(next));
 }
 const engine = (presetId: string, run: number, event: EngineEvent) => act(() => app.handlers!.engine(session.id, presetId, run, event, false));
 const replaceKey = () => screen.queryByRole("button", { name: /replace$/ });
@@ -131,5 +132,32 @@ describe("the review panel", () => {
     await engine("proofread", 0, done(fixes));
     await fireEvent.keyDown(window, { key: "Enter" });
     expect(ipc.apply).toHaveBeenCalledWith(session.id, "Rhyan met Brynlee at QuillPoint.", false);
+  });
+
+  it("updates the protected value warning for the author's current choices", async () => {
+    const original = "Send 12 notes.";
+    const view: DiffView = {
+      segments: [
+        { type: "equal", text: "Send " },
+        { type: "change", id: 0, old: "12", new: "120", kind: "style", oldStart: 5 },
+        { type: "equal", text: " notes." },
+      ],
+      pending: "",
+      changeCount: 1,
+    };
+    await openReview({ ...session, text: original });
+    await engine("proofread", 0, { ...done(view), changedTokens: ["12", "120"] });
+    expect(screen.getByText(/this version changes 12, 120/)).toBeTruthy();
+
+    await fireEvent.keyDown(window, { key: "ArrowRight" });
+    await fireEvent.keyDown(window, { key: " " });
+    expect(ipc.checkProtectedTokens).toHaveBeenLastCalledWith(session.id, original);
+    expect(screen.queryByText(/this version changes/)).toBeNull();
+
+    vi.mocked(ipc.checkProtectedTokens).mockResolvedValueOnce(["12", "120"]);
+    await fireEvent.keyDown(window, { key: " " });
+    expect(ipc.checkProtectedTokens).toHaveBeenLastCalledWith(session.id, "Send 120 notes.");
+    expect(screen.getByText(/this version changes 12, 120/)).toBeTruthy();
+    expect(replaceKey()).not.toBeNull();
   });
 });

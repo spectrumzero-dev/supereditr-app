@@ -45,6 +45,7 @@ pub(super) async fn stream(
         let mut bytes = response.bytes_stream();
         while let Some(chunk) = bytes.next().await {
             for line in parser.push(&chunk?) {
+                let line = line?;
                 let Ok(value) = serde_json::from_str::<Value>(&line) else { continue };
                 if let Some(error) = value["error"].as_str() {
                     return Err(ProviderError::Protocol(error.to_string()));
@@ -111,7 +112,7 @@ impl Providers {
         let mut bytes = response.bytes_stream();
         while let Some(chunk) = bytes.next().await {
             for line in parser.push(&chunk?) {
-                if pull_status(&line, on_progress)? {
+                if pull_status(&line?, on_progress)? {
                     return Ok(());
                 }
             }

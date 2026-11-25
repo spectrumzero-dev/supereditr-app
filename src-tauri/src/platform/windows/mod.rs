@@ -24,7 +24,8 @@ mod watch;
 pub mod webview;
 mod window;
 
-pub use log::{log_path, set_trace, trace};
+pub use super::diagnostic_log::{log_path, set_trace, trace};
+pub(in crate::platform) use log::log_dir;
 pub use watch::{WindowWatch, mouse_button_down, pressed_on_window, watch_window};
 
 use super::{PlatformError, Rect, ReplaceOutcome};

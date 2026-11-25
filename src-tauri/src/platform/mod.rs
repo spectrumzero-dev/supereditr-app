@@ -47,6 +47,9 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 pub mod gesture;
 pub mod log_lines;
 
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+mod diagnostic_log;
+
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]

@@ -164,6 +164,8 @@ pub enum ProviderError {
     Truncated,
     #[error("The response ended before the model finished. Try again.")]
     Incomplete,
+    #[error("The download ended before Ollama confirmed it finished. Try again.")]
+    IncompletePull,
     #[error("The model declined to edit this text. Try another model.")]
     Declined,
     #[error("Couldn’t reach the provider: {0}")]

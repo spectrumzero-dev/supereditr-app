@@ -17,7 +17,7 @@
 
 <p align="center"><a href="https://supereditr.app">supereditr.app</a> · <a href="https://github.com/spectrumzero-dev/supereditr-app/releases">Releases</a> · <a href="#build-from-source">Build from source</a> · <a href="#other-platforms">Other platforms</a></p>
 
-Select text in any Mac app and get fixes in about half a second. Accept them with one key. SuperEditr uses Apple Intelligence on your Mac, the AI you already pay for (Claude, OpenAI, Gemini), a local model, or nothing at all: a built-in offline checker handles English spelling and grammar on its own.
+Select text in any Mac app to see suggested fixes. Accept them with one key. SuperEditr uses Apple Intelligence on your Mac, the AI you already pay for (Claude, OpenAI, Gemini), a local model, or nothing at all: a built-in offline checker handles English spelling and grammar on its own.
 
 SuperEditr is built for the Mac first: the shortcuts and settings below are the Mac ones. It also runs on Windows, and on Linux with [Omarchy](https://omarchy.org), with the same engine, styles and panel; each platform has its own page, listed under [Other platforms](#other-platforms), with its install steps, its keys and what differs.
 
@@ -25,7 +25,7 @@ SuperEditr is built for the Mac first: the shortcuts and settings below are the 
 
 The keys in this section are the Mac's; the [Windows](docs/windows.md#shortcuts) and [Linux](docs/linux.md#shortcuts) pages list theirs.
 
-1. **Select text** you're editing in any app. A suggestion panel appears just below it, without taking focus, showing instant offline fixes and then the model's version as it streams in.
+1. **Select text** you're editing in any app. A suggestion panel appears just below it, without taking focus, showing edits as your AI streams its response. With no AI set up, the offline checker handles English spelling and grammar. If your AI fails before returning text, SuperEditr tries Apple Intelligence where available and enabled. If the AI review still fails, SuperEditr reports the failure and offers offline English fixes when the checker can help.
 2. **Press ⌥↩︎** to apply it, or **⌘E E** (hold ⌘, press E twice) to move into the panel and review with the keyboard:
 
    | Key | Action |
@@ -142,8 +142,8 @@ A review runs like this:
 
 1. A selection ends (or the shortcut is pressed).
 2. SuperEditr reads it through Accessibility off the UI thread, with a 300 ms timeout per call, and warms the provider connection at the same time.
-3. The overlay appears at the selection with offline fixes, in milliseconds.
-4. The model streams the edited text; SuperEditr diffs it word by word into individual changes.
+3. The overlay appears at the selection. With no AI available, the built-in checker supplies English spelling and grammar fixes.
+4. In an AI review, SuperEditr turns the model’s streamed edits into word-by-word changes. If the review fails, the overlay shows the error and any available offline fixes.
 5. On ↩︎, SuperEditr confirms the same field and selection are still there, then writes the text back: an Accessibility write for native fields, a clipboard-preserving paste for web and Electron apps. ⌘Z in the app undoes it.
 
 Another platform needs only its own `src-tauri/src/platform` implementation, as Linux and Windows have, providing what `src-tauri/src/platform/mod.rs` lists; the engine, UI and settings are shared.

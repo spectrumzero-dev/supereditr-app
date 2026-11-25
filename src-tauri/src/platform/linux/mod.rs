@@ -22,7 +22,8 @@ pub mod setup;
 mod testing;
 pub mod watchdog;
 
-pub use log::{log_path, set_trace, trace};
+pub use super::diagnostic_log::{log_path, set_trace, trace};
+pub(in crate::platform) use log::log_dir;
 pub use setup::reload_autostart;
 
 use super::{PlatformError, Rect, ReplaceOutcome};

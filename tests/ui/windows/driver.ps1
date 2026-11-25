@@ -147,6 +147,51 @@ function Ui-Invoke($el) {
 }
 $ButtonType = [Windows.Automation.ControlType]::Button
 $EditType = [Windows.Automation.ControlType]::Edit
+$DocumentType = [Windows.Automation.ControlType]::Document
+
+function Assert-FixtureForeground($window, $label) {
+  $foreground = [Desk]::GetForegroundWindow()
+  if ($window -eq [IntPtr]::Zero -or $foreground -ne $window) {
+    throw [OperationCanceledException]::new("Fixture precondition failed for $label. Expected foreground HWND $window '$([Desk]::Title($window))', found $foreground '$([Desk]::Title($foreground))'.")
+  }
+}
+
+# Only the fixture setup can restore focus. Once it sends a review key, focus belongs to the app.
+function Focus-Fixture($window, $label) {
+  if ($window -ne [IntPtr]::Zero -and [Desk]::GetForegroundWindow() -ne $window) {
+    [Desk]::Front($window) | Out-Null
+    if ([Desk]::GetForegroundWindow() -ne $window -and [Desk]::ClickCaption($window) -and
+        [Desk]::GetForegroundWindow() -eq $window) {
+      Note "$label regained foreground through its title bar"
+    }
+  }
+  Assert-FixtureForeground $window $label
+}
+
+function Set-FixtureSelection($window, $label, $select) {
+  for ($attempt = 0; $attempt -lt 2; $attempt++) {
+    try {
+      Focus-Fixture $window $label
+      & $select
+      return
+    } catch [OperationCanceledException] {
+      if ($attempt -eq 1 -or $window -eq [IntPtr]::Zero) { throw }
+      Note "retrying $label after focus loss. $_"
+    }
+  }
+}
+
+function Wait-FixtureField($window, $label, $seconds, $probe, $sw = [Diagnostics.Stopwatch]::StartNew()) {
+  while ($sw.Elapsed.TotalSeconds -lt $seconds) {
+    Assert-FixtureForeground $window $label
+    $ready = & $probe
+    Assert-FixtureForeground $window $label
+    $elapsed = $sw.ElapsedMilliseconds
+    if ($ready -and $elapsed -lt $seconds * 1000) { return $elapsed }
+    Start-Sleep -Milliseconds 100
+  }
+  throw "Fixture precondition failed for $label. UI Automation did not report a ready field within $seconds seconds."
+}
 
 function Panel { [Desk]::Exact('supereditr', 'SuperEditr') }
 function Panel-Text { Ui-Text (Panel) }
@@ -221,10 +266,11 @@ function Wait-SettingsText($pattern, $secs) {
 # nothing was replaced and leave the clipboard alone, and Ctrl+C copies the fix. Sets $script:Read
 # (capture.log's line for reading the selection), $script:Shown (the panel's text with the fix) and
 # $script:Result (capture.log's line for the replace).
-function Review($label, $image, $shot, $mode = 'apply', $beforeApply = $null) {
+function Review($label, $image, $shot, $mode = 'apply', $beforeApply = $null, $beforeReview = $null) {
   $script:Read = ''; $script:Result = ''; $script:Shown = ''
   $img = [regex]::Escape($image)
   $mark = Log-Mark
+  if ($beforeReview) { & $beforeReview }
   Key 'ctrl+shift+f2'
   $ms = Wait-Panel 6
   Check "${label}: the review shortcut opens the panel with the keyboard" ($ms -ge 0) "after $ms ms"
@@ -366,22 +412,47 @@ function Notepad-Open($text) {
   while ((Notepad-Text $w) -ne $text -and $sw.Elapsed.TotalSeconds -lt 10) { Start-Sleep -Milliseconds 250 }
   $w
 }
+
+function Notepad-Document($w) {
+  $c = New-Object Windows.Automation.PropertyCondition ([Windows.Automation.AutomationElement]::ClassNameProperty), 'RichEditD2DPT'
+  [Windows.Automation.AutomationElement]::FromHandle($w).FindFirst($Tree, $c)
+}
+
 # Notepad's document text, through UI Automation.
 function Notepad-Text($w) {
   try {
-    $c = New-Object Windows.Automation.PropertyCondition ([Windows.Automation.AutomationElement]::ClassNameProperty), 'RichEditD2DPT'
-    $doc = [Windows.Automation.AutomationElement]::FromHandle($w).FindFirst($Tree, $c)
+    $doc = Notepad-Document $w
     $doc.GetCurrentPattern([Windows.Automation.TextPattern]::Pattern).DocumentRange.GetText(-1).TrimEnd("`r", "`n")
   } catch { "(unreadable: $_)" }
+}
+
+function Notepad-FieldReady($w, [switch]$Selected) {
+  try {
+    $focused = [Windows.Automation.AutomationElement]::FocusedElement
+    if ($focused.Current.ClassName -ne 'RichEditD2DPT') { return $false }
+    if (-not [Windows.Automation.Automation]::Compare($focused, (Notepad-Document $w))) { return $false }
+    $pattern = $focused.GetCurrentPattern([Windows.Automation.TextPattern]::Pattern)
+    if (-not $pattern) { return $false }
+    if (-not $Selected) { return $true }
+    $selectedText = $pattern.GetSelection()[0].GetText(-1).TrimEnd("`r", "`n")
+    return $selectedText.Length -gt 0 -and $selectedText -ceq $pattern.DocumentRange.GetText(-1).TrimEnd("`r", "`n")
+  } catch { $false }
+}
+
+function Select-NotepadAll($w) {
+  Set-FixtureSelection $w 'Notepad selection' {
+    Wait-FixtureField $w 'Notepad document' 3 { Notepad-FieldReady $w } | Out-Null
+    Key 'ctrl+a'
+    Wait-FixtureField $w 'Notepad selection' 3 { Notepad-FieldReady $w -Selected } | Out-Null
+  }
 }
 
 function Notepad-Case {
   Begin-Case notepad 'Notepad: applied, verified, the clipboard put back, one Ctrl+Z undoes it'
   $w = Notepad-Open $Sample
   Check 'Notepad opens with the text' ((Notepad-Text $w) -eq $Sample) (Notepad-Text $w)
-  Key 'ctrl+a'
   Clip-Set 'Brynlee copied this earlier.'
-  Review 'Notepad' 'Notepad.exe' 'notepad'
+  Review 'Notepad' 'Notepad.exe' 'notepad' -beforeReview { Select-NotepadAll $w }
   Check 'Notepad: read through UI Automation, known safe' ($script:Read -match 'via UI Automation.*KnownSafe') $script:Read
   Check 'Notepad: Alt+Enter applies, verified' ($script:Result -match ': applied') $script:Result
   $t = Notepad-Text $w
@@ -397,7 +468,7 @@ function Notepad-Case {
   Check 'Notepad: one Ctrl+Z puts the original back' ($t -eq $Sample) $t
   Shot 'notepad-undone'
   # The footer's replace key is a button: a click on it does what Alt+Enter does.
-  Key 'ctrl+a'
+  Select-NotepadAll $w
   Key 'ctrl+shift+f2'
   Wait-Panel 6 | Out-Null
   Wait-PanelText '\d+ changes?' 15 | Out-Null
@@ -439,7 +510,7 @@ function Placement-Check($w) {
 function Keys-Case {
   Begin-Case keys "the panel's keys: Tab, Space, digits, / and Esc while typing an instruction"
   $w = Notepad-Open $Sample
-  Key 'ctrl+a'
+  Select-NotepadAll $w
   Key 'ctrl+shift+f2'
   $ms = Wait-Panel 6
   Check 'the review shortcut opens the panel with the keyboard' ($ms -ge 0) "after $ms ms"
@@ -515,11 +586,58 @@ function Cdp($expression) {
 }
 function Cdp-Select($id) {
   Cdp "(() => { const f = document.getElementById('$id'); f.scrollIntoView({block: 'center'}); f.focus();
-    if ('select' in f && f.tagName !== 'DIV') f.select();
-    else { const r = document.createRange(); r.selectNodeContents(f); const s = getSelection(); s.removeAllRanges(); s.addRange(r); }
-    return document.activeElement === f || f.contains(document.activeElement); })()"
+    let selected;
+    if ('select' in f && f.tagName !== 'DIV') {
+      f.select();
+      selected = f.selectionStart === 0 && f.selectionEnd === f.value.length && f.selectionEnd > 0;
+    } else {
+      const whole = document.createRange(); whole.selectNodeContents(f);
+      const s = getSelection(); s.removeAllRanges(); s.addRange(whole.cloneRange());
+      selected = !s.isCollapsed && f.contains(s.anchorNode) && f.contains(s.focusNode)
+        && s.getRangeAt(0).toString() === whole.toString();
+    }
+    return document.hasFocus() && (document.activeElement === f || f.contains(document.activeElement)) && selected; })()"
 }
 function Cdp-Value($id) { Cdp "(() => { const f = document.getElementById('$id'); return 'value' in f && f.tagName !== 'DIV' ? f.value : f.innerText; })()" }
+
+function Select-BrowserField($w, $label, $id) {
+  $sw = [Diagnostics.Stopwatch]::new()
+  Set-FixtureSelection $w $label {
+    $selected = Cdp-Select $id
+    Assert-FixtureForeground $w $label
+    if ($selected -isnot [bool] -or -not $selected) {
+      throw "Fixture precondition failed for $label. The page did not focus and select its field ($selected)."
+    }
+    Start-Sleep -Milliseconds 500
+    $sw.Start()
+    Wait-FixtureField $w $label 15 { Browser-FieldReady $id } $sw
+  }
+}
+
+function Browser-FieldReady($id) {
+  try {
+    $element = [Windows.Automation.AutomationElement]::FocusedElement
+    $walker = [Windows.Automation.TreeWalker]::RawViewWalker
+    $selected = $false
+    # Chromium can still report the previous field while the page's accessibility tree updates.
+    for ($i = 0; $element -and $i -lt 16; $i++) {
+      if ($element.Current.ControlType -eq $DocumentType) { return $selected }
+      if ($element.Current.AutomationId -ceq $id) {
+        if ($id -eq 'password') { $selected = $element.Current.IsPassword }
+        else {
+          $pattern = $element.GetCurrentPattern([Windows.Automation.TextPattern]::Pattern)
+          $ranges = $pattern.GetSelection()
+          if ($ranges.Length -eq 1) {
+            $selectedText = $ranges[0].GetText(-1).TrimEnd("`r", "`n")
+            $selected = $selectedText.Length -gt 0 -and $selectedText -ceq $pattern.DocumentRange.GetText(-1).TrimEnd("`r", "`n")
+          }
+        }
+      }
+      $element = $walker.GetParent($element)
+    }
+  } catch {}
+  $false
+}
 
 # Opens the composers page in a browser with a fresh profile and its DevTools port, and builds its
 # accessibility tree; its window.
@@ -538,15 +656,8 @@ function Browser-Open($name, $exe, $process, $port) {
   # The browser builds its accessibility tree when a client first asks. On this machine, without a
   # GPU, that took up to 3 s, past the first review's read, which then fell back to a copy. These
   # cases are about applying fixes, so the tree is built first, as any accessibility client would.
-  [Desk]::Front($w) | Out-Null
-  Cdp-Select 'plain' | Out-Null
-  $sw = [Diagnostics.Stopwatch]::StartNew()
-  do {
-    $type = try { [Windows.Automation.AutomationElement]::FocusedElement.Current.ControlType } catch { $null }
-    if ($type -eq $EditType) { break }
-    Start-Sleep -Milliseconds 200
-  } while ($sw.Elapsed.TotalSeconds -lt 15)
-  Note "$name's accessibility answered with the focused field after $([int]$sw.Elapsed.TotalMilliseconds) ms"
+  $ms = Select-BrowserField $w "$name plain" 'plain'
+  Note "$name's accessibility answered with the focused field after $ms ms"
   $w
 }
 function Browser-Case($name, $exe, $process, $image, $port) {
@@ -558,11 +669,9 @@ function Browser-Case($name, $exe, $process, $image, $port) {
   foreach ($id in $fields) {
     $clip = "Kyndal's own copy before $id."
     Clip-Set $clip
-    [Desk]::Front($w) | Out-Null
-    $selected = Cdp-Select $id
-    if ($selected -ne $true) { Note "${id}: couldn't select the field ($selected)" }
-    Start-Sleep -Milliseconds 500
-    Review "$name $id" $image "$name-$id"
+    Review "$name $id" $image "$name-$id" -beforeReview {
+      Select-BrowserField $w "$name $id" $id | Out-Null
+    }
     Check "$name ${id}: read through UI Automation, known safe" ($script:Read -match 'via UI Automation.*KnownSafe') $script:Read
     Check "$name ${id}: Alt+Enter applies, verified" ($script:Result -match ': applied') $script:Result
     $value = Cdp-Value $id
@@ -582,10 +691,8 @@ function Browser-Case($name, $exe, $process, $image, $port) {
   }
   # Refused: a password field. Nothing is read, so the panel says why and the clipboard stays.
   Clip-Set 'Rhyan copied this.'
-  [Desk]::Front($w) | Out-Null
-  Cdp-Select 'password' | Out-Null
-  Start-Sleep -Milliseconds 500
   $mark = Log-Mark
+  Select-BrowserField $w "$name password" 'password' | Out-Null
   Key 'ctrl+shift+f2'
   $text = Wait-PanelText 'password' 5
   $line = Bare (Wait-Log $mark " shortcut $([regex]::Escape($image)): " 3)
@@ -826,8 +933,7 @@ function Webview-Case {
   Check "the panel's page is loaded again when its renderer stops" ([bool]$line) "$($renderers.Count) renderers stopped; $(Bare $line)"
   Start-Sleep 3
   $w = Notepad-Open $Sample
-  Key 'ctrl+a'
-  Review 'after the renderers stopped' 'Notepad.exe' 'webview-renderer'
+  Review 'after the renderers stopped' 'Notepad.exe' 'webview-renderer' -beforeReview { Select-NotepadAll $w }
   Check 'after the renderers stopped: a review applies' ((Outcome $script:Result) -eq 'applied') $script:Result
   # Then the browser process, with everything it started: each window is made again.
   $mark = Log-Mark
@@ -840,8 +946,7 @@ function Webview-Case {
   Note "SuperEditr $(@(Get-Process supereditr -ErrorAction SilentlyContinue).Id -join ','); WebView2 processes: $((@(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'") | ForEach-Object { "$($_.ProcessId)<$($_.ParentProcessId)" }) -join ' ')"
   Check 'a new WebView2 browser process runs' ($after.Count -gt 0 -and -not ($after | Where-Object { $before.ProcessId -contains $_.ProcessId })) "$($after.Count) processes"
   $w = Notepad-Open $Sample
-  Key 'ctrl+a'
-  Review 'after the browser process stopped' 'Notepad.exe' 'webview-browser'
+  Review 'after the browser process stopped' 'Notepad.exe' 'webview-browser' -beforeReview { Select-NotepadAll $w }
   Check 'after the browser process stopped: a review applies' ((Outcome $script:Result) -eq 'applied') $script:Result
   $t = Notepad-Text $w
   Check 'after the browser process stopped: Notepad holds the fix' ($t -like "*They're going*") $t

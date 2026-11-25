@@ -112,18 +112,30 @@ impl Providers {
         let mut bytes = response.bytes_stream();
         while let Some(chunk) = bytes.next().await {
             for line in parser.push(&chunk?) {
-                let line = line?;
-                let Ok(value) = serde_json::from_str::<Value>(&line) else { continue };
-                if let Some(error) = value["error"].as_str() {
-                    return Err(ProviderError::Protocol(error.to_string()));
+                if pull_status(&line?, on_progress)? {
+                    return Ok(());
                 }
-                on_progress(PullProgress {
-                    status: value["status"].as_str().unwrap_or_default().to_string(),
-                    completed: value["completed"].as_u64().unwrap_or(0),
-                    total: value["total"].as_u64().unwrap_or(0),
-                });
             }
         }
-        Ok(())
+        if let Some(line) = parser.finish()
+            && pull_status(&line, on_progress)?
+        {
+            return Ok(());
+        }
+        Err(ProviderError::IncompletePull)
     }
+}
+
+fn pull_status(line: &str, on_progress: &mut (dyn FnMut(PullProgress) + Send)) -> Result<bool, ProviderError> {
+    let Ok(value) = serde_json::from_str::<Value>(line) else { return Ok(false) };
+    if let Some(error) = value["error"].as_str() {
+        return Err(ProviderError::Protocol(error.to_string()));
+    }
+    let Some(status) = value["status"].as_str() else { return Ok(false) };
+    on_progress(PullProgress {
+        status: status.to_string(),
+        completed: value["completed"].as_u64().unwrap_or(0),
+        total: value["total"].as_u64().unwrap_or(0),
+    });
+    Ok(status == "success")
 }

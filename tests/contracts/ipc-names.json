@@ -44,7 +44,8 @@
       "set_api_key",
       "set_launch_at_login",
       "set_up_omarchy",
-      "test_provider"
+      "test_provider",
+      "use_builtin_provider"
     ],
     "update": ["close_update_window", "update_now", "update_status"]
   },

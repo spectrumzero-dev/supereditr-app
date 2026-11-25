@@ -7,9 +7,11 @@
     value: string;
     /** "review" or "quick_fix". */
     slot: string;
+    labelledby: string;
+    describedby: string;
     onchange: (value: string) => void;
   }
-  let { value, slot, onchange }: Props = $props();
+  let { value, slot, labelledby, describedby, onchange }: Props = $props();
 
   /** Combinations Omarchy 4.0 and 4.5 leave free (Super+Alt+Shift+E is its "New email", and 4.5
    * gives Super+Ctrl+Alt+E to its world clock and Super+Ctrl+Alt+C to screenshots). Linux has no
@@ -30,7 +32,7 @@
   });
 </script>
 
-<select {value} onchange={(e) => onchange(e.currentTarget.value)} aria-label="Shortcut">
+<select {value} aria-labelledby={labelledby} aria-describedby={describedby} onchange={(e) => onchange(e.currentTarget.value)}>
   {#each choices as choice (choice)}
     <option value={choice} disabled={choice in taken}>{keySymbols(choice, false)}{choice in taken ? ` — ${taken[choice]}` : ""}</option>
   {/each}

@@ -23,6 +23,7 @@ export type { ProviderCheck } from "./generated/ProviderCheck";
 export type { ProviderKind } from "./generated/ProviderKind";
 export type { ProviderProfile } from "./generated/ProviderProfile";
 export type { PullProgress } from "./generated/PullProgress";
+export type { OllamaPullProgress } from "./generated/OllamaPullProgress";
 export type { Saved } from "./generated/Saved";
 export type { Segment } from "./generated/Segment";
 export type { SessionPayload } from "./generated/SessionPayload";

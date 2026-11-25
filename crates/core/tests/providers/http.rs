@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 use supereditr_core::diff::Segment;
-use supereditr_core::provider::{ChatRequest, ProviderKind, ProviderProfile, Providers};
+use supereditr_core::provider::{ChatRequest, ProviderError, ProviderKind, ProviderProfile, Providers};
 use supereditr_core::{Engine, Event, Job};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -166,6 +166,29 @@ async fn ollama_streams_ndjson_and_keeps_model_loaded() {
     let sent = &seen.lock().unwrap()[0];
     assert!(sent.contains(r#""keep_alive":"30m""#));
     assert!(sent.contains(r#""think":false"#));
+}
+
+#[tokio::test]
+async fn ollama_pull_requires_success_and_reads_the_last_line() {
+    let layer = "{\"status\":\"pulling layer\",\"completed\":100,\"total\":100}\n";
+    let (url, seen) = mock_server(vec![
+        (200, "application/x-ndjson", layer.into()),
+        (200, "application/x-ndjson", format!("{layer}{{\"error\":\"download failed\"}}")),
+        (200, "application/x-ndjson", format!("{layer}{{\"status\":\"success\"}}")),
+    ])
+    .await;
+    let providers = Providers::new();
+    let model = "qwen3:4b";
+    assert!(matches!(providers.ollama_pull(&url, model, &mut |_| {}).await, Err(ProviderError::IncompletePull)));
+    assert!(matches!(
+        providers.ollama_pull(&url, model, &mut |_| {}).await,
+        Err(ProviderError::Protocol(error)) if error == "download failed"
+    ));
+    let mut statuses = Vec::new();
+    providers.ollama_pull(&url, model, &mut |p| statuses.push(p.status)).await.unwrap();
+    assert_eq!(statuses, ["pulling layer", "success"]);
+    let requests = seen.lock().unwrap();
+    assert!(requests.iter().all(|request| request.starts_with("POST /api/pull") && request.contains(model)));
 }
 
 #[tokio::test]
@@ -395,9 +418,13 @@ async fn engine_never_sends_a_secret() {
     // Assembled from pieces so the source holds no complete token for scanners to flag.
     let token = format!("{}{}", "ghp_", "Ab3dE5gH7jK9mN1pQ3sT5vW7yZ9bC1dF2hJ4");
     let config = supereditr_core::Config::default();
-    for (text, steer) in
-        [(format!("Deploy with {token} today."), None), ("Their here.".to_string(), Some(token.clone()))]
-    {
+    let labeled = ["Ab3dE5gH7jK9mN1pQ", "3sT5vW7yZ9bC1dF2hJ4"].concat();
+    for (text, steer, name) in [
+        (format!("Deploy with {token} today."), None, "a GitHub token"),
+        ("Their here.".to_string(), Some(token.clone()), "a GitHub token"),
+        (format!("API key:\n  {labeled}"), None, "a key or token"),
+        (format!("API key is shown here for the project team to rotate: {labeled}"), None, "a key or token"),
+    ] {
         let (url, seen) = mock_server(vec![(200, "text/event-stream", String::new())]).await;
         let job = Job {
             text,
@@ -414,7 +441,7 @@ async fn engine_never_sends_a_secret() {
         let mut events = Vec::new();
         Engine::new("American English").run(job, &mut |e| events.push(e)).await;
         let [Event::Failed { message, local_only: false }] = events.as_slice() else { panic!("{events:?}") };
-        assert!(message.contains("a GitHub token") && !message.contains(&token), "{message}");
+        assert!(message.contains(name) && !message.contains(&labeled), "{message}");
         assert!(seen.lock().unwrap().is_empty(), "the provider was called");
     }
 }

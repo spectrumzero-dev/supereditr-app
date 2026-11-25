@@ -82,7 +82,7 @@ fn select(fake: &Fake, captured: Result<Capture, PlatformError>) {
 
 /// Turns automatic suggestions on, as they are by default on macOS.
 fn turned_on(state: &AppState) {
-    state.config.write().unwrap().auto_popup = true;
+    state.edit_config_for_test(|config| config.auto_popup = true);
 }
 
 /// A selection made with `gesture`, from the watcher's event to the end of the automatic review.
@@ -316,7 +316,9 @@ fn the_shortcut_in_supereditrs_settings_asks_try_it_now_to_review() {
 fn the_shortcut_in_an_excluded_app_says_how_to_turn_it_on_and_reads_nothing() {
     let state = test_state();
     let fake = Fake::new(&state);
-    state.config.write().unwrap().set_excluded(REVIEWED_APP, true);
+    state.edit_config_for_test(|config| {
+        config.set_excluded(REVIEWED_APP, true);
+    });
     let message = excluded_message(&state.config(), REVIEWED_APP, "QuillPoint Notes");
     let id = state.next_id.load(Ordering::Relaxed);
     block_on(fake.controller().start_manual(None));
@@ -335,7 +337,9 @@ fn the_shortcut_in_a_password_manager_taken_off_the_excluded_apps_still_reads_no
     let state = test_state();
     let mut fake = Fake::new(&state);
     fake.front = Some((REVIEWED, PASSWORD_MANAGER.into(), "1Password".into()));
-    state.config.write().unwrap().set_excluded(PASSWORD_MANAGER, false);
+    state.edit_config_for_test(|config| {
+        config.set_excluded(PASSWORD_MANAGER, false);
+    });
     let message = excluded_message(&state.config(), PASSWORD_MANAGER, "1Password");
     let id = state.next_id.load(Ordering::Relaxed);
     block_on(fake.controller().start_manual(None));
@@ -346,7 +350,9 @@ fn the_shortcut_in_a_password_manager_taken_off_the_excluded_apps_still_reads_no
 fn a_selection_in_a_password_manager_taken_off_the_excluded_apps_opens_no_review() {
     let state = test_state();
     let fake = Fake::new(&state);
-    state.config.write().unwrap().set_excluded(PASSWORD_MANAGER, false);
+    state.edit_config_for_test(|config| {
+        config.set_excluded(PASSWORD_MANAGER, false);
+    });
     let mut captured = capture(TEXT, false);
     captured.bundle_id = PASSWORD_MANAGER.into();
     captured.app_name = "1Password".into();
@@ -686,7 +692,9 @@ fn an_automatic_review_reads_nothing_in_an_excluded_app_and_shows_no_notice() {
     let state = test_state();
     let fake = Fake::new(&state);
     turned_on(&state);
-    state.config.write().unwrap().set_excluded(REVIEWED_APP, true);
+    state.edit_config_for_test(|config| {
+        config.set_excluded(REVIEWED_APP, true);
+    });
     let calls = select_with(&fake, SelectionGesture::Drag);
     assert_eq!(
         calls[2..],

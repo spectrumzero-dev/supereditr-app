@@ -114,18 +114,18 @@
   <div class="group">
     <div class="row column">
       <div>
-        <div class="label">Standing instructions</div>
-        <div class="hint">Applied to every style. Describe your audience, words to avoid, formatting habits, or paste a short sample of your writing.</div>
+        <label class="label" for="standing-instructions">Standing instructions</label>
+        <div class="hint" id="standing-instructions-hint">Applied to every style. Describe your audience, words to avoid, formatting habits, or paste a short sample of your writing.</div>
       </div>
-      <textarea rows="3" bind:value={config.style_notes} onchange={onchange} placeholder="e.g. I write to engineers and executives. Keep sentences short. Never use em dashes. Prefer “use” over “utilize”."></textarea>
+      <textarea id="standing-instructions" aria-describedby="standing-instructions-hint" rows="3" bind:value={config.style_notes} onchange={onchange} placeholder="e.g. I write to engineers and executives. Keep sentences short. Never use em dashes. Prefer “use” over “utilize”."></textarea>
     </div>
     <div class="row">
       <div>
-        <div class="label">Default style</div>
-        <div class="hint">Used for automatic suggestions and quick fix.</div>
-        {#if noAi && needsAi(config.default_preset)}<div class="hint needs-ai-hint">Needs an AI</div>{/if}
+        <label class="label" for="default-style">Default style</label>
+        <div class="hint" id="default-style-hint">Used for automatic suggestions and quick fix.</div>
+        {#if noAi && needsAi(config.default_preset)}<div class="hint needs-ai-hint" id="default-style-needs-ai">Needs an AI</div>{/if}
       </div>
-      <select bind:value={config.default_preset} onchange={onchange}>
+      <select id="default-style" aria-describedby={noAi && needsAi(config.default_preset) ? "default-style-hint default-style-needs-ai" : "default-style-hint"} bind:value={config.default_preset} onchange={onchange}>
         {#each config.presets as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
       </select>
     </div>
@@ -152,10 +152,10 @@
         </label>
         <div class="line">
           <span>
-            <span class="label">Shortcut</span>
-            <span class="hint">Runs this style on the selection from any app.</span>
+            <span class="label" id="style-shortcut-label">Shortcut</span>
+            <span class="hint" id="style-shortcut-hint">Runs this style on the selection from any app.</span>
           </span>
-          <ShortcutInput slot={`preset:${preset.id}`} value={preset.shortcut ?? ""} onchange={(v) => { preset.shortcut = v || null; onchange(); }} placeholder="None" />
+          <ShortcutInput slot={`preset:${preset.id}`} labelledby="style-shortcut-label" describedby="style-shortcut-hint" value={preset.shortcut ?? ""} onchange={(v) => { preset.shortcut = v || null; onchange(); }} placeholder="None" />
         </div>
         <div class="line">
           <span class="actions">

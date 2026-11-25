@@ -6,6 +6,11 @@ export interface ExcludedRow {
   app: AppInfo | null;
 }
 
+/** The same ASCII case-insensitive comparison as Config::is_excluded. */
+export function appIdentity(id: string): string {
+  return id.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+}
+
 /**
  * The excluded apps to list. `known` holds what each bundle ID's lookup found: the app, or null if
  * it isn't installed. An ID not looked up yet isn't listed, so a name never replaces a bundle ID on
@@ -22,7 +27,7 @@ export function excludedRows(ids: string[], known: Record<string, AppInfo | null
 export function withApps(list: string[], ids: string[]): string[] {
   const result = [...list];
   for (const id of ids.map((id) => id.trim())) {
-    if (id && !result.some((existing) => existing.toLowerCase() === id.toLowerCase())) result.push(id);
+    if (id && !result.some((existing) => appIdentity(existing) === appIdentity(id))) result.push(id);
   }
   return result;
 }

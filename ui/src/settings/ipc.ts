@@ -45,11 +45,11 @@ async function invoke<T>(cmd: Command, args?: Record<string, unknown>): Promise<
   }
   // Browser preview: just enough behavior to design the screens.
   const demo: Partial<Record<Command, () => unknown>> = {
-    get_settings: () => ({ config: demoConfig, keys: { anthropic: true }, accessibility: false, version: "0.1.0", platform: "macos", logPath: "/Users/rhyan/Library/Logs/SuperEditr/capture.log", revision: demoRevision }),
+    get_settings: () => ({ config: demoConfig, keys: { anthropic: true }, accessibility: false, version: "0.1.0", platform: "macos", logPath: "/Users/rhyan/Library/Logs/SuperEditr/capture.log", revision: demoRevision, recovery: null }),
     save_settings: () => {
-      if (args?.revision != null && args.revision !== demoRevision) return { revision: null, problems: [] };
+      if (args?.revision != null && args.revision !== demoRevision) return { revision: null, problems: [], recovery: null };
       demoConfig = args?.config as Config;
-      return { revision: ++demoRevision, problems: [] };
+      return { revision: ++demoRevision, problems: [], recovery: null };
     },
     scan_accounts: () => [
       { index: 0, kind: "anthropic", label: "Claude (Anthropic API)", source: "ANTHROPIC_API_KEY in your shell profile", keyHint: "sk-…9f2c", baseUrl: "", models: [], note: null, ready: true, profileId: null },
@@ -64,6 +64,12 @@ async function invoke<T>(cmd: Command, args?: Record<string, unknown>): Promise<
     default_presets: () => demoConfig.presets.map((p) => ({ ...p })),
     builtin_ai: () => ({ supported: true, available: true, message: null }),
     check_provider: () => ({ ready: false, problem: "Add an API key", code: null, models: [] }),
+    use_builtin_provider: () => {
+      if (demoConfig.active_provider !== null) {
+        demoConfig = { ...demoConfig, active_provider: null };
+        demoRevision++;
+      }
+    },
     claude_sign_in: () => undefined,
     app_info: () => {
       const names: Record<string, string> = { "com.1password.1password": "1Password", "com.apple.Terminal": "Terminal", "com.apple.Notes": "Notes" };
@@ -93,7 +99,7 @@ async function invoke<T>(cmd: Command, args?: Record<string, unknown>): Promise<
 }
 
 export const api = {
-  get: () => invoke<SettingsPayload>("get_settings"),
+  get: (reread = false) => invoke<SettingsPayload>("get_settings", { reread }),
   /** Saves the whole config; with `revision`, only if the app hasn't saved it since. */
   save: (config: Config, revision?: number) => invoke<Saved>("save_settings", { config, revision: revision ?? null }),
   setKey: (profileId: string, key: string | null) => invoke<void>("set_api_key", { profileId, key }),
@@ -110,8 +116,10 @@ export const api = {
   /** Starts Claude Code's own sign-in in a console window (Windows). */
   claudeSignIn: (profileId: string) => invoke<void>("claude_sign_in", { profileId }),
   activateProvider: (profileId: string) => invoke<ProviderCheck>("activate_provider", { profileId }),
+  useBuiltinProvider: () => invoke<void>("use_builtin_provider"),
   test: (profileId: string) => invoke<TestResult>("test_provider", { profileId }),
-  pull: (baseUrl: string, model: string) => invoke<void>("pull_ollama_model", { baseUrl, model }),
+  pull: (requestId: string, profileId: string, baseUrl: string, model: string) =>
+    invoke<ProviderCheck>("pull_ollama_model", { requestId, profileId, baseUrl, model }),
   builtinAi: () => invoke<BuiltinAi>("builtin_ai"),
   /** `rect` is the box's frame within the window, in CSS pixels. */
   reviewPlayground: (text: string, rect: { x: number; y: number; width: number; height: number }) =>

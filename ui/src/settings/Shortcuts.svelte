@@ -20,38 +20,38 @@
   <div class="group">
     <div class="row">
       <div>
-        <div class="label">Review selection</div>
+        <div class="label" id="review-shortcut-label">Review selection</div>
         {#if isMac()}
-          <div class="hint">Opens suggestions for the selected text. Press again to bring an automatic suggestion into focus. Use a key combination such as ⌃⌥E or F6, or a double press like ⌘E E (press it twice quickly). Shortcuts macOS or other apps already use are refused.</div>
+          <div class="hint" id="review-shortcut-hint">Opens suggestions for the selected text. Press again to bring an automatic suggestion into focus. Use a key combination such as ⌃⌥E or F6, or a double press like ⌘E E (press it twice quickly). Shortcuts macOS or other apps already use are refused.</div>
         {:else if isWindows()}
-          <div class="hint">Opens suggestions for the selected text. Use a key combination such as Ctrl+Shift+F2 or Ctrl+Alt+Space. Shortcuts Windows or other apps already use are refused.</div>
+          <div class="hint" id="review-shortcut-hint">Opens suggestions for the selected text. Use a key combination such as Ctrl+Shift+F2 or Ctrl+Alt+Space. Shortcuts Windows or other apps already use are refused.</div>
         {:else}
-          <div class="hint">Opens suggestions for the selected text. These combinations are free on Omarchy; one your desktop already uses can’t be chosen.</div>
+          <div class="hint" id="review-shortcut-hint">Opens suggestions for the selected text. These combinations are free on Omarchy; one your desktop already uses can’t be chosen.</div>
         {/if}
       </div>
       {#if isLinux()}
-        <ShortcutPicker slot="review" value={config.hotkeys.review} onchange={(v) => { config.hotkeys.review = v; onchange(); }} />
+        <ShortcutPicker slot="review" labelledby="review-shortcut-label" describedby="review-shortcut-hint" value={config.hotkeys.review} onchange={(v) => { config.hotkeys.review = v; onchange(); }} />
       {:else}
-        <ShortcutInput slot="review" value={config.hotkeys.review} onchange={(v) => { config.hotkeys.review = v; onchange(); }} />
+        <ShortcutInput slot="review" labelledby="review-shortcut-label" describedby="review-shortcut-hint" value={config.hotkeys.review} onchange={(v) => { config.hotkeys.review = v; onchange(); }} />
       {/if}
     </div>
     <div class="row">
       <div>
-        <div class="label">Quick fix</div>
-        <div class="hint">Applies your default style to the selection immediately, without showing suggestions.</div>
+        <div class="label" id="quick-fix-label">Quick fix</div>
+        <div class="hint" id="quick-fix-hint">Applies your default style to the selection immediately, without showing suggestions.</div>
       </div>
       {#if isLinux()}
-        <ShortcutPicker slot="quick_fix" value={config.hotkeys.quick_fix} onchange={(v) => { config.hotkeys.quick_fix = v; onchange(); }} />
+        <ShortcutPicker slot="quick_fix" labelledby="quick-fix-label" describedby="quick-fix-hint" value={config.hotkeys.quick_fix} onchange={(v) => { config.hotkeys.quick_fix = v; onchange(); }} />
       {:else}
-        <ShortcutInput slot="quick_fix" value={config.hotkeys.quick_fix} onchange={(v) => { config.hotkeys.quick_fix = v; onchange(); }} />
+        <ShortcutInput slot="quick_fix" labelledby="quick-fix-label" describedby="quick-fix-hint" value={config.hotkeys.quick_fix} onchange={(v) => { config.hotkeys.quick_fix = v; onchange(); }} />
       {/if}
     </div>
     <div class="row">
       <div>
-        <div class="label">With nothing selected, use the sentence before the cursor</div>
-        <div class="hint">The shortcuts select the sentence you just wrote, so you see what they’ll change, and review it. In an app that hides its text, select it yourself. Automatic suggestions never do this.</div>
+        <div class="label" id="select-sentence-label">With nothing selected, use the sentence before the cursor</div>
+        <div class="hint" id="select-sentence-hint">The shortcuts select the sentence you just wrote, so you see what they’ll change, and review it. In an app that hides its text, select it yourself. Automatic suggestions never do this.</div>
       </div>
-      <input type="checkbox" class="switch" bind:checked={config.select_sentence} onchange={onchange} />
+      <input type="checkbox" class="switch" aria-labelledby="select-sentence-label" aria-describedby="select-sentence-hint" bind:checked={config.select_sentence} onchange={onchange} />
     </div>
     <div class="row keys">
       <div class="label">In the suggestion panel</div>
@@ -67,10 +67,10 @@
     </div>
     <div class="row">
       <div>
-        <div class="label">Always show key tips in the suggestion panel</div>
-        <div class="hint">Off, the tips appear for your first few reviews, or until you close them.</div>
+        <div class="label" id="always-show-tips-label">Always show key tips in the suggestion panel</div>
+        <div class="hint" id="always-show-tips-hint">Off, the tips appear for your first few reviews, or until you close them.</div>
       </div>
-      <input type="checkbox" class="switch" bind:checked={config.always_show_tips} onchange={onchange} />
+      <input type="checkbox" class="switch" aria-labelledby="always-show-tips-label" aria-describedby="always-show-tips-hint" bind:checked={config.always_show_tips} onchange={onchange} />
     </div>
     {#if problems.length}
       <div class="row warn">Some shortcuts are taken by another app: {problems.join("; ")}</div>
